@@ -1,0 +1,78 @@
+# configs/default.yaml --revision 1
+stock_tickers:
+  ADHI.JK: "Adhi Karya"
+  ADMR.JK: "Alamtri Minerals Indonesia"
+  ADRO.JK: "Alamtri Resources"
+  AMMN.JK: "Amman Mineral International"
+  AMRT.JK: "Alfamart"
+  ANTM.JK: "Aneka Tambang"
+  ASII.JK: "Astra International"
+  BBCA.JK: "Bank Central Asia"
+  BBKP.JK: "Bank Bukopin"
+  BBNI.JK: "Bank Negara Indonesia"
+  BBRI.JK: "Bank Rakyat Indonesia"
+  BBSI.JK: "Krom Bank Indonesia"
+  BMRI.JK: "Bank Mandiri"
+  BNLI.JK: "Bank Permata"
+  BRIS.JK: "Bank Rakyat Indonesia Syariah"
+  BRMS.JK: "Bumi Resources Minerals"
+  BRPT.JK: "Barito Pacific"
+  BTPN.JK: "Bank Tabungan Pensiunan Nasional"
+  BUMI.JK: "Bumi Resources"
+  BUVA.JK: "Bukit Uluwatu Villa"
+  DSNG.JK: "Dharma Satya Nusantara"
+  DSSA.JK: "Dian Swastatika Sentosa"
+  ELSA.JK: "Elnusa"
+  EMAS.JK: "Merdeka Gold Resources"
+  ENRG.JK: "Energi Mega Persada"
+  EXCL.JK: "XL Axiata"
+  GOTO.JK: "GoTo Gojek Tokopedia"
+  INCO.JK: "Vale Indonesia"
+  INDF.JK: "Indofood Sukses Makmur"
+  INET.JK: "Sinergi Inti Andalan Prima"
+  ISAT.JK: "Indosat Ooredoo"
+  ITMG.JK: "Indo Tambangraya Megah"
+  KLBF.JK: "Kalbe Farma"
+  MAPI.JK: "Mitra Adiperkasa"
+  MEDC.JK: "Medco Energi Internasional"
+  MDKA.JK: "Merdeka Copper Gold"
+  MMIX.JK: "Multi Medika"
+  PGAS.JK: "Perusahaan Gas Negara"
+  PNLF.JK: "Panin Financial"
+  PTRO.JK: "Petrosea"
+  RAJA.JK: "Rukun Raharja"
+  RMKE.JK: "RMK Energy"
+  SRTG.JK: "Saratoga Investama Sedaya"
+  TAPG.JK: "Triputra Agro Persada"
+  TINS.JK: "Timah"
+  TLKM.JK: "Telkom Indonesia"
+  UNTR.JK: "United Tractors"
+  UNVR.JK: "Unilever Indonesia"
+  WIKA.JK: "Wijaya Karya"
+
+benchmarks:
+  ^JKSE: "Jakarta Composite Index"
+
+technical:
+  ma_periods: [5, 20]
+  rsi_window: 14
+  bb_window: 20
+
+fundamental_metrics:
+  - pe_ratio
+  - price_to_book
+  - dividend_yield
+  - beta
+
+scoring_method: zscore_normalized
+
+ml:
+  features:
+    - pe_ratio
+    - price_to_book
+    - dividend_yield
+    - rsi_14
+    - ma5_slope
+    - ma20_slope
+  scoring_method: zscore_normalized
+  walk_forward_splits: 3
