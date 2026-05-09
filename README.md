@@ -113,3 +113,30 @@ ticker           name  undervaluation_score  pe_ratio  rsi_14  price_change_pct
 This project is licensed under the MIT License.
 
 **Disclaimer**: *This tool is for educational and research purposes only. It does not constitute financial advice. Always perform your own due diligence before making investment decisions.*
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome! Whether it's fixing bugs, adding new technical indicators, or improving the ML model, feel free to help out.
+
+1.  Fork the Project
+2.  Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
+3.  Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
+4.  Push to the Branch (`git push origin feature/AmazingFeature`)
+5.  Open a Pull Request
+
+---
+
+## 📬 Contact
+
+For business inquiries, technical support, or partnership opportunities, please contact me at:
+
+- **Email**: h.sethiawan@gmail.com
+- **Website**: [hrsethiawan.com](https://www.hrsethiawan.com/)
+
+---
+
+<p align="center">
+  Made with ❤️ for the IDX Trading Community
+</p>
