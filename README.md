@@ -1,6 +1,6 @@
 # 📈 IDX Quant Screener
 
-[![Python Version](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
+[![Python Version](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Market](https://img.shields.io/badge/Market-IDX%20(Indonesia)-success)](https://www.idx.co.id/)
 [![Status](https://img.shields.io/badge/status-production--ready-brightgreen)](#)
