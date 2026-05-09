@@ -1,56 +1,115 @@
-# IDX Quant Screener Dashboard
+# 📈 IDX Quant Screener
 
-![Jupyter](https://img.shields.io/badge/Jupyter-%23F37600.svg?logo=jupyter&logoColor=white)
-![License](https://img.shields.io/badge/License-MIT-green.svg)
-![Status](https://img.shields.io/badge/Status-Skeleton%20Code-yellow.svg)
+[![Python Version](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Market](https://img.shields.io/badge/Market-IDX%20(Indonesia)-success)](https://www.idx.co.id/)
 
-This notebook provides a comprehensive **Fundamental and Technical Screener Dashboard** for stocks listed on the Indonesia Stock Exchange (IDX). It combines financial health metrics with price action analysis to identify potentially undervalued investment opportunities.
-
-## Features
-
-### 1. Fundamental Analysis
-Fetches key financial ratios and data using `yfinance`:
-*   **Market Capitalization**: Total market value of the company.
-*   **P/E Ratio**: Trailing Price-to-Earnings ratio.
-*   **Price to Book (P/B)**: Valuation relative to book value.
-*   **Dividend Yield**: Annual dividend percentage.
-*   **Beta**: Volatility relative to the market index (JKSE).
-*   **Financials**: Revenue and Net Income tracking.
-
-### 2. Technical Indicators
-Calculates momentum and trend signals:
-*   **Relative Strength Index (RSI)**: 14-day momentum oscillator to identify overbought/oversold conditions.
-*   **Moving Averages**: 5-day and 20-day MA slopes for short-term trend detection.
-*   **Bollinger Bands**: Volatility envelopes around price action.
-*   **Volume Ratio**: Current volume compared to the 10-day average.
-
-### 3. Quantitative Scoring (Undervaluation Score)
-Implements a custom scoring algorithm (0-100) based on:
-*   Low P/E ratios (valuation).
-*   Oversold RSI levels (momentum entry).
-*   Positive price changes (short-term strength).
-*   Lower Beta (risk-adjusted stability).
-
-### 4. Interactive Dashboard
-Visualizes findings through four key perspectives:
-1.  **Score Comparison**: Ranking stocks by their quantitative undervaluation score.
-2.  **Valuation vs. Momentum**: Scatter plot of P/E Ratio vs. RSI.
-3.  **Recent Performance**: 30-day price change percentage.
-4.  **Risk/Scale Analysis**: Market Cap vs. Beta distribution.
-
-## Prerequisites
-
-To run this notebook, you will need the following Python libraries installed:
-
-```bash
-pip install yfinance pandas numpy matplotlib seaborn
-```
-
-## How to Use
-1.  **Define Tickers**: The `FundamentallyTechnicalScreener` class is initialized with a dictionary of IDX tickers (e.g., `BBCA.JK`, `TLKM.JK`).
-2.  **Run Screener**: Execute the data generation cell to fetch live market data.
-3.  **Analyze Results**: Review the "Top Recommendations" printed in the output.
-4.  **Visualize**: Run the visualization cell to generate the graphical dashboard.
+A professional-grade quantitative stock screener and forecasting engine designed for the **Indonesia Stock Exchange (IDX)**. This tool automates the process of fetching financial data, computing fundamental/technical metrics, and using Machine Learning to identify undervalued investment opportunities.
 
 ---
-*Disclaimer: This tool is for educational and analysis purposes only. Quantitative scores are based on simplified logic and do not constitute financial advice.*
+
+## ✨ Key Features
+
+-   **🔄 Automated Data Pipeline**: Seamlessly fetches real-time and historical data for IDX tickers using `yfinance` with built-in retry logic.
+-   **📊 Multi-Factor Scoring**: Evaluates stocks using a normalized Z-Score methodology across P/E, P/B, Dividend Yield, and Beta.
+-   **📈 Advanced Technicals**: Computes RSI, Moving Average slopes, and Bollinger Bands to assess momentum and volatility.
+-   **🤖 ML-Powered Ranking**: Integrated `StockRanker` engine that uses scikit-learn to predict "undervaluation scores" based on historical performance.
+-   **🎨 Professional Visualizations**: Generates high-fidelity 3x2 diagnostic dashboards comparing stocks against the **Jakarta Composite Index (^JKSE)**.
+-   **🚀 Risk-Adjusted Analysis**: Support for risk-adjusted scoring to prioritize stability alongside growth.
+-   **📁 Data Export**: Automatically generates `top_picks.csv` and full analytical reports for further research.
+
+---
+
+## 🛠️ Tech Stack
+
+-   **Core**: Python 3.10+
+-   **Data Processing**: Pandas, NumPy
+-   **Machine Learning**: Scikit-Learn
+-   **Finance**: yfinance
+-   **Visualization**: Matplotlib, Seaborn
+-   **Configuration**: Pydantic (Settings), PyYAML
+-   **Logging**: Loguru
+
+---
+
+## 🚀 Getting Started
+
+### 1. Clone the Repository
+```bash
+git clone https://github.com/your-username/idx-quant-screener.git
+cd idx-quant-screener
+```
+
+### 2. Set Up Environment
+It is recommended to use a virtual environment:
+```bash
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+### 3. Configuration
+1.  Copy the example environment file:
+    ```bash
+    cp .env.example .env
+    ```
+2.  Adjust settings in `.env` (e.g., `LOG_LEVEL`, `CACHE_TTL`).
+3.  Modify `configs/default.yaml` to add or remove stock tickers you wish to track.
+
+---
+
+## 🖥️ Usage
+
+Run the main screener execution:
+
+```bash
+python main.py
+```
+
+Upon execution, the system will:
+1.  Fetch latest data for all configured tickers.
+2.  Compute technical indicators and fundamental scores.
+3.  Train/Update the ML ranking model.
+4.  Generate a visualization dashboard in `data/output/`.
+5.  Print the **Top 5 Undervalued Picks** to your terminal.
+
+---
+
+## 📂 Project Structure
+
+```text
+idx_quant_screener/
+├── configs/            # YAML configuration files
+├── data/               # Output directory for CSVs and plots
+├── models/             # Serialized ML models
+├── notebooks/          # Research and exploratory analysis
+├── src/
+│   ├── analysis/       # Fundamental, Technical, and ML engines
+│   ├── core/           # Config loaders and logging setup
+│   ├── fetchers/       # Data ingestion logic (yfinance)
+│   ├── viz/            # Visualization and dashboard rendering
+│   └── __main__.py     # Core application workflow
+└── main.py             # Entry point script
+```
+
+---
+
+## 📊 Sample Output
+
+The screener provides a terminal summary like this:
+
+```text
+🏆 TOP 5 UNDERVALUED PICKS:
+ticker           name  undervaluation_score  pe_ratio  rsi_14  price_change_pct
+ ADRO.JK  Adaro Energy                 0.842      4.12   42.15             -2.4
+ BBRI.JK  Bank Rakyat                  0.795     12.45   55.10              1.2
+ ...
+```
+
+---
+
+## ⚖️ License & Disclaimer
+
+This project is licensed under the MIT License.
+
+**Disclaimer**: *This tool is for educational and research purposes only. It does not constitute financial advice. Always perform your own due diligence before making investment decisions.*
