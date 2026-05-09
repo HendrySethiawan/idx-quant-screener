@@ -1,8 +1,9 @@
 # 📈 IDX Quant Screener
 
 [![Python Version](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-red.svg)](https://opensource.org/licenses/MIT)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Market](https://img.shields.io/badge/Market-IDX%20(Indonesia)-success)](https://www.idx.co.id/)
+[![Status](https://img.shields.io/badge/status-production--ready-brightgreen)](#)
 
 A professional-grade quantitative stock screener and forecasting engine designed for the **Indonesia Stock Exchange (IDX)**. This tool automates the process of fetching financial data, computing fundamental/technical metrics, and using Machine Learning to identify undervalued investment opportunities.
 
