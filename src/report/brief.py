@@ -144,12 +144,20 @@ def _ticket_section(orders: List[dict], fees, capital: float) -> str:
             f'{lots} lot ({o.get("shares", 0):,} shares) @ {rp(o.get("price"))}'
             if lots else "-"
         )
+        why = f'<span class="note">{_e(o.get("note", ""))}</span>'
+        # An UNKNOWN event state is shown as prominently as a KNOWN one. Rendering
+        # "we have no data" quietly would let it read as "nothing is coming".
+        state, ev_note = o.get("event_state"), o.get("event_note")
+        if state == "known":
+            why += f'<br><span class="pill warn">⚠ {_e(ev_note)}</span>'
+        elif state == "unknown":
+            why += f'<br><span class="note">— {_e(ev_note)}</span>'
         rows.append([
             f'<span class="act {cls}">{action}</span>',
             f'<span class="tick">{_e(o["ticker"])}</span>',
             detail,
             f'<span class="money">{rp(o.get("rupiah"))}</span>',
-            f'<span class="note">{_e(o.get("note", ""))}</span>',
+            why,
         ])
 
     table = _table(["Do", "Ticker", "How much", "Value", "Why"], rows, num_cols={3})
@@ -205,6 +213,33 @@ def _candidates_section(cands: List[dict]) -> str:
                   rows, num_cols={1, 2})
 
 
+def _events_section(events, blind_n: int, universe_n: int, horizon: int) -> str:
+    """Upcoming events, each labelled by how much it can be trusted."""
+    rows = []
+    for ev in events:
+        rows.append([
+            f'<span class="money">{_e(ev.date.strftime("%d %b"))}</span>',
+            f'<span class="tick">{_e(ev.scope)}</span>',
+            _e(ev.kind_label),
+            f'<span class="note">{_e(ev.describe())}</span>',
+            f'<span class="pill">{_e(ev.source_label)}</span>',
+        ])
+
+    table = _table(["Date", "What", "Kind", "When", "Source"], rows)
+    coverage = ""
+    if universe_n:
+        coverage = (
+            f'<div class="callout"><strong>Coverage.</strong> '
+            f'{universe_n - blind_n} of {universe_n} names have an earnings date. '
+            f'For the other {blind_n}, no source has one &mdash; an empty row above '
+            f'means <em>we cannot see</em>, not <em>nothing is coming</em>. '
+            f'Run <code>python main.py --events</code> for the full list, and add what '
+            f'you find with <code>--event</code>.</div>'
+        )
+    return (f"<h2>Events in the next {horizon} days</h2>"
+            f'<div class="card">{table}{coverage}</div>')
+
+
 def _rejected_section(rejected: Dict[str, str], capped: Optional[Dict[str, str]] = None) -> str:
     """
     Two different things, kept apart on purpose.
@@ -241,6 +276,10 @@ def render_brief(
     capped: Optional[Dict[str, str]] = None,
     allocation=None,
     journal_html: str = "",
+    events=None,
+    blind_n: int = 0,
+    event_horizon: int = 14,
+    seasonality: str = "",
     universe_n: int = 0,
     imputed_n: int = 0,
     generated: Optional[datetime] = None,
@@ -276,6 +315,7 @@ def render_brief(
 
 <h2>Market right now</h2>
 {_verdict_card(regime)}
+{f'<div class="callout"><strong>Seasonality.</strong> {_e(seasonality)}</div>' if seasonality else ''}
 
 <div class="kpis">{kpis}</div>
 
@@ -287,6 +327,8 @@ def render_brief(
 
 <h2>Best candidates you can actually afford</h2>
 <div class="card">{_candidates_section(candidates)}</div>
+
+{_events_section(events or [], blind_n, universe_n, event_horizon)}
 
 {journal_html}
 

@@ -184,7 +184,26 @@ def build_holdings_rows(
     return rows
 
 
-def assemble(settings, df: pd.DataFrame, regime, holdings: List[Holding]):
+def attach_events(items: List[dict], events, blind, horizon_days: int) -> None:
+    """
+    Stamp each order/candidate with its event state, in place.
+
+    Deliberately does NOT filter anything. With earnings dates for only a third of
+    the universe, a blocking rule would fire only on the names we can see and
+    quietly bias the book toward the ones we cannot.
+    """
+    from market.events import by_ticker, state_for
+
+    grouped = by_ticker(events)
+    for item in items:
+        ticker = item.get("ticker")
+        state, message = state_for(ticker, grouped.get(ticker, []), blind, horizon_days)
+        item["event_state"] = state
+        item["event_note"] = message
+
+
+def assemble(settings, df: pd.DataFrame, regime, holdings: List[Holding],
+             events=None, blind=None):
     """Everything the brief needs, in one pass."""
     prices = {
         r["ticker"]: float(r["last_close"])
@@ -203,6 +222,11 @@ def assemble(settings, df: pd.DataFrame, regime, holdings: List[Holding]):
     fees = estimate_fees(orders, fee_cfg, settings.capital_rp, sell_days=1)
 
     holdings_rows = build_holdings_rows(holdings, prices, df, settings.top_picks_n)
+
+    if events is not None:
+        horizon = int(getattr(settings, "event_horizon_days", 14))
+        attach_events(orders, events, blind or set(), horizon)
+        attach_events(candidates, events, blind or set(), horizon)
 
     return {
         "allocation": allocation,

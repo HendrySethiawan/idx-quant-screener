@@ -9,6 +9,7 @@ import pandas as pd
 
 from core.config import load_settings
 from core.logger import setup_logger
+from market import events as E
 from market.regime import assess_regime
 from pipeline import run_screener, top_picks, write_outputs
 from portfolio.holdings import load_holdings
@@ -40,10 +41,15 @@ def main() -> None:
 
     # Journal subcommands run without touching the screener, so recording a trade
     # at lunch does not wait on 49 tickers of network fetch.
-    from cli import build_parser, cmd_journal, cmd_log, cmd_mark
+    from cli import (build_parser, cmd_event, cmd_events, cmd_journal, cmd_log,
+                     cmd_mark)
     args = build_parser().parse_args()
     if args.log:
         raise SystemExit(cmd_log(settings, args))
+    if args.event:
+        raise SystemExit(cmd_event(settings, args))
+    if args.events:
+        raise SystemExit(cmd_events(settings))
     if args.journal:
         raise SystemExit(cmd_journal(settings))
     if args.mark:
@@ -75,7 +81,26 @@ def main() -> None:
         (settings.account or {}).get("holdings_path", "current_holdings.yaml"),
         lot_size=settings.lot_size,
     )
-    plan = assemble(settings, df, regime, holdings)
+    # Events and seasonality: context the user already gathers by hand.
+    from cli import collect_events
+    from market import seasonality as S
+    all_events, blind = collect_events(settings)
+    horizon = int(getattr(settings, "event_horizon_days", 14))
+    near_events = E.upcoming(all_events, horizon)
+
+    # period="max", not the 2y panel: two years gives ~2 observations per month,
+    # which is noise rather than a base rate.
+    season_line = ""
+    try:
+        jkse = fetcher.fetch_technical_data(
+            [regime_cfg.get("benchmark", "^JKSE")], period="max"
+        ).get(regime_cfg.get("benchmark", "^JKSE"))
+        if jkse is not None and "Close" in jkse:
+            season_line = S.describe(S.for_month(S.monthly_seasonality(jkse["Close"])))
+    except Exception as e:
+        logger.warning(f"Seasonality unavailable: {e}")
+
+    plan = assemble(settings, df, regime, holdings, events=all_events, blind=blind)
 
     pd.DataFrame(plan["orders"]).to_csv(settings.output_dir / "ticket.csv", index=False)
 
@@ -101,6 +126,10 @@ def main() -> None:
             capped=plan["capped"],
             allocation=plan["allocation"],
             journal_html=brief_section(perf),
+            events=near_events,
+            blind_n=len(blind),
+            event_horizon=horizon,
+            seasonality=season_line,
             universe_n=len(df),
             imputed_n=int((df["imputed_factors"].fillna("").str.len() > 0).sum()),
         ),
@@ -120,6 +149,17 @@ def main() -> None:
     print(f"\n  Estimated fees: {rp(fees.total)} ({fees.pct_of(settings.capital_rp):.2f}% of capital)")
     for note in fees.notes:
         print(f"  TIP: {note}")
+
+    warned = [o for o in plan["orders"] if o.get("event_state") == "known"]
+    unknown = [o for o in plan["orders"] if o.get("event_state") == "unknown"]
+    if warned or unknown:
+        print()
+        for o in warned:
+            print(f"  !  {o['ticker']:9s} {o['event_note']}")
+        for o in unknown:
+            print(f"  -  {o['ticker']:9s} {o['event_note']}")
+    if season_line:
+        print(f"\n  Seasonality: {season_line}")
 
     if perf.n_closed or perf.position_value:
         print(console_block(perf))
