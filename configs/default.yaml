@@ -1,0 +1,225 @@
+# configs/default.yaml --revision 2
+#
+# App-managed overrides live in configs/user.yaml (git-ignored) and are applied
+# AFTER this file. This file is never rewritten by the tool, so the comments below
+# stay intact.
+
+# --------------------------------------------------------------------- universe
+stock_tickers:
+  ADHI.JK: "Adhi Karya"
+  ADMR.JK: "Alamtri Minerals Indonesia"
+  ADRO.JK: "Alamtri Resources"
+  AMMN.JK: "Amman Mineral International"
+  AMRT.JK: "Alfamart"
+  ANTM.JK: "Aneka Tambang"
+  ASII.JK: "Astra International"
+  BBCA.JK: "Bank Central Asia"
+  BBKP.JK: "Bank Bukopin"
+  BBNI.JK: "Bank Negara Indonesia"
+  BBRI.JK: "Bank Rakyat Indonesia"
+  BBSI.JK: "Krom Bank Indonesia"
+  BMRI.JK: "Bank Mandiri"
+  BNLI.JK: "Bank Permata"
+  BRIS.JK: "Bank Rakyat Indonesia Syariah"
+  BRMS.JK: "Bumi Resources Minerals"
+  BRPT.JK: "Barito Pacific"
+  BTPN.JK: "Bank Tabungan Pensiunan Nasional"
+  BUMI.JK: "Bumi Resources"
+  BUVA.JK: "Bukit Uluwatu Villa"
+  DSNG.JK: "Dharma Satya Nusantara"
+  DSSA.JK: "Dian Swastatika Sentosa"
+  ELSA.JK: "Elnusa"
+  EMAS.JK: "Merdeka Gold Resources"
+  ENRG.JK: "Energi Mega Persada"
+  EXCL.JK: "XL Axiata"
+  GOTO.JK: "GoTo Gojek Tokopedia"
+  INCO.JK: "Vale Indonesia"
+  INDF.JK: "Indofood Sukses Makmur"
+  INET.JK: "Sinergi Inti Andalan Prima"
+  ISAT.JK: "Indosat Ooredoo"
+  ITMG.JK: "Indo Tambangraya Megah"
+  KLBF.JK: "Kalbe Farma"
+  MAPI.JK: "Mitra Adiperkasa"
+  MEDC.JK: "Medco Energi Internasional"
+  MDKA.JK: "Merdeka Copper Gold"
+  MMIX.JK: "Multi Medika"
+  PGAS.JK: "Perusahaan Gas Negara"
+  PNLF.JK: "Panin Financial"
+  PTRO.JK: "Petrosea"
+  RAJA.JK: "Rukun Raharja"
+  RMKE.JK: "RMK Energy"
+  SRTG.JK: "Saratoga Investama Sedaya"
+  TAPG.JK: "Triputra Agro Persada"
+  TINS.JK: "Timah"
+  TLKM.JK: "Telkom Indonesia"
+  UNTR.JK: "United Tractors"
+  UNVR.JK: "Unilever Indonesia"
+  WIKA.JK: "Wijaya Karya"
+
+benchmarks:
+  ^JKSE: "Jakarta Composite Index"
+
+# Was entirely absent before revision 2, so every stock mapped to "Unknown" and
+# neither sector-neutral scoring nor the diversification cap could function.
+# Broadly follows the IDX-IC classification.
+sectors:
+  ADHI.JK: Infrastructure
+  ADMR.JK: Energy
+  ADRO.JK: Energy
+  AMMN.JK: Basic Materials
+  AMRT.JK: Consumer Non-Cyclicals
+  ANTM.JK: Basic Materials
+  ASII.JK: Industrials
+  BBCA.JK: Financials
+  BBKP.JK: Financials
+  BBNI.JK: Financials
+  BBRI.JK: Financials
+  BBSI.JK: Financials
+  BMRI.JK: Financials
+  BNLI.JK: Financials
+  BRIS.JK: Financials
+  BRMS.JK: Basic Materials
+  BRPT.JK: Basic Materials
+  BTPN.JK: Financials
+  BUMI.JK: Energy
+  BUVA.JK: Consumer Cyclicals
+  DSNG.JK: Consumer Non-Cyclicals
+  DSSA.JK: Energy
+  ELSA.JK: Energy
+  EMAS.JK: Basic Materials
+  ENRG.JK: Energy
+  EXCL.JK: Infrastructure
+  GOTO.JK: Technology
+  INCO.JK: Basic Materials
+  INDF.JK: Consumer Non-Cyclicals
+  INET.JK: Technology
+  ISAT.JK: Infrastructure
+  ITMG.JK: Energy
+  KLBF.JK: Healthcare
+  MAPI.JK: Consumer Cyclicals
+  MEDC.JK: Energy
+  MDKA.JK: Basic Materials
+  MMIX.JK: Healthcare
+  PGAS.JK: Energy
+  PNLF.JK: Financials
+  PTRO.JK: Energy
+  RAJA.JK: Energy
+  RMKE.JK: Energy
+  SRTG.JK: Financials
+  TAPG.JK: Consumer Non-Cyclicals
+  TINS.JK: Basic Materials
+  TLKM.JK: Infrastructure
+  UNTR.JK: Industrials
+  UNVR.JK: Consumer Non-Cyclicals
+  WIKA.JK: Infrastructure
+
+# ------------------------------------------------------------------------- data
+# Needs to exceed 13 months so 12-month momentum has history. The old code used
+# data_retention_days (30) here, which capped every series at ~30 bars.
+history_period: "2y"
+cache_ttl_minutes: 60
+
+technical:
+  ma_periods: [5, 20]
+  rsi_window: 14
+  bb_window: 20
+  vol_window: 60
+  liquidity_window: 20
+
+# ---------------------------------------------------------------------- scoring
+fundamental_metrics:
+  - pe_ratio
+  - price_to_book
+  - dividend_yield
+  - beta
+  - roe
+  - gross_margin
+  - debt_to_equity
+
+scoring_method: zscore_normalized
+
+# Sign encodes direction: higher composite = more attractive.
+# `beta` is intentionally NOT here. yfinance reports 0.016 for Bank Mandiri and
+# negative betas for several IDX large caps; realized_vol replaces it.
+factor_weights:
+  pe_ratio: -1.0          # cheaper is better
+  price_to_book: -1.0
+  dividend_yield: 1.0
+  roe: 1.0                # quality, scored within sector
+  gross_margin: 1.0
+  debt_to_equity: -1.0
+  realized_vol: -0.5      # prefer calmer names
+  mom_1m: 0.5             # short horizon matters for weekly trading
+  mom_6m: 1.0
+  mom_12m: 1.0
+
+# |x| beyond the bound is a data glitch -> NaN -> neutral contribution.
+# price_to_book catches the PTRO (179,615) / BRPT (77,600) class of error that
+# previously flattened the whole factor.
+sanity_bounds:
+  dividend_yield: 0.15
+  price_to_book: 20.0
+  roe: 3.0
+  gross_margin: 1.5
+  debt_to_equity: 2000.0
+  pe_ratio: 200.0
+
+sector_neutral_factors:
+  - roe
+  - gross_margin
+  - debt_to_equity
+min_sector_size: 4
+winsorize_k: 5.0
+
+max_per_sector: 2
+top_picks_n: 8
+risk_adjusted: false
+
+# ------------------------------------------------------------------ broker fees
+# Indopremier. The stamp is charged once per DAY containing at least one sell,
+# not per order -- batching sells into a single day is worth real money.
+broker:
+  buy_fee: 0.0019
+  sell_fee: 0.0029
+  stamp_duty_rp: 10000
+  lot_size: 100
+
+account:
+  capital_rp: 100000000
+  min_positions: 3
+  max_positions: 6
+  max_lot_to_slot: 1.0
+  deviation_penalty: 0.5
+  min_position_rp: 1000000   # below this, the Rp10k stamp dominates the trade
+  holdings_path: current_holdings.yaml
+  journal_path: data/journal.csv
+
+# A position must be exitable in roughly one session.
+liquidity:
+  max_position_pct_of_daily_value: 0.01
+  min_median_daily_value_rp: 250000000
+  window: 20
+
+regime:
+  trend_ma: 200
+  benchmark: "^JKSE"
+  fx_ticker: "IDR=X"
+  deploy_ladder: [0.30, 0.60, 1.00]   # by count of risk-on signals (0, 1, 2)
+
+events_path: configs/events.yaml
+event_horizon_days: 14
+
+# ----------------------------------------------------------------------- ml off
+# The ranker labels y = (score > median of that same score), then overwrites the
+# score with its own prediction. That is circular, and on a ~49-name cross-section
+# it adds nothing. Left in the tree, switched off.
+use_ml: false
+ml:
+  features:
+    - pe_ratio
+    - price_to_book
+    - dividend_yield
+    - rsi_14
+    - ma5_slope
+    - ma20_slope
+  walk_forward_splits: 3

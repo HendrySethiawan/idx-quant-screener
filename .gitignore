@@ -1,0 +1,35 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+.venv/
+env/
+venv/
+ENV/
+
+# Environment Variables
+.env
+
+# Data and Outputs
+#
+# `data/*` rather than `data/` on purpose: git cannot re-include a file whose
+# PARENT DIRECTORY is excluded, so under a `data/` rule the !exceptions below
+# would silently do nothing and the journal would never be tracked.
+data/*
+!data/journal.csv
+!data/journal_marks.csv
+logs/
+
+# Models (Keep the directory, ignore the files)
+models/*
+!models/.gitkeep
+
+# IDEs
+.vscode/
+.idea/
+
+# OS specific
+.DS_Store
+Thumbs.db

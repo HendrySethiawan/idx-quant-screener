@@ -1,0 +1,16 @@
+# What you currently own.
+#
+# The brief diffs this against today's target book to produce the BUY / SELL / HOLD
+# ticket, so keep it up to date after you trade.
+#
+#   lots      - number of 100-share lots (3 lots = 300 shares)
+#   avg_price - your average buy price per SHARE, in rupiah.
+#               Optional, but without it P&L cannot be shown.
+#
+# Example:
+#
+# holdings:
+#   BBRI.JK: {lots: 3, avg_price: 4100}
+#   TLKM.JK: {lots: 2, avg_price: 2580}
+
+holdings: {}
