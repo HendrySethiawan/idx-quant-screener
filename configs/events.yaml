@@ -1,0 +1,5 @@
+events:
+- date: '2026-08-28'
+  scope: MSCI
+  kind: review
+  note: Aug index review, Indonesia frozen

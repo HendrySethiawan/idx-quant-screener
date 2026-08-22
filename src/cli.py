@@ -38,6 +38,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--journal", action="store_true", help="Show the performance report")
     p.add_argument("--mark", action="store_true", help="Snapshot portfolio value vs IHSG")
+    p.add_argument(
+        "--event", nargs=3, metavar=("SCOPE", "KIND", "DATE"),
+        help="Record an event, e.g. --event ADRO earnings 2026-08-27. "
+             "SCOPE may be a ticker or a market scope (MSCI, IDX, BI, FED, MARKET).",
+    )
+    p.add_argument("--events", action="store_true",
+                   help="List upcoming events and which names have no earnings data")
     return p
 
 
@@ -96,6 +103,71 @@ def cmd_log(settings, args, logger=None) -> int:
     print(f"          cash impact {rp(trade['net_rp'])}")
     print(f"\n  Check this against your Indopremier confirmation before trusting it.")
     print(f"  {holdings_path} updated to match the journal.\n")
+    return 0
+
+
+def collect_events(settings, include_auto: bool = True):
+    """
+    Manual + automatic events, plus the set of tickers we have no earnings data for.
+
+    Returns (events, blind). `blind` is what lets the brief say "we don't know"
+    instead of implying a name is clear.
+    """
+    from market import events as E
+
+    tickers = list(settings.stock_tickers)
+    manual = E.load_events(getattr(settings, "events_path", "configs/events.yaml"))
+    auto = E.load_auto_events(tickers) if include_auto else []
+
+    all_events = manual + auto
+    blind = E.earnings_coverage(tickers, all_events)
+    return all_events, blind
+
+
+def cmd_event(settings, args, logger=None) -> int:
+    from market import events as E
+
+    scope, kind, when = args.event
+    path = getattr(settings, "events_path", "configs/events.yaml")
+    try:
+        event = E.add_event(scope, kind, when, path, note=args.note)
+    except (ValueError, TypeError) as e:
+        print(f"Could not add that event: {e}")
+        return 1
+
+    print(f"\n  added  {event.scope:<9} {event.kind_label:<13} "
+          f"{event.date.strftime('%d %b %Y')}  ({event.describe()})")
+    if event.note:
+        print(f"         {event.note}")
+    print(f"         saved to {path}\n")
+    return 0
+
+
+def cmd_events(settings, logger=None) -> int:
+    from market import events as E
+
+    horizon = int(getattr(settings, "event_horizon_days", 14))
+    all_events, blind = collect_events(settings)
+    near = E.upcoming(all_events, horizon)
+
+    print(f"\nEVENTS IN THE NEXT {horizon} DAYS")
+    print("=" * 58)
+    if not near:
+        print("  Nothing scheduled that we know about.")
+    for e in near:
+        print(f"  {e.date.strftime('%d %b'):<7} {e.scope:<9} {e.kind_label:<13} "
+              f"{e.describe():<22} ({e.source_label})")
+
+    total = len(settings.stock_tickers)
+    print()
+    print(f"  COVERAGE: {total - len(blind)} of {total} names have an earnings date.")
+    if blind:
+        # Printed in full on purpose. These are the names where a quiet blank would
+        # otherwise read as "nothing coming".
+        print(f"  No earnings date for {len(blind)} names - check these yourself:")
+        for i in range(0, len(sorted(blind)), 8):
+            print("    " + " ".join(sorted(blind)[i:i + 8]))
+    print("=" * 58 + "\n")
     return 0
 
 
