@@ -123,6 +123,43 @@ same days, have done better in the index?**
 
 ---
 
+## Backtest
+
+```bash
+python main.py --backtest      # writes data/output/backtest.html
+```
+
+**What it can and cannot tell you.** Only **3.0 of the 9.0 factor weight** is
+reconstructible from history — momentum and realised volatility. The six fundamental
+factors come from Yahoo as a *current snapshot*, so ranking 2023 stocks by today's P/E
+would be look-ahead. The universe is also today's survivors, and this is one market
+regime.
+
+So a good result means *the price component was not obviously broken on one flattered
+window*. It does not mean the tool works. **A backtest disqualifies; it does not
+validate.**
+
+It answers three questions separately:
+
+1. **Did the price factors beat the alternatives?** Against IHSG *and* against an
+   equal-weight universe — the second separates "the ranking added something" from
+   "IDX stocks went up".
+2. **What does being small cost?** Fees and stamp are a real drag. Whole-lot rounding
+   is **not** — measured across 14 start months its effect was positive in 7 and
+   negative in 7, with a standard deviation of ~157pp. At Rp10 juta rounding is *path
+   noise*, not a tax, and the report labels it that way. Its deterministic part (budget
+   left in cash) is ~0.2%.
+3. **Does the risk-off ladder help?** Compared on CAGR *and* drawdown, since trading
+   return for a smaller drawdown is a legitimate choice.
+
+Then it stresses the result: momentum weights ±50%, position count 3–6, and each half
+of the window independently. An edge that appears at only one setting is not an edge.
+
+The backtest calls the same `choose_allocation`, `estimate_fees` and `assess_regime`
+the daily brief uses, so it tests the strategy you actually run.
+
+---
+
 ## How the score works
 
 Each factor is turned into a cross-sectional z-score, multiplied by a signed weight,
@@ -192,7 +229,7 @@ factor does at this account size:
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                      # 226 tests, no network required
+pytest                      # 259 tests, no network required
 ```
 
 ```
@@ -203,6 +240,7 @@ src/
 ├── market/        regime, liquidity gate, events, seasonality
 ├── portfolio/     fees, lot-aware sizing, holdings, journal, performance
 ├── report/        plain-English reasons, the HTML brief, performance view
+├── backtest/      historical simulation under real frictions
 ├── viz/           diagnostic PNG
 ├── cli.py         --log / --mark / --journal handlers
 └── pipeline.py    shared orchestration
