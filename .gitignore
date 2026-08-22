@@ -12,15 +12,26 @@ ENV/
 # Environment Variables
 .env
 
-# Data and Outputs
+# THIS REPOSITORY IS PUBLIC.
 #
-# `data/*` rather than `data/` on purpose: git cannot re-include a file whose
-# PARENT DIRECTORY is excluded, so under a `data/` rule the !exceptions below
-# would silently do nothing and the journal would never be tracked.
-data/*
-!data/journal.csv
-!data/journal_marks.csv
+# Everything below stays on the local machine. Plain `data/` rather than
+# `data/*` plus exceptions: with no file being re-included there is no reason to
+# keep the re-inclusion mechanism around, and without it a future edit cannot
+# accidentally expose something under data/.
+data/
 logs/
+
+# Personal state - never publish.
+# Comments go on their OWN lines: git does not strip trailing comments, so
+# `current_holdings.yaml  # note` is matched literally and silently ignores nothing.
+#
+#   current_holdings.yaml   your positions and average cost
+#   configs/user.yaml       your capital and universe edits
+#   configs/events.yaml     your event calendar
+current_holdings.yaml
+configs/user.yaml
+configs/events.yaml
+
 
 # Models (Keep the directory, ignore the files)
 models/*

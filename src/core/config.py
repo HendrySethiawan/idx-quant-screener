@@ -112,6 +112,8 @@ class Settings(BaseSettings):
 
     # ---- Account -----------------------------------------------------------
     account: Dict[str, Any] = Field(default_factory=lambda: {
+        # Placeholder only. Real capital belongs in configs/user.yaml, which is
+        # git-ignored -- this repository is public.
         "capital_rp": 100_000_000,
         "min_positions": 3,
         "max_positions": 6,

@@ -185,6 +185,14 @@ broker:
   lot_size: 100
 
 account:
+  # PLACEHOLDER. This file is public -- put your real capital in configs/user.yaml
+  # (git-ignored), which is applied on top of this one:
+  #
+  #   account:
+  #     capital_rp: 25000000
+  #
+  # Position sizing, the minimum-position floor and the fee percentages all scale
+  # from this number, so it is worth setting accurately.
   capital_rp: 100000000
   min_positions: 3
   max_positions: 6

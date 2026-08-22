@@ -42,11 +42,39 @@ python main.py
 The brief opens in your browser automatically. First run fetches ~2 years of prices
 for 49 tickers and takes a minute or two; afterwards the cache makes it fast.
 
-Set your capital and broker in `configs/default.yaml`:
+### Your data stays local
+
+This repository is public; your portfolio is not. These are git-ignored and never
+leave your machine:
+
+| File | What it holds |
+|---|---|
+| `data/journal.csv` | every trade, price, fee and realised P&L |
+| `data/journal_marks.csv` | portfolio value over time |
+| `current_holdings.yaml` | your positions and average cost |
+| `configs/user.yaml` | your capital and universe edits |
+| `configs/events.yaml` | your event calendar |
+| `data/output/` | every brief, ticket and backtest you generate |
+
+`current_holdings.example.yaml` and `configs/events.example.yaml` show the format.
+You rarely need them: `--log` writes your holdings file and `--event` writes your
+calendar, both creating the file on first use.
+
+**Set your real capital in `configs/user.yaml`**, not in `default.yaml`:
 
 ```yaml
 account:
-  capital_rp: 100000000
+  capital_rp: 25000000
+```
+
+It is applied on top of `configs/default.yaml`, so you only list what differs. The
+value committed to `default.yaml` is a deliberate placeholder.
+
+Broker settings live in `configs/default.yaml`:
+
+```yaml
+account:
+  capital_rp: 100000000       # placeholder - override in configs/user.yaml
   min_position_rp: 1000000    # below this, the Rp10k stamp dominates the trade
 
 broker:

@@ -1,0 +1,20 @@
+# Copy this to `current_holdings.yaml` (which is git-ignored) and edit.
+#
+# What you currently own. The brief diffs this against today's target book to
+# produce the BUY / SELL / HOLD ticket, so keep it up to date after you trade.
+#
+# You usually will not edit it by hand: `python main.py --log ...` rewrites it
+# from the journal after every trade, which is the point -- holdings drifting out
+# of sync with the trade log is the reliable way a manual workflow goes wrong.
+#
+#   lots      number of 100-share lots (3 lots = 300 shares)
+#   avg_price your average buy price per SHARE, in rupiah. Optional, but without
+#             it unrealised P&L cannot be shown.
+
+holdings:
+  BBRI.JK: {lots: 3, avg_price: 4100}
+  TLKM.JK: {lots: 2, avg_price: 2580}
+
+# An empty book is simply:
+#
+# holdings: {}
