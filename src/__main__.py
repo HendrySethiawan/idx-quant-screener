@@ -37,6 +37,18 @@ def _use_utf8_console() -> None:
 def main() -> None:
     _use_utf8_console()
     settings = load_settings("configs/default.yaml")
+
+    # Journal subcommands run without touching the screener, so recording a trade
+    # at lunch does not wait on 49 tickers of network fetch.
+    from cli import build_parser, cmd_journal, cmd_log, cmd_mark
+    args = build_parser().parse_args()
+    if args.log:
+        raise SystemExit(cmd_log(settings, args))
+    if args.journal:
+        raise SystemExit(cmd_journal(settings))
+    if args.mark:
+        raise SystemExit(cmd_mark(settings, on_date=args.date))
+
     logger = setup_logger(settings.log_dir, settings.log_level)
     logger.info("Starting idx_quant_screener")
 
@@ -67,6 +79,16 @@ def main() -> None:
 
     pd.DataFrame(plan["orders"]).to_csv(settings.output_dir / "ticket.csv", index=False)
 
+    # Performance reuses prices already fetched for the screen, so the journal
+    # section costs no extra network round-trips.
+    from cli import build_performance
+    from report.journal_view import brief_section, console_block
+    perf = build_performance(
+        settings,
+        prices=plan["prices"],
+        ihsg=_close_series(benchmark_data, regime_cfg.get("benchmark", "^JKSE")),
+    )
+
     brief_path = write_brief(
         render_brief(
             regime=regime,
@@ -78,6 +100,7 @@ def main() -> None:
             rejected=plan["rejected"],
             capped=plan["capped"],
             allocation=plan["allocation"],
+            journal_html=brief_section(perf),
             universe_n=len(df),
             imputed_n=int((df["imputed_factors"].fillna("").str.len() > 0).sum()),
         ),
@@ -97,6 +120,9 @@ def main() -> None:
     print(f"\n  Estimated fees: {rp(fees.total)} ({fees.pct_of(settings.capital_rp):.2f}% of capital)")
     for note in fees.notes:
         print(f"  TIP: {note}")
+
+    if perf.n_closed or perf.position_value:
+        print(console_block(perf))
 
     print(f"\nAnalyzed {len(df)} stocks | NaN scores: {int(df['undervaluation_score'].isna().sum())}")
     print(f"Brief: {brief_path}")
