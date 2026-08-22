@@ -208,6 +208,15 @@ regime:
   fx_ticker: "IDR=X"
   deploy_ladder: [0.30, 0.60, 1.00]   # by count of risk-on signals (0, 1, 2)
 
+# ------------------------------------------------------------------- backtest
+# Only momentum + realized_vol are reconstructible from history (3.0 of the 9.0
+# total factor weight). The fundamentals are yfinance snapshots, so using them
+# historically would be look-ahead. See docs/AUDIT.md.
+backtest:
+  history_period: "5y"
+  rebalances: [M, W]
+  min_names: 10
+
 events_path: configs/events.yaml
 event_horizon_days: 14
 

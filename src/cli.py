@@ -43,6 +43,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Record an event, e.g. --event ADRO earnings 2026-08-27. "
              "SCOPE may be a ticker or a market scope (MSCI, IDX, BI, FED, MARKET).",
     )
+    p.add_argument("--backtest", action="store_true",
+                   help="Run the historical simulation of the price factors")
     p.add_argument("--events", action="store_true",
                    help="List upcoming events and which names have no earnings data")
     return p
@@ -236,4 +238,79 @@ def cmd_mark(settings, on_date=None, logger=None) -> int:
     print(f"\n  marked  positions {rp(position_value)}  cash {rp(cash)}  "
           f"total {rp(position_value + cash)}")
     print(f"          saved to {marks_path}\n")
+    return 0
+
+
+def cmd_backtest(settings, logger=None) -> int:
+    """Run every cadence, write one HTML page, print each to the console."""
+    from backtest import report as R
+    from backtest.engine import BacktestConfig, build_price_panel, run_backtest
+    from fetchers.data_fetcher import DataFetcher
+
+    bt = getattr(settings, "backtest", None) or {}
+    period = bt.get("history_period", "5y")
+    fetcher = DataFetcher(settings)
+
+    print(f"\n  Fetching {period} of history for {len(settings.stock_tickers)} tickers...")
+    panel = build_price_panel(fetcher.fetch_technical_data(settings.stock_tickers, period=period))
+    if panel.empty:
+        print("  No price data available.")
+        return 1
+
+    regime_cfg = getattr(settings, "regime", None) or {}
+    bench_ticker = regime_cfg.get("benchmark", "^JKSE")
+    fx_ticker = regime_cfg.get("fx_ticker", "IDR=X")
+    extra = fetcher.fetch_technical_data([bench_ticker, fx_ticker], period=period)
+
+    def close_of(t):
+        f = extra.get(t)
+        if f is None or "Close" not in f:
+            return None
+        c = f["Close"].dropna()
+        c.index = pd.to_datetime(c.index).tz_localize(None)
+        return c
+
+    benchmark, fx = close_of(bench_ticker), close_of(fx_ticker)
+    fee_cfg = FeeConfig.from_settings(settings)
+    account = getattr(settings, "account", None) or {}
+
+    sections = {}
+    for rule in bt.get("rebalances", ["M"]):
+        cfg = BacktestConfig(
+            rebalance=rule,
+            min_positions=int(account.get("min_positions", 3)),
+            max_positions=int(account.get("max_positions", 6)),
+            min_position_rp=float(account.get("min_position_rp", 1_000_000)),
+            max_per_sector=int(getattr(settings, "max_per_sector", 2)),
+            min_names=int(bt.get("min_names", 10)),
+        )
+        args = (panel, settings.capital_rp, cfg, fee_cfg, settings.sectors,
+                benchmark, fx, int(regime_cfg.get("trend_ma", 200)),
+                regime_cfg.get("deploy_ladder", (0.30, 0.60, 1.00)))
+
+        base = run_backtest(*args)
+        factors = R.factor_report(*args)
+        costs = R.cost_report(*args)
+        regimes = R.regime_report(*args)
+        robustness = R.robustness_report(*args)
+        verdict = R.robustness_verdict(robustness)
+
+        label = {"M": "Monthly", "W": "Weekly"}.get(rule, rule)
+        sections[label] = {
+            "factors": factors, "costs": costs, "regimes": regimes,
+            "robustness": robustness, "verdict": verdict,
+            "n_rebalances": base.n_rebalances, "avg_names": base.avg_names_available,
+            "fees_paid": base.fees_paid,
+        }
+        print(R.console_block(factors, costs, regimes, robustness, verdict,
+                              label, base.avg_names_available))
+
+        out = Path(settings.output_dir)
+        costs.to_csv(out / f"backtest_costs_{rule}.csv", index=False)
+        robustness.to_csv(out / f"backtest_robustness_{rule}.csv", index=False)
+        pd.DataFrame({c.label: c.equity for c in factors}).to_csv(
+            out / f"backtest_equity_{rule}.csv")
+
+    path = R.write_html(R.render_html(sections), settings.output_dir)
+    print(f"\n  Full report: {path}\n")
     return 0

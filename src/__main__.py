@@ -41,8 +41,8 @@ def main() -> None:
 
     # Journal subcommands run without touching the screener, so recording a trade
     # at lunch does not wait on 49 tickers of network fetch.
-    from cli import (build_parser, cmd_event, cmd_events, cmd_journal, cmd_log,
-                     cmd_mark)
+    from cli import (build_parser, cmd_backtest, cmd_event, cmd_events,
+                     cmd_journal, cmd_log, cmd_mark)
     args = build_parser().parse_args()
     if args.log:
         raise SystemExit(cmd_log(settings, args))
@@ -50,6 +50,8 @@ def main() -> None:
         raise SystemExit(cmd_event(settings, args))
     if args.events:
         raise SystemExit(cmd_events(settings))
+    if args.backtest:
+        raise SystemExit(cmd_backtest(settings))
     if args.journal:
         raise SystemExit(cmd_journal(settings))
     if args.mark:

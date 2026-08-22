@@ -151,6 +151,15 @@ class Settings(BaseSettings):
         "deploy_ladder": [0.30, 0.60, 1.00],
     })
 
+    # ---- Backtest ----------------------------------------------------------
+    backtest: Dict[str, Any] = Field(default_factory=lambda: {
+        "history_period": "5y",
+        "rebalances": ["M", "W"],
+        # Skip rebalance dates with fewer listed names than this -- early in the
+        # window much of the universe had not IPO'd yet.
+        "min_names": 10,
+    })
+
     events_path: str = "configs/events.yaml"
     event_horizon_days: int = Field(default=14, ge=1)
 
