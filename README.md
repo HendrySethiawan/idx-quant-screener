@@ -54,12 +54,45 @@ broker:
   lot_size: 100
 ```
 
-Record what you own in `current_holdings.yaml` so the brief can diff against it:
+---
 
-```yaml
-holdings:
-  BBRI.JK: {lots: 3, avg_price: 4100}
+## Logging trades
+
+After you execute in Indopremier, record it in one line:
+
+```bash
+python main.py --log BUY  BBRI 3 4150               # 3 lots @ Rp4,150, dated today
+python main.py --log SELL BBCA 2 6450 --note "MSCI rebalance"
+python main.py --log BUY  TLKM 2 2610 --source own  # your call, not the tool's
+python main.py --journal                            # performance report
+python main.py --mark                               # snapshot value vs IHSG
 ```
+
+Each `--log` prints the fee it computed so you can check it against the broker's
+confirmation, and rewrites `current_holdings.yaml` to match — so the next brief always
+diffs against what you actually own.
+
+The `--source` flag is what makes the report able to separate the screener's picks from
+your own discretionary calls.
+
+---
+
+## How performance is measured
+
+`python main.py --journal` answers one question: **would the same money, moved on the
+same days, have done better in the index?**
+
+- **Cash-flow-matched IHSG shadow.** Every rupiah you put into a stock on a given day
+  buys the same rupiah of `^JKSE` on that day. A plain percentage return is misleading
+  when money goes in and out at irregular times. Comparison is on total wealth, since
+  both sides hold identical cash.
+- **FIFO cost basis**, matching Indonesian broker statements, so the numbers reconcile
+  against Indopremier.
+- **Every figure is net of fees.** A Rp45,000 gross gain on a Rp1.2 juta position is
+  Rp28,893 after Indopremier's cut.
+- **It refuses to declare a winner too early.** Below 30 closed round-trips the report
+  says `not enough data yet — 12 of 30` rather than showing a confident number built on
+  noise. At 4–8 trades a month that is roughly six months of history.
 
 ---
 
@@ -128,7 +161,7 @@ factor does at this account size:
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                      # 126 tests, no network required
+pytest                      # 180 tests, no network required
 ```
 
 ```
@@ -137,9 +170,10 @@ src/
 ├── fetchers/      yfinance access, windowed cache, currency repair
 ├── analysis/      technical indicators, factor scoring, sector cap
 ├── market/        regime, liquidity gate
-├── portfolio/     fees, lot-aware sizing, holdings
-├── report/        plain-English reasons, the HTML brief
+├── portfolio/     fees, lot-aware sizing, holdings, journal, performance
+├── report/        plain-English reasons, the HTML brief, performance view
 ├── viz/           diagnostic PNG
+├── cli.py         --log / --mark / --journal handlers
 └── pipeline.py    shared orchestration
 ```
 

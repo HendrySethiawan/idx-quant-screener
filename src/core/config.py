@@ -126,6 +126,11 @@ class Settings(BaseSettings):
         "min_position_rp": 1_000_000,
         "holdings_path": "current_holdings.yaml",
         "journal_path": "data/journal.csv",
+        "marks_path": "data/journal_marks.csv",
+        # Closed round-trips required before the report will name a winner
+        # between the screener's picks and the user's own. At 4-8 trades a month
+        # anything less is noise.
+        "min_trades_for_verdict": 30,
     })
 
     # ---- Liquidity ---------------------------------------------------------

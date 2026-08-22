@@ -193,6 +193,8 @@ account:
   min_position_rp: 1000000   # below this, the Rp10k stamp dominates the trade
   holdings_path: current_holdings.yaml
   journal_path: data/journal.csv
+  marks_path: data/journal_marks.csv
+  min_trades_for_verdict: 30   # below this the report refuses to name a winner
 
 # A position must be exitable in roughly one session.
 liquidity:

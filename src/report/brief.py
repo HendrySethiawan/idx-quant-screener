@@ -240,6 +240,7 @@ def render_brief(
     rejected: Dict[str, str],
     capped: Optional[Dict[str, str]] = None,
     allocation=None,
+    journal_html: str = "",
     universe_n: int = 0,
     imputed_n: int = 0,
     generated: Optional[datetime] = None,
@@ -286,6 +287,8 @@ def render_brief(
 
 <h2>Best candidates you can actually afford</h2>
 <div class="card">{_candidates_section(candidates)}</div>
+
+{journal_html}
 
 {_rejected_section(rejected, capped)}
 
