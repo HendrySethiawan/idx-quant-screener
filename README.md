@@ -24,6 +24,8 @@ minutes.
 | What you hold | Current positions, P&L, and a health flag per name |
 | Best candidates you can afford | Ranked, with a plain-English reason for each |
 | Skipped | Names that ranked well but failed the liquidity or lot-size gate |
+| Events next 14 days | Earnings, ex-dividend, index reviews — labelled auto / you / est. |
+| How you're doing | Realised P&L net of fees, and your total versus the same money in IHSG |
 
 Also written: `screener_results.csv` (full ranked universe with every `z_*`),
 `top_picks.csv`, `ticket.csv`, `factor_correlations.csv`, `screener_analysis.png`.
@@ -67,6 +69,31 @@ python main.py --log BUY  TLKM 2 2610 --source own  # your call, not the tool's
 python main.py --journal                            # performance report
 python main.py --mark                               # snapshot value vs IHSG
 ```
+
+## Events
+
+```bash
+python main.py --event ADRO earnings 2026-08-27
+python main.py --event MSCI review 2026-08-28 --note "Aug index review"
+python main.py --events                             # what's coming, and what we can't see
+```
+
+Yahoo Finance has an earnings date for only **16 of the 49** names — the gaps include
+SRTG, TINS, TAPG, MAPI, ISAT, ITMG and KLBF. So `configs/events.yaml` is the primary
+source and yfinance fills in a third of it.
+
+Because of that gap, every name resolves to one of three visibly different states, and
+the third is the important one:
+
+| State | Shown as |
+|---|---|
+| Event known | `⚠ earnings in 4 days` |
+| Genuinely clear | `nothing scheduled in the next 14 days` |
+| **No data at all** | `— no earnings date available, check IDX or CNBC yourself` |
+
+Events **warn but never filter**. A blocking rule could only fire on the third of the
+universe we can see, so it would quietly tilt the portfolio toward the two thirds we
+can't — a bias you'd never notice.
 
 Each `--log` prints the fee it computed so you can check it against the broker's
 confirmation, and rewrites `current_holdings.yaml` to match — so the next brief always
@@ -154,6 +181,10 @@ factor does at this account size:
 5. **The regime signal is two moving averages.** Deliberately simple enough to verify
    on a chart. It is not a forecast.
 6. **Fees are an estimate** based on Indopremier's published schedule.
+7. **Seasonality is weak evidence.** Even on full history that is ~37 observations per
+   calendar month. The line always shows `n` and says so. Context, not a rule.
+8. **Event coverage is partial.** Two-thirds of the universe has no automatic earnings
+   date. The brief marks those explicitly rather than implying they are clear.
 
 ---
 
@@ -161,7 +192,7 @@ factor does at this account size:
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                      # 180 tests, no network required
+pytest                      # 226 tests, no network required
 ```
 
 ```
@@ -169,7 +200,7 @@ src/
 ├── core/          config + logging
 ├── fetchers/      yfinance access, windowed cache, currency repair
 ├── analysis/      technical indicators, factor scoring, sector cap
-├── market/        regime, liquidity gate
+├── market/        regime, liquidity gate, events, seasonality
 ├── portfolio/     fees, lot-aware sizing, holdings, journal, performance
 ├── report/        plain-English reasons, the HTML brief, performance view
 ├── viz/           diagnostic PNG
