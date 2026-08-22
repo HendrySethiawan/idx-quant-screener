@@ -44,6 +44,66 @@ def _pct(v, digits: int = 1) -> str:
     return "-" if v is None else f"{v:+.{digits}f}%"
 
 
+def survivorship_check(panel, benchmark, dates, capital) -> Dict[str, Optional[float]]:
+    """
+    How much of the backtest's return came from the universe rather than the strategy.
+
+    This is the largest single effect in the whole simulation and it is an artifact:
+    the 49 tickers were chosen in 2026, knowing which companies still exist. Holding
+    all of them equally, with no ranking, no sizing and no timing, is compared here
+    against the index over the same window. On the current universe that gap is about
+    +27% per year -- an order of magnitude larger than anything the ranking adds.
+
+    Reported on every run so the headline CAGR is never read without it.
+    """
+    out = {"universe_cagr": None, "index_cagr": None, "gap_cagr": None,
+           "n_beating_index": None, "n_names": None, "median_name_return": None}
+    if panel is None or panel.empty or benchmark is None or benchmark.empty:
+        return out
+
+    bench = benchmark.dropna()
+    years = (bench.index[-1] - bench.index[0]).days / 365.25
+    if years <= 0:
+        return out
+
+    ew = equal_weight_universe(panel, dates, capital)
+    if ew.empty:
+        return out
+
+    idx_cagr = (float(bench.iloc[-1] / bench.iloc[0]) ** (1 / years) - 1) * 100
+    uni_cagr = (float(ew.iloc[-1] / ew.iloc[0]) ** (1 / years) - 1) * 100
+
+    first = panel.apply(lambda c: c.dropna().iloc[0] if c.notna().any() else float("nan"))
+    last = panel.apply(lambda c: c.dropna().iloc[-1] if c.notna().any() else float("nan"))
+    rets = (last / first - 1).dropna()
+    bench_total = float(bench.iloc[-1] / bench.iloc[0] - 1)
+
+    out.update({
+        "universe_cagr": round(uni_cagr, 1),
+        "index_cagr": round(idx_cagr, 1),
+        "gap_cagr": round(uni_cagr - idx_cagr, 1),
+        "n_beating_index": int((rets > bench_total).sum()),
+        "n_names": int(len(rets)),
+        "median_name_return": round(float(rets.median()) * 100, 1),
+    })
+    return out
+
+
+def survivorship_text(s: Dict[str, Optional[float]]) -> str:
+    if not s or s.get("gap_cagr") is None:
+        return ""
+    return (
+        f"Universe selection is the biggest effect here, and it is an artifact. Simply "
+        f"holding all {s['n_names']} of these tickers equally - no ranking, no sizing, no "
+        f"timing - returned {s['universe_cagr']:+.1f}% a year while the index returned "
+        f"{s['index_cagr']:+.1f}%. That is a {s['gap_cagr']:+.1f} percentage point per year "
+        f"gap from the ticker list alone. {s['n_beating_index']} of {s['n_names']} names beat "
+        f"the index and the median one returned {s['median_name_return']:+.0f}%, which is not "
+        f"what a list drawn in 2021 would have looked like - it is what a list drawn in 2026 "
+        f"looks like. Any edge the ranking adds sits on top of that, and is far smaller than it."
+    )
+
+
 # ------------------------------------------------- 1. do the factors add value?
 def factor_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
                   trend_ma=200, deploy_ladder=(0.30, 0.60, 1.00)) -> List[Comparison]:
@@ -246,13 +306,21 @@ def robustness_verdict(table: pd.DataFrame) -> str:
 
 
 # ------------------------------------------------------------------- rendering
-def console_block(factors, costs, regimes, robustness, verdict, cadence, avg_names) -> str:
+def console_block(factors, costs, regimes, robustness, verdict, cadence, avg_names,
+                  survivorship=None) -> str:
     L = ["", "=" * 68, f"BACKTEST - {cadence} rebalance", "=" * 68, ""]
     for line in _wrap(CAVEAT, 66):
         L.append("  " + line)
     L.append("")
     L.append(f"  Average names available per rebalance: {avg_names:.0f}")
     L.append("")
+
+    text = survivorship_text(survivorship or {})
+    if text:
+        L.append("  !! READ THIS BEFORE THE NUMBERS BELOW !!")
+        for line in _wrap(text, 66):
+            L.append("  " + line)
+        L.append("")
 
     L.append("1. DID THE PRICE FACTORS BEAT THE ALTERNATIVES?")
     L.append(f"   {'':38s} {'CAGR':>8s} {'maxDD':>8s} {'Sharpe':>7s}")
@@ -296,8 +364,11 @@ def _wrap(text: str, width: int) -> List[str]:
     return textwrap.wrap(text, width)
 
 
-def render_html(sections: Dict[str, dict]) -> str:
+def render_html(sections: Dict[str, dict], survivorship: Optional[dict] = None) -> str:
     """One page per run, reusing the brief's CSS and table helpers."""
+    text = survivorship_text(survivorship or {})
+    surv_html = (f'<div class="callout" style="border-left-color:var(--bad)">'
+                 f'<strong>And read this too.</strong> {_e(text)}</div>') if text else ""
     body = ""
     for cadence, s in sections.items():
         rows = [[_e(c.label), _pct(c.metrics.get("cagr")), _pct(c.metrics.get("max_drawdown")),
@@ -352,6 +423,7 @@ h3{{font-size:15px;margin:0 0 10px}}</style>
 <header><h1>Backtest</h1>
 <div class="sub">Price factors only, under real trading frictions</div></header>
 <div class="callout"><strong>Read this first.</strong> {_e(CAVEAT)}</div>
+{surv_html}
 {body}
 <footer><p>A personal research tool, not investment advice. Past behaviour on a
 survivorship-biased universe is not a forecast.</p></footer>

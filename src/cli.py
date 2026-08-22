@@ -288,7 +288,10 @@ def cmd_backtest(settings, logger=None) -> int:
                 benchmark, fx, int(regime_cfg.get("trend_ma", 200)),
                 regime_cfg.get("deploy_ladder", (0.30, 0.60, 1.00)))
 
+        from backtest.engine import rebalance_dates
         base = run_backtest(*args)
+        surv = R.survivorship_check(panel, benchmark,
+                                    rebalance_dates(panel, rule), settings.capital_rp)
         factors = R.factor_report(*args)
         costs = R.cost_report(*args)
         regimes = R.regime_report(*args)
@@ -303,7 +306,7 @@ def cmd_backtest(settings, logger=None) -> int:
             "fees_paid": base.fees_paid,
         }
         print(R.console_block(factors, costs, regimes, robustness, verdict,
-                              label, base.avg_names_available))
+                              label, base.avg_names_available, surv))
 
         out = Path(settings.output_dir)
         costs.to_csv(out / f"backtest_costs_{rule}.csv", index=False)
@@ -311,6 +314,6 @@ def cmd_backtest(settings, logger=None) -> int:
         pd.DataFrame({c.label: c.equity for c in factors}).to_csv(
             out / f"backtest_equity_{rule}.csv")
 
-    path = R.write_html(R.render_html(sections), settings.output_dir)
+    path = R.write_html(R.render_html(sections, surv), settings.output_dir)
     print(f"\n  Full report: {path}\n")
     return 0

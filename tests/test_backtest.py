@@ -350,3 +350,32 @@ def test_both_legs_start_from_the_identical_portfolio():
     lots = run_backtest(panel, CAPITAL, _cfg(whole_lots=True, min_position_rp=0), FEE)
 
     assert exact.holdings_log[0]["names"] == lots.holdings_log[0]["names"]
+
+
+# ============================================ SURVIVORSHIP MUST BE QUANTIFIED
+def test_survivorship_gap_is_measured_and_stated():
+    """
+    The universe was chosen knowing which companies survived, and on the real list
+    that is worth ~27pp/year before any strategy is applied. It must appear on
+    every report, or the headline CAGR gets read as skill.
+    """
+    from backtest.report import survivorship_check, survivorship_text
+
+    panel = _panel(tickers=tuple(f"T{i}.JK" for i in range(6)))
+    bench = pd.Series(np.linspace(6000, 6100, len(panel)), index=panel.index)  # ~flat
+    dates = rebalance_dates(panel, "M")
+
+    s = survivorship_check(panel, bench, dates, CAPITAL)
+    assert s["universe_cagr"] is not None
+    assert s["index_cagr"] is not None
+    assert s["gap_cagr"] == pytest.approx(s["universe_cagr"] - s["index_cagr"], abs=0.2)
+    assert s["n_names"] == 6
+
+    text = survivorship_text(s)
+    assert "artifact" in text
+    assert "percentage point per year" in text
+
+
+def test_survivorship_text_empty_without_data():
+    from backtest.report import survivorship_check, survivorship_text
+    assert survivorship_text(survivorship_check(pd.DataFrame(), None, [], CAPITAL)) == ""
