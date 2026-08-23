@@ -153,6 +153,19 @@ class Settings(BaseSettings):
         "deploy_ladder": [0.30, 0.60, 1.00],
     })
 
+    # ---- Valuation ---------------------------------------------------------
+    # Peer-multiple fair value. Separate from `factor_weights`, which produces a
+    # RANK; this produces a price. See src/analysis/valuation.py.
+    valuation: Dict[str, Any] = Field(default_factory=lambda: {
+        "enabled": True,
+        # Below this many names, a sector median is noise -- fall back to the
+        # universe and say so. Four of nine real sectors hold two names.
+        "min_peers": 4,
+        # When the P/E- and P/B-implied prices differ by more than this, the page
+        # says they disagree instead of implying the midpoint means something.
+        "wide_band_pct": 0.60,
+    })
+
     # ---- Backtest ----------------------------------------------------------
     backtest: Dict[str, Any] = Field(default_factory=lambda: {
         "history_period": "5y",

@@ -81,17 +81,24 @@ class FundamentalEngine:
                 for i in df.index[pct_scale]:
                     notes[i].append("dividend_yield:rescaled_from_percent")
 
-        # Structurally impossible values -> NaN (neutral), never a dropped row.
-        for col, rule in (
-            ("pe_ratio", lambda s: s <= 0),
-            ("price_to_book", lambda s: s <= 0),
+        # Structurally impossible or not-actually-reported values -> NaN (neutral),
+        # never a dropped row.
+        for col, rule, tag in (
+            ("pe_ratio", lambda s: s <= 0, "nonpositive"),
+            ("price_to_book", lambda s: s <= 0, "nonpositive"),
+            # yfinance does not compute grossMargins for banks and returns a literal
+            # 0.0. Read as an observation that is every bank in the universe scoring
+            # worst-in-class on a factor that does not apply to banks. Exact zero
+            # only: a genuine negative gross margin (selling below cost) is real and
+            # must survive.
+            ("gross_margin", lambda s: s == 0.0, "not_reported"),
         ):
             if col in df.columns:
                 bad = rule(df[col]).fillna(False)
                 if bad.any():
                     df.loc[bad, col] = np.nan
                     for i in df.index[bad]:
-                        notes[i].append(f"{col}:nonpositive")
+                        notes[i].append(f"{col}:{tag}")
 
         # Two-sided magnitude test catches both huge positives (P/B 179,615) and
         # huge negatives (deeply negative ROE from a one-off writedown).
@@ -103,6 +110,19 @@ class FundamentalEngine:
                 df.loc[bad, col] = np.nan
                 for i in df.index[bad]:
                     notes[i].append(f"{col}:nullified(|x|>{bound:g})")
+
+        # Snapshot the two multiples valuation needs BEFORE winsorization.
+        #
+        # _winsorize clips outliers to a shared bound, which is right for ranking --
+        # it is the PTRO/BRPT fix -- but it makes the stored value a property of the
+        # bound rather than of the company. On a real run six unrelated tickers came
+        # back with pe_ratio == 50.738811 to six decimals, and four shared
+        # price_to_book == 9.266952. Deriving earnings or book value from a clipped
+        # multiple would invent them, and it would do so precisely for the extreme
+        # names where "is this expensive?" is the whole question.
+        for col in ("pe_ratio", "price_to_book"):
+            if col in df.columns:
+                df[f"unclipped_{col}"] = df[col]
 
         df = self._winsorize(df, [c for c in self.metrics if c in df.columns], notes)
 

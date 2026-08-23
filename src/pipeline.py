@@ -70,6 +70,21 @@ def run_screener(settings, logger=None) -> pd.DataFrame:
 
     df = df.sort_values("undervaluation_score", ascending=False).reset_index(drop=True)
 
+    # Peer-multiple fair value. Runs after the sort so `value_universe` sees the
+    # frame the rest of the tool sees, and after scoring because it is a separate
+    # question -- the score ranks, this values. Pure computation, no network.
+    if (settings.valuation or {}).get("enabled", True):
+        from analysis.valuation import coverage, value_universe
+        df = value_universe(df, settings)
+        if logger:
+            c = coverage(df)
+            logger.info(
+                f"Valued {c.get('valued', 0)}/{c.get('total', 0)} names "
+                f"({c.get('undervalued', 0)} below peers, {c.get('fair', 0)} in line, "
+                f"{c.get('overvalued', 0)} above; {c.get('one_measure', 0)} single-measure, "
+                f"{c.get('unknown', 0)} not valuable)"
+            )
+
     benchmark_data = fetcher.fetch_technical_data(settings.benchmarks) if settings.benchmarks else {}
     return df, price_data, benchmark_data
 

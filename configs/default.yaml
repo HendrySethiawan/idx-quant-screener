@@ -171,6 +171,21 @@ sector_neutral_factors:
 min_sector_size: 4
 winsorize_k: 5.0
 
+# Peer-multiple fair value. This is the only part of the tool that answers "what is
+# it worth"; `factor_weights` above answers "where does it rank", which is a
+# different question -- undervaluation_score is min-max normalised, so one stock
+# always scores 1.0 even in a bubble.
+#
+# Two estimates per name, from data already fetched:
+#   EPS  = price / P/E   ->  fair price = EPS  x peer median P/E
+#   BVPS = price / P/B   ->  fair price = BVPS x peer median P/B
+# The fair zone is the gap BETWEEN them, so a name whose measures agree gets a
+# tight zone and one whose measures fight gets a wide one. No invented threshold.
+valuation:
+  enabled: true
+  min_peers: 4            # smaller sector -> use the whole universe, and say so
+  wide_band_pct: 0.60     # wider disagreement than this is reported, not averaged
+
 max_per_sector: 2
 top_picks_n: 8
 risk_adjusted: false
