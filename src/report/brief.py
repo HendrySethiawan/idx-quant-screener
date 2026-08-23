@@ -73,12 +73,21 @@ footer{margin-top:40px;padding-top:18px;border-top:1px solid var(--line);
 .kpi .k{font-size:11.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
 .kpi .v{font-size:19px;font-weight:700;font-variant-numeric:tabular-nums;margin-top:2px}
 
-/* --- Simple / Advanced -------------------------------------------------
-   The whole switch. One attribute on <body> decides which half of the page
-   exists; there is no second file and no re-render, so the two modes cannot
-   drift apart. Default is simple -- see the inline script below. */
-body[data-mode="simple"] .adv{display:none}
-nav.modes{display:flex;gap:6px;margin:14px 0 2px}
+/* --- Simple / Steps / Advanced -----------------------------------------
+   The whole switch. One attribute on <body> decides which parts of the page
+   exist; there is no second file and no re-render, so the modes cannot drift
+   apart. Simple content is never hidden -- the other modes add to it rather
+   than replacing it, so the decision is always on screen. */
+body[data-mode="simple"] .adv,
+body[data-mode="simple"] .steps{display:none}
+body[data-mode="steps"] .adv{display:none}
+body[data-mode="advanced"] .steps{display:none}
+
+/* Sticky, because with 16+ sections the toggle used to scroll away and become
+   unreachable exactly when you needed to switch. */
+nav.modes{display:flex;gap:6px;margin:14px 0 2px;position:sticky;top:0;z-index:5;
+  background:var(--bg);padding:10px 0 8px;flex-wrap:wrap;
+  border-bottom:1px solid var(--line)}
 nav.modes button{font:inherit;font-size:13px;font-weight:600;cursor:pointer;
   padding:7px 16px;border-radius:999px;border:1px solid var(--line);
   background:var(--surface);color:var(--muted)}
@@ -96,9 +105,52 @@ th.sortable[data-dir="asc"]::after{content:" \\2191"}
 .whatif-controls select{font:inherit;font-size:13px;padding:5px 8px;
   border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--ink)}
 
+/* --- Jump list ---------------------------------------------------------- */
+.jump{display:flex;gap:4px;flex-wrap:wrap;align-items:center;margin-left:auto}
+.jump select{font:inherit;font-size:12.5px;padding:5px 8px;border-radius:8px;
+  border:1px solid var(--line);background:var(--surface);color:var(--ink);max-width:230px}
+
+/* --- The funnel --------------------------------------------------------- */
+.funnel{display:flex;flex-direction:column;gap:3px;margin:14px 0}
+.funnel-row{display:grid;grid-template-columns:22px minmax(96px,1.1fr) 3fr 34px 34px;
+  gap:9px;align-items:center;padding:6px 8px;border-radius:8px;
+  text-decoration:none;color:var(--ink)}
+.funnel-row:hover{background:var(--surface-alt)}
+.funnel-n{font-size:11.5px;font-weight:700;color:var(--muted);
+  text-align:center;font-variant-numeric:tabular-nums}
+.funnel-title{font-size:13.5px}
+.funnel-bar{background:var(--surface-alt);border-radius:999px;height:11px;overflow:hidden}
+.funnel-bar>span{display:block;height:100%;background:var(--accent);
+  border-radius:999px;min-width:2px}
+.funnel-out{font-weight:700;font-variant-numeric:tabular-nums;text-align:right;font-size:13.5px}
+.funnel-drop{color:var(--bad);font-size:12px;font-variant-numeric:tabular-nums;text-align:right}
+
+/* --- Stage cards -------------------------------------------------------- */
+.step-head{display:flex;align-items:center;gap:11px;margin-bottom:6px}
+.step-head h3{margin:0;font-size:17px;letter-spacing:-.01em}
+.step-n{display:flex;align-items:center;justify-content:center;flex:none;
+  width:26px;height:26px;border-radius:999px;background:var(--accent);color:#fff;
+  font-size:13px;font-weight:700}
+.step-count{margin:12px 0;font-size:15px;font-variant-numeric:tabular-nums}
+.step-count strong{font-size:19px}
+.step{scroll-margin-top:64px}
+
+/* --- Per-stock trace ---------------------------------------------------- */
+.trace-box{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin:6px 0 14px}
+.trace-box label{font-size:13px;color:var(--muted)}
+.trace-box input{font:inherit;font-size:14px;padding:8px 11px;border-radius:9px;
+  border:1px solid var(--line);background:var(--surface);color:var(--ink);min-width:210px}
+.trace-step{display:grid;grid-template-columns:26px 1fr;gap:11px;
+  padding:8px 0;border-bottom:1px solid var(--line)}
+.trace-step:last-child{border-bottom:none}
+.trace-mark{font-weight:700;text-align:center}
+.trace-mark.pass{color:var(--good)}
+.trace-mark.stop{color:var(--bad)}
+.trace-mark.na{color:var(--muted)}
+
 /* Print the ticket, not the research. */
 @media print{
-  nav.modes,.adv{display:none !important}
+  nav.modes,.adv,.steps{display:none !important}
   body{padding:0}
   .card{break-inside:avoid}
 }
@@ -109,17 +161,64 @@ th.sortable[data-dir="asc"]::after{content:" \\2191"}
 # precomputed what-if grid. No fetch, no dependency, nothing that needs a server.
 _JS = """
 (function(){
-  var body=document.body,KEY="idx-brief-mode";
+  var body=document.body,KEY="idx-brief-mode",MODES=["simple","steps","advanced"];
   var btns=[].slice.call(document.querySelectorAll("nav.modes button"));
+  var jump=document.getElementById("jump-to");
+
+  // The jump list is rebuilt per mode from the headings that are actually
+  // visible, so it can never offer a link to a hidden section.
+  function buildJump(){
+    if(!jump) return;
+    var opts='<option value="">Jump to section&hellip;</option>';
+    [].forEach.call(document.querySelectorAll("h2"),function(h,i){
+      if(!h.offsetParent) return;                  // hidden by the current mode
+      if(!h.id) h.id="sec-"+i;
+      opts+='<option value="#'+h.id+'">'+h.textContent.trim()+"</option>";
+    });
+    jump.innerHTML=opts;
+  }
   function setMode(m){
     body.setAttribute("data-mode",m);
     btns.forEach(function(b){b.setAttribute("aria-pressed",String(b.dataset.mode===m));});
     try{localStorage.setItem(KEY,m);}catch(e){}
+    buildJump();
   }
   var saved=null;
   try{saved=localStorage.getItem(KEY);}catch(e){}
-  setMode(saved==="advanced"?"advanced":"simple");
+  setMode(MODES.indexOf(saved)>=0?saved:"simple");
   btns.forEach(function(b){b.addEventListener("click",function(){setMode(b.dataset.mode);});});
+  if(jump) jump.addEventListener("change",function(){
+    if(jump.value){location.hash=jump.value;jump.value="";}
+  });
+
+  // Per-stock trace: look up any name in the universe and see where it stopped.
+  var traceRaw=document.getElementById("trace-data");
+  if(traceRaw){
+    var trace=JSON.parse(traceRaw.textContent);
+    var q=document.getElementById("trace-q"), tout=document.getElementById("trace-out");
+    var esc=function(s){var d=document.createElement("div");d.textContent=s;return d.innerHTML;};
+    var MARK={passed:["pass","✓"],dropped:["stop","✕"],not_reached:["na","·"]};
+    function lookup(){
+      var key=(q.value||"").trim().toUpperCase();
+      if(!key){tout.innerHTML="";return;}
+      var hit=trace.names[key]||trace.names[key+".JK"];
+      if(!hit){
+        tout.innerHTML='<div class="empty">'+esc(q.value)+
+          " is not in the universe, so it was never considered.</div>";
+        return;
+      }
+      var rows=hit.rows.map(function(r){
+        var m=MARK[r.status]||MARK.not_reached;
+        var detail=r.detail?'<div class="note">'+esc(r.detail)+"</div>":"";
+        return '<div class="trace-step"><div class="trace-mark '+m[0]+'">'+m[1]+
+               '</div><div>'+esc(r.title)+detail+"</div></div>";
+      }).join("");
+      tout.innerHTML='<div class="card"><div><span class="tick">'+esc(key)+
+        '</span></div>'+rows+'<div class="callout">'+esc(hit.outcome)+"</div></div>";
+    }
+    q.addEventListener("input",lookup);
+    q.addEventListener("change",lookup);
+  }
 
   // Click-to-sort. Values come from each cell's data-v, so sorting uses the
   // underlying number rather than the formatted "Rp1,234" string.
@@ -466,19 +565,32 @@ def render_brief(
     universe_n: int = 0,
     imputed_n: int = 0,
     advanced_html: str = "",
+    steps_html: str = "",
     generated: Optional[datetime] = None,
 ) -> str:
     when = (generated or datetime.now()).strftime("%A, %d %B %Y %H:%M")
 
-    # The toggle only appears when there is something behind it. A dead switch is
+    # Each button only appears when there is something behind it. A dead switch is
     # worse than no switch.
     nav = ""
-    if advanced_html:
+    if advanced_html or steps_html:
+        buttons = ('<button type="button" data-mode="simple" '
+                   'aria-pressed="true">Simple</button>')
+        if steps_html:
+            buttons += ('<button type="button" data-mode="steps" '
+                        'aria-pressed="false">Steps</button>')
+        if advanced_html:
+            buttons += ('<button type="button" data-mode="advanced" '
+                        'aria-pressed="false">Advanced</button>')
+        hint = ("Simple is the decision, Steps is how it got there, Advanced is the "
+                "evidence." if steps_html and advanced_html
+                else "Simple is the decision. Advanced is the evidence.")
         nav = (
             '<nav class="modes">'
-            '<button type="button" data-mode="simple" aria-pressed="true">Simple</button>'
-            '<button type="button" data-mode="advanced" aria-pressed="false">Advanced</button>'
-            '<span class="hint">Simple is the decision. Advanced is the evidence.</span>'
+            f"{buttons}"
+            f'<span class="hint">{hint}</span>'
+            '<span class="jump"><select id="jump-to" aria-label="Jump to section">'
+            "</select></span>"
             "</nav>"
         )
 
@@ -531,6 +643,8 @@ def render_brief(
 {journal_html}
 
 {_rejected_section(rejected, capped)}
+
+{steps_html}
 
 {advanced_html}
 

@@ -92,7 +92,11 @@ def test_simple_mode_is_complete_on_its_own(universe):
 def test_the_page_defaults_to_simple(universe):
     out = _brief(advanced_html=A.render_advanced(df=universe))
     assert '<body data-mode="simple">' in out
-    assert 'body[data-mode="simple"] .adv{display:none}' in out
+    # Assert the rule exists, not its exact text -- it is a grouped selector now
+    # that also covers .steps, and matching the literal string made this fail on a
+    # change that altered nothing about the behaviour.
+    css = out.split("<style>")[1].split("</style>")[0]
+    assert re.search(r'body\[data-mode="simple"\][^{}]*\.adv[^{}]*\{[^}]*display:none', css)
 
 
 def test_printing_drops_the_research(universe):

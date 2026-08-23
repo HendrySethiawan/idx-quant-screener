@@ -156,6 +156,17 @@ def main() -> None:
     except Exception as e:
         logger.warning(f"Advanced sections unavailable: {e}")
 
+    # ---- the Steps half -----------------------------------------------------
+    # Reads the trail `assemble` recorded while the gates ran. Nothing is
+    # recomputed here: an explanation that re-derives the rules would eventually
+    # disagree with them, and a confident wrong explanation is worse than none.
+    steps_html = ""
+    try:
+        from report.steps import render_steps
+        steps_html = render_steps(plan.get("trail"), plan["orders"])
+    except Exception as e:
+        logger.warning(f"Steps view unavailable: {e}")
+
     brief_path = write_brief(
         render_brief(
             regime=regime,
@@ -175,6 +186,7 @@ def main() -> None:
             universe_n=len(df),
             imputed_n=int((df["imputed_factors"].fillna("").str.len() > 0).sum()),
             advanced_html=advanced_html,
+            steps_html=steps_html,
         ),
         settings.output_dir,
     )
