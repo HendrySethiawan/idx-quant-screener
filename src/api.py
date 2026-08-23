@@ -31,6 +31,24 @@ from typing import Any, Callable, Dict, Optional
 import pandas as pd
 
 
+# The run context lives here, NOT on the API instance.
+#
+# pywebview walks the js_api object's attributes to expose it to JavaScript, and a
+# pandas DataFrame defeats that: `df.T` returns a DataFrame, so the walk follows
+# `df.T.T.T...` until it gives up, spraying "The '.style' accessor requires jinja2"
+# across stderr on every launch. Anything holding a DataFrame must stay off the
+# object that crosses the bridge.
+_CONTEXT: Dict[str, Any] = {"ctx": None}
+
+
+def set_context(ctx) -> None:
+    _CONTEXT["ctx"] = ctx
+
+
+def get_context():
+    return _CONTEXT["ctx"]
+
+
 def _fail(message: str, **extra) -> Dict[str, Any]:
     return {"ok": False, "message": str(message), "data": extra or None}
 
@@ -52,8 +70,8 @@ def guarded(fn: Callable) -> Callable:
         except ValueError as e:
             return _fail(str(e))
         except Exception as e:                      # noqa: BLE001 - see docstring
-            if getattr(self, "logger", None):
-                self.logger.warning(f"{fn.__name__} failed: {e}\n{traceback.format_exc()}")
+            if getattr(self, "_logger", None):
+                self._logger.warning(f"{fn.__name__} failed: {e}\n{traceback.format_exc()}")
             return _fail(f"{type(e).__name__}: {e}")
     wrapper.__name__ = fn.__name__
     wrapper.__doc__ = fn.__doc__
@@ -66,19 +84,75 @@ class TerminalAPI:
     `window.pywebview.api.<name>(...)` and returns a JSON-serialisable dict.
     """
 
-    def __init__(self, settings, prices: Optional[Dict[str, float]] = None, logger=None):
-        self.settings = settings
-        self.prices = dict(prices or {})
-        self.logger = logger
+    # Every attribute here is underscore-prefixed on purpose. pywebview builds the
+    # JS object by walking `dir(obj)`: it skips names starting with "_", exposes
+    # methods, and RECURSES INTO any other public attribute. A public `ctx` therefore
+    # sent it into `ctx.df.T.T.T...` forever -- that is the bug this shape prevents.
+    # Nothing on this object should be public except the methods JavaScript calls.
+    def __init__(self, settings, prices: Optional[Dict[str, float]] = None, logger=None,
+                 ctx=None):
+        self._settings = settings
+        self._prices = dict(prices or {})
+        self._logger = logger
+        if ctx is not None:
+            set_context(ctx)
+
+    @property
+    def _ctx(self):
+        return get_context()
+
+    # ------------------------------------------------------------------ refresh
+    def _reload_window(self, path) -> None:
+        """Point the window at the page that was just written."""
+        try:
+            import webview
+            if webview.windows:
+                webview.windows[0].load_url(Path(path).resolve().as_uri())
+        except Exception as e:
+            if self._logger:
+                self._logger.warning(f"Could not reload the window: {e}")
+
+    @guarded
+    def rebuild(self) -> Dict[str, Any]:
+        """
+        Redraw from what is already in memory. No network.
+
+        This is the one you want after recording a trade or changing a setting: the
+        holdings, the ledger and the ticket all move, and the market has not.
+        """
+        ctx = self._ctx
+        if ctx is None:
+            return _fail("Nothing to rebuild from - restart the app.")
+        from runner import render
+        self._prices = dict(ctx.plan["prices"]) if ctx.plan else self._prices
+        path = render(ctx)
+        self._reload_window(path)
+        return _ok("Rebuilt.", path=str(path))
+
+    @guarded
+    def rerun(self) -> Dict[str, Any]:
+        """Fetch everything again and re-rank. Slow, and says so on the button."""
+        ctx = self._ctx
+        if ctx is None:
+            return _fail("Nothing to re-run - restart the app.")
+        from runner import full_run, render
+        if self._logger:
+            self._logger.info("Re-running the screen from the window")
+        fresh = full_run(self._settings, ctx.args, self._logger)
+        path = render(fresh)
+        set_context(fresh)
+        self._prices = dict(fresh.plan["prices"]) if fresh.plan else {}
+        self._reload_window(path)
+        return _ok("Re-ran the screen.", path=str(path))
 
     # ------------------------------------------------------------------ paths
     def _paths(self):
         from cli import _paths
-        return _paths(self.settings)
+        return _paths(self._settings)
 
     def _fee_cfg(self):
         from portfolio.fees import FeeConfig
-        return FeeConfig.from_settings(self.settings)
+        return FeeConfig.from_settings(self._settings)
 
     def _journal(self) -> pd.DataFrame:
         from portfolio.journal import load_journal
@@ -131,10 +205,10 @@ class TerminalAPI:
 
         journal = append_trade(trade, journal_path)
         try:
-            _sync_holdings(journal, holdings_path, self.settings.lot_size)
+            _sync_holdings(journal, holdings_path, self._settings.lot_size)
         except Exception as e:                       # holdings are derived, not the record
-            if self.logger:
-                self.logger.warning(f"Could not rewrite holdings: {e}")
+            if self._logger:
+                self._logger.warning(f"Could not rewrite holdings: {e}")
 
         return _ok(
             f"Recorded {trade['action']} {trade['lots']} lot {trade['ticker']} "
@@ -163,7 +237,7 @@ class TerminalAPI:
     def snapshot(self) -> Dict[str, Any]:
         """Record today's portfolio value against IHSG, the way --mark does."""
         from cli import cmd_mark
-        code = cmd_mark(self.settings, logger=self.logger)
+        code = cmd_mark(self._settings, logger=self._logger)
         if code != 0:
             return _fail("Could not take a snapshot; see the console for why.")
         return _ok("Snapshot recorded.", journal_html=self._journal_html())
@@ -173,14 +247,14 @@ class TerminalAPI:
         from market.events import add_event as _add
         if not scope or not kind or not when:
             return _fail("An event needs a ticker or scope, a kind, and a date.")
-        event = _add(scope, kind, when, self.settings.events_path, note or "")
+        event = _add(scope, kind, when, self._settings.events_path, note or "")
         return _ok(f"Noted {event.scope} {event.kind} on {event.date:%d %b %Y}.")
 
     # ---------------------------------------------------------------- settings
     # Editable fields, as (dotted path, label, kind). Anything not listed here is
     # not reachable from the UI -- a settings screen that can reach everything is a
     # settings screen that can break anything.
-    EDITABLE = (
+    _EDITABLE = (
         ("account.capital_rp", "Capital", "int"),
         ("account.min_positions", "Fewest positions", "int"),
         ("account.max_positions", "Most positions", "int"),
@@ -196,7 +270,7 @@ class TerminalAPI:
 
     # Changing these changes the ranking, which the page in front of you was built
     # from. It cannot be re-ranked without another run, so the UI says so.
-    RERANK = ("max_per_sector", "top_picks_n", "liquidity.min_median_daily_value_rp")
+    _RERANK = ("max_per_sector", "top_picks_n", "liquidity.min_median_daily_value_rp")
 
     @staticmethod
     def _dig(obj, dotted: str):
@@ -214,14 +288,14 @@ class TerminalAPI:
 
         defaults = Settings()
         fields = []
-        for dotted, label, kind in self.EDITABLE:
-            current = self._dig(self.settings, dotted)
+        for dotted, label, kind in self._EDITABLE:
+            current = self._dig(self._settings, dotted)
             default = self._dig(defaults, dotted)
             fields.append({
                 "path": dotted, "label": label, "kind": kind,
                 "value": current, "default": default,
                 "overridden": current != default,
-                "reranks": dotted in self.RERANK,
+                "reranks": dotted in self._RERANK,
             })
         return _ok(fields=fields)
 
@@ -234,7 +308,7 @@ class TerminalAPI:
         refused here, rather than written and discovered on the next launch when the
         app will not start.
         """
-        allowed = {p: k for p, _, k in self.EDITABLE}
+        allowed = {p: k for p, _, k in self._EDITABLE}
         if dotted not in allowed:
             return _fail(f"{dotted} is not editable from here.")
 
@@ -254,15 +328,15 @@ class TerminalAPI:
             return _fail(f"{value!r} was not accepted for {dotted}.")
 
         path = save_user_overrides(payload)
-        _apply_overrides(self.settings, payload)
+        _apply_overrides(self._settings, payload)
         note = (" The ranking on screen was built before this change - re-run to see "
-                "its effect." if dotted in self.RERANK else "")
+                "its effect." if dotted in self._RERANK else "")
         return _ok(f"Saved to {Path(path).as_posix()}.{note}", path=str(path), value=value)
 
     @guarded
     def reset_setting(self, dotted: str) -> Dict[str, Any]:
         """Delete the override so the value follows default.yaml again."""
-        if dotted not in {p for p, _, _ in self.EDITABLE}:
+        if dotted not in {p for p, _, _ in self._EDITABLE}:
             return _fail(f"{dotted} is not editable from here.")
         from core.config import drop_user_override
         drop_user_override(dotted)
@@ -315,4 +389,4 @@ class TerminalAPI:
         table and the round-trip list need no prices at all and are exact.
         """
         from report.journal_view import journal_panels
-        return journal_panels(self.settings, prices=self.prices)
+        return journal_panels(self._settings, prices=self._prices)

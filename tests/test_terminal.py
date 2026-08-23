@@ -115,7 +115,14 @@ def test_the_topbar_shows_state_not_actions():
     """
     out = T.topbar("IDX Terminal", "as of Fri 21 Aug", [("RISK-OFF", "deploy 30%", "bad")])
     assert "RISK-OFF" in out and "deploy 30%" in out
-    assert "<button" not in out and "<form" not in out
+
+    # Rebuild and Re-run live here now, so "no buttons at all" is no longer the
+    # property. The one that matters is that no control on the bar looks like it
+    # sends an order.
+    assert "<form" not in out
+    for element in re.findall(r"<button[^>]*>(.*?)</button>", out, re.S):
+        text = re.sub(r"<[^>]+>", "", element).strip().lower()
+        assert text.split()[0] not in ("buy", "sell"), f"a top-bar button reads {text!r}"
 
 
 def test_the_topbar_timestamp_is_text_not_a_clock():

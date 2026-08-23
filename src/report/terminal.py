@@ -134,10 +134,22 @@ def topbar(title: str, subtitle: str, stats: Sequence[Tuple[str, str, str]] = ()
         f'<span class="chip-v">{v}</span></span>'
         for k, v, kind in stats
     )
+    # Both refresh buttons carry their real cost. "Rebuild" reads the journal and
+    # redraws; "Re-run" fetches 49 tickers. Hiding that difference behind one button
+    # would make every trade you record cost forty seconds.
+    refresh = (
+        '<div class="refresh" id="refresh-controls" hidden>'
+        '<button type="button" id="btn-rebuild" title="Redraw from what is already '
+        'loaded. No network.">Rebuild <span class="cost">~2s</span></button>'
+        '<button type="button" id="btn-rerun" title="Fetch fresh prices and rank '
+        'again.">Re-run screen <span class="cost">~40s</span></button>'
+        '<span id="refresh-msg" class="note"></span></div>'
+    )
     return (
         '<header class="topbar">'
         f'<div class="brand"><strong>{_e(title)}</strong>'
         f'<span class="asof">{_e(subtitle)}</span></div>'
+        f"{refresh}"
         f'<div class="topstats">{chips}</div>'
         "</header>"
     )
@@ -234,6 +246,13 @@ body{background:var(--bg);color:var(--ink);
 .chip-v{font-weight:700;font-variant-numeric:tabular-nums}
 .chip.good .chip-v{color:var(--good)} .chip.bad .chip-v{color:var(--bad)}
 .chip.warn .chip-v{color:var(--warn)}
+.refresh{display:flex;align-items:center;gap:6px;margin-left:18px}
+.refresh button{font:inherit;font-size:11.5px;font-weight:600;cursor:pointer;
+  padding:5px 11px;border-radius:6px;border:1px solid var(--line);
+  background:var(--surface-3);color:var(--ink-dim);white-space:nowrap}
+.refresh button:hover:not(:disabled){color:var(--ink);border-color:var(--accent)}
+.refresh button:disabled{opacity:.45;cursor:default}
+.refresh .cost{color:var(--muted);font-weight:400;font-size:10.5px;margin-left:3px}
 
 .page{display:none;min-height:0;overflow:hidden}
 .page.on{display:block;min-height:0}
@@ -529,17 +548,68 @@ SHELL_JS = """
   }
 
   // ---- the Python bridge --------------------------------------------------
-  // Present only in the app window. Opened as a plain file there is no bridge, the
-  // forms are never wired, and the page shows the equivalent command instead -- a
-  // form with nothing behind it is worse than no form, because it looks like it
-  // worked.
-  function api(){
-    return (window.pywebview && window.pywebview.api) ? window.pywebview.api : null;
+  // pywebview injects window.pywebview ASYNCHRONOUSLY and fires `pywebviewready`
+  // when it lands. Reading window.pywebview at script-execution time finds nothing
+  // and silently wires nothing -- which is exactly what shipped once, leaving a
+  // live-looking form that did nothing at all.
+  //
+  // Both halves are needed. If the bridge is already up (a reload, a slow page) the
+  // event has fired and will not fire again, so a listener alone waits forever; if
+  // it is not up yet, the synchronous check alone misses it.
+  function withApi(fn, onTimeout){
+    if(window.pywebview && window.pywebview.api){ fn(window.pywebview.api); return; }
+    var done=false;
+    window.addEventListener("pywebviewready",function(){
+      if(done) return; done=true; fn(window.pywebview.api);
+    });
+    // And if it never arrives, say so. A form that looks alive and is not is the
+    // failure this whole comment exists because of.
+    setTimeout(function(){
+      if(done||(window.pywebview&&window.pywebview.api)) return;
+      done=true;
+      if(onTimeout) onTimeout();
+    },3000);
   }
   var rpFmt=function(v){return "Rp"+Math.round(v).toLocaleString("en-US");};
 
+  function deadBridge(){
+    var host=document.getElementById("trade-form");
+    if(host) host.outerHTML='<div class="callout"><strong>Could not reach Python.</strong>'+
+      ' The window opened but the bridge behind these forms did not start, so nothing'+
+      ' here would be recorded. Use the command line instead:'+
+      '</div><pre class="cli">python main.py --log BUY BBRI 3 4150</pre>';
+    var ed=document.getElementById("settings-editor");
+    if(ed) ed.innerHTML='<div class="empty">Could not reach Python; settings cannot be'+
+      ' changed from here. Edit configs/user.yaml instead.</div>';
+  }
+
+  // ---- rebuild / re-run ---------------------------------------------------
+  // Hidden until the bridge answers: without Python behind them these do nothing,
+  // and a refresh button that cannot refresh is the same lie as a dead form.
+  var refreshBar=document.getElementById("refresh-controls");
+  if(refreshBar) withApi(function(API){
+    refreshBar.hidden=false;
+    var rb=document.getElementById("btn-rebuild"),
+        rr=document.getElementById("btn-rerun"),
+        rmsg=document.getElementById("refresh-msg");
+    function run(fn,label){
+      rb.disabled=rr.disabled=true;              // one pipeline at a time
+      rmsg.textContent=label;
+      fn().then(function(r){
+        // On success the window reloads and this page is replaced, so the only
+        // path that gets here in practice is a failure.
+        rmsg.textContent=r.message; rb.disabled=rr.disabled=false;
+      });
+    }
+    rb.addEventListener("click",function(){ run(API.rebuild,"Rebuilding\\u2026"); });
+    rr.addEventListener("click",function(){
+      run(API.rerun,"Fetching 49 tickers\\u2026 this takes about 40 seconds");
+    });
+  });
+
   var form=document.getElementById("trade-form");
-  if(form && api()){
+  if(form) withApi(function(API){
+    var api=function(){return API;};
     var $=function(id){return document.getElementById(id);};
     var out=$("tf-preview"), msg=$("tf-msg"), go=$("tf-submit");
     function fields(){
@@ -594,12 +664,12 @@ SHELL_JS = """
           go.disabled=false;
         });
     });
-  }
+  }, deadBridge);
 
   // ---- settings editor ----------------------------------------------------
   var editor=document.getElementById("settings-editor");
-  if(editor && api()){
-    api().get_settings().then(function(r){
+  if(editor) withApi(function(API){
+    API.get_settings().then(function(r){
       if(!r.ok) return;
       editor.innerHTML="";
       r.data.fields.forEach(function(f){
@@ -619,12 +689,12 @@ SHELL_JS = """
           d.appendChild(n);
         }
         input.addEventListener("change",function(){
-          api().save_setting(f.path,input.value).then(function(r2){
+          API.save_setting(f.path,input.value).then(function(r2){
             say(r2); if(r2.ok) d.classList.add("changed");
           });
         });
         reset.addEventListener("click",function(){
-          api().reset_setting(f.path).then(function(r2){
+          API.reset_setting(f.path).then(function(r2){
             say(r2);
             if(r2.ok){input.value=f.default; d.classList.remove("changed");}
           });
@@ -632,7 +702,7 @@ SHELL_JS = """
         editor.appendChild(d);
       });
     });
-  }
+  }, deadBridge);
 
   // ---- what-if: a lookup into a table computed at render time -------------
   var raw=document.getElementById("wi-data");

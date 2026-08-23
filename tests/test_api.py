@@ -224,3 +224,48 @@ def test_an_incomplete_event_is_refused(api):
     assert api.add_event("", "earnings", "2026-08-27")["ok"] is False
     assert api.add_event("ADRO", "", "2026-08-27")["ok"] is False
     assert api.add_event("ADRO", "earnings", "")["ok"] is False
+
+
+# --------------------------------- what crosses the bridge must stay simple
+def test_the_bridge_object_exposes_only_methods(settings_mock):
+    """
+    pywebview builds the JS object by walking `dir(obj)`: it skips names starting
+    with "_", exposes methods, and RECURSES INTO every other public attribute. A
+    public `ctx` holding a DataFrame sent it down `df.T.T.T...` forever and sprayed
+    hundreds of errors on every launch. Nothing public but methods.
+    """
+    import pandas as pd
+
+    from api import TerminalAPI, set_context
+
+    class Ctx:
+        df = pd.DataFrame({"a": [1, 2]})
+        args = None
+
+    set_context(Ctx())
+    api = TerminalAPI(settings_mock)
+
+    public = [n for n in dir(api) if not n.startswith("_")]
+    assert public, "the bridge exposes nothing at all"
+    for name in public:
+        assert callable(getattr(api, name)), (
+            f"{name!r} is a public non-callable; pywebview will recurse into it"
+        )
+    set_context(None)
+
+
+def test_the_context_is_still_reachable_internally(settings_mock):
+    from api import TerminalAPI, set_context
+
+    marker = object()
+    set_context(marker)
+    assert TerminalAPI(settings_mock)._ctx is marker
+    set_context(None)
+
+
+def test_rebuild_without_a_context_says_so(settings_mock):
+    from api import TerminalAPI, set_context
+
+    set_context(None)
+    out = TerminalAPI(settings_mock).rebuild()
+    assert out["ok"] is False and "restart" in out["message"]
