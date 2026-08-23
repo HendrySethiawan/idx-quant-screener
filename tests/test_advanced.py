@@ -367,3 +367,55 @@ def test_data_quality_counts_the_gaps(universe):
     out = A.data_quality_section(universe)
     assert "dividend_yield" in out
     assert "2 of 10 names" in out
+
+
+# ------------------------------------------------------------------ valuation
+@pytest.fixture
+def valued(universe):
+    """The universe frame put through the real valuation pass."""
+    from analysis import valuation as V
+    frame = universe.copy()
+    frame["pe_ratio"] = [8.0, 12.0, 15.0, 40.0, 9.0, 11.0, 60.0, 7.0, 20.0, 13.0]
+    frame["price_to_book"] = [0.8, 1.2, 1.5, 6.0, 0.9, 1.1, 9.0, 0.7, 2.0, 1.3]
+    frame["unclipped_pe_ratio"] = frame["pe_ratio"]
+    frame["unclipped_price_to_book"] = frame["price_to_book"]
+    frame["roe"] = 0.12
+    return V.value_universe(frame)
+
+
+def test_valuation_section_shows_its_working(valued):
+    """
+    Simple gives the verdict; Advanced must give the arithmetic, so a reader can
+    disagree with it rather than only believe it.
+    """
+    out = A.valuation_section(valued)
+    for expected in ("What is it worth?", "Peers imply", "EPS", "Book/share",
+                     "Peer P/E", "Peer P/B", "Peer group", "ROE"):
+        assert expected in out
+
+
+def test_valuation_section_explains_the_unclipped_input(valued):
+    """
+    The pre-winsorization detail is the whole correctness story of this feature.
+    If it is not on the page, nobody will ever know the ranking and the valuation
+    read different columns on purpose.
+    """
+    out = A.valuation_section(valued)
+    assert "pre-winsorization" in out
+    assert "50.738811" in out, "the concrete example is what makes the point land"
+
+
+def test_valuation_section_vanishes_without_valuation_columns(universe):
+    assert A.valuation_section(universe) == ""
+    assert A.valuation_section(pd.DataFrame()) == ""
+
+
+def test_valuation_section_lists_every_name(valued):
+    out = A.valuation_section(valued)
+    for ticker in valued["ticker"]:
+        assert ticker in out
+
+
+def test_advanced_includes_valuation_when_present(valued):
+    out = A.render_advanced(df=valued)
+    assert "What is it worth?" in out

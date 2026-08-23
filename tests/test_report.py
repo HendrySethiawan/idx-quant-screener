@@ -194,6 +194,97 @@ def test_brief_states_the_survivorship_caveat():
     assert "delisted" in _render()
 
 
+# ---------------------------------------------------------------- fair value
+def _candidate(**kw):
+    base = dict(ticker="BBRI.JK", name="Bank Rakyat", score=0.9, lot_price=415_000,
+                reason="cheap on earnings", liquidity_label="ok",
+                value_verdict="undervalued", value_zone_lo=4_600.0,
+                value_zone_hi=5_100.0, value_gap_pct=-0.10,
+                value_peer_group="Financials", value_note="", roe=0.18)
+    base.update(kw)
+    return base
+
+
+def test_the_default_view_answers_is_this_cheap():
+    """
+    The verdict has to be in Simple. It is the question the tool is asked at 12:30,
+    and an answer only reachable behind a toggle is not an answer.
+    """
+    out = _render(candidates=[_candidate()])
+    simple = out.split('<div class="adv">')[0]
+    assert "Worth vs peers" in simple
+    assert "below peers" in simple
+    assert "Rp4,600" in simple and "Rp5,100" in simple
+    assert "10% below" in simple
+
+
+@pytest.mark.parametrize("verdict,shown", [
+    ("undervalued", "below peers"),
+    ("fair", "in line"),
+    ("overvalued", "above peers"),
+    ("one_measure", "one measure"),
+    ("unknown", "cannot value"),
+])
+def test_every_valuation_state_has_its_own_wording(verdict, shown):
+    """Five states, five different messages -- none collapsed into another."""
+    out = _render(candidates=[_candidate(value_verdict=verdict)])
+    assert shown in out
+
+
+def test_a_wide_disagreement_is_flagged_in_the_brief():
+    out = _render(candidates=[_candidate(
+        value_note="the two measures disagree by 177% -- treat this as a hint")])
+    assert "measures disagree" in out
+
+
+def test_the_score_is_not_called_a_valuation():
+    """
+    undervaluation_score is min-max normalised, so the top name reads 1.00 even in
+    a bubble. The brief must not present that as a judgement of value.
+    """
+    out = _render(candidates=[_candidate()])
+    assert "Rank score" in out
+    assert ">Score<" not in out
+
+
+def test_the_brief_admits_what_peer_relative_cannot_see():
+    out = _render(candidates=[_candidate()])
+    assert "whole market is expensive" in out
+
+
+def test_a_deserved_premium_is_called_out_not_hidden():
+    """A high-ROE name reading 'overvalued' is the method's known blind spot."""
+    out = _render(candidates=[_candidate(
+        ticker="UNVR.JK", value_verdict="overvalued", value_gap_pct=0.9, roe=0.60)])
+    assert "UNVR.JK" in out
+    assert "should</em> trade above" in out
+
+
+def test_holdings_show_when_what_you_own_got_expensive():
+    """
+    The ticket only proposes a sell when a name leaves the target book, never when
+    it merely becomes dear. This column is the only place that shows up.
+    """
+    out = _render(holdings_rows=[{
+        "ticker": "TLKM.JK", "lots": 2, "value": 522_000, "unrealized_pct": 5.0,
+        "flags": [], "value_verdict": "overvalued", "value_zone_lo": 1_800.0,
+        "value_zone_hi": 2_100.0, "value_gap_pct": 0.24, "value_note": "", "roe": 0.1,
+    }])
+    simple = out.split('<div class="adv">')[0]
+    assert "Worth vs peers" in simple
+    assert "above peers" in simple
+    assert "24% above" in simple
+
+
+def test_a_brief_built_before_valuation_existed_still_renders():
+    """Candidates with no value_* keys must degrade, not explode."""
+    out = _render(candidates=[{"ticker": "BBRI.JK", "name": "x", "score": 0.5,
+                               "lot_price": 415_000, "reason": "r",
+                               "liquidity_label": "ok"}])
+    assert "cannot value" in out
+    assert "BBRI.JK" in out
+
+
 def test_write_brief_creates_the_file(tmp_path):
     path = write_brief(_render(), tmp_path)
     assert path.exists()

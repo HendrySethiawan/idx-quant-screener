@@ -132,7 +132,11 @@ class ScreenerViz:
         ax.set_xticks(range(len(top_n)))
         x_labels = [row.get("name", row.get("ticker", ""))[:15] + "…" if len(row.get("name", row.get("ticker", ""))) > 15 else row.get("name", row.get("ticker", "")) for _, row in top_n.iterrows()]
         ax.set_xticklabels(x_labels, rotation=45, ha="right", fontsize=7)
-        ax.set_title("Top Undervalued Stocks", fontweight="bold", fontsize=13)
+        # "Top Ranked", not "Top Undervalued": undervaluation_score is min-max
+        # normalised across the universe, so the leader scores 1.0 even if every
+        # name is expensive. The fair-value verdict lives in the brief.
+        ax.set_title("Top Ranked Stocks (relative, not a valuation)",
+                     fontweight="bold", fontsize=13)
         ax.set_ylabel("Score")
         ax.set_ylim(0, max(1.0, top_n["undervaluation_score"].max() * 1.12))
         ax.grid(axis="y", alpha=0.3, linestyle="--")

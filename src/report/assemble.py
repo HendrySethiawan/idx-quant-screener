@@ -28,6 +28,34 @@ def _price_of(row) -> Optional[float]:
     return float(price) if price and not pd.isna(price) else None
 
 
+def _num(v) -> Optional[float]:
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _value_fields(row) -> Dict[str, object]:
+    """
+    Carry the peer-multiple verdict through to the brief.
+
+    Defaults to the UNKNOWN state rather than an empty dict, so a frame produced
+    before valuation existed (or with `valuation.enabled: false`) still renders --
+    it just renders as "cannot value", which is the truth in that case.
+    """
+    return {
+        "value_verdict": str(row.get("value_verdict") or "unknown"),
+        "value_zone_lo": _num(row.get("value_zone_lo")),
+        "value_zone_hi": _num(row.get("value_zone_hi")),
+        "value_gap_pct": _num(row.get("value_gap_pct")),
+        "value_peer_group": str(row.get("value_peer_group") or "universe"),
+        "value_note": str(row.get("value_note") or ""),
+        "roe": _num(row.get("roe")),
+    }
+
+
 def build_candidates(
     df: pd.DataFrame,
     settings,
@@ -79,6 +107,7 @@ def build_candidates(
             "quality_note": data_quality_note(row),
             "liquidity_label": verdict.label,
             "median_daily_value_rp": verdict.median_daily_value_rp,
+            **_value_fields(row),
         })
 
     # Diversification cap, applied to the ranking before sizing sees it.
@@ -180,6 +209,10 @@ def build_holdings_rows(
             "value": h.market_value(price),
             "unrealized_pct": h.unrealized_pct(price),
             "flags": health_flags(row, ranks.get(h.ticker), top_n),
+            # Something you already own drifting above its peer range is the case
+            # the ticket cannot raise on its own: the sizer only proposes selling
+            # when a name leaves the target book, not when it gets expensive.
+            **_value_fields(row),
         })
     return rows
 

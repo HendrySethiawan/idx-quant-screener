@@ -220,6 +220,75 @@ def _table(headers: List[str], rows: List[List[str]], num_cols: Optional[set] = 
     return f'<div class="scroll"><table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>'
 
 
+# Peer-multiple verdict -> (pill class, what the reader sees).
+_VALUE_PILL = {
+    "undervalued": ("good", "below peers"),
+    "fair": ("", "in line"),
+    "overvalued": ("bad", "above peers"),
+    "one_measure": ("", "one measure"),
+    "unknown": ("", "cannot value"),
+}
+
+
+def _value_cell(item: dict) -> str:
+    """
+    The fair-price verdict, in one table cell.
+
+    Shows the zone in rupiah rather than only a label, because "below peers" is an
+    opinion and "peers imply Rp4,600-Rp5,100" is something you can check against
+    the price in your broker. A wide zone is left wide on purpose: the gap between
+    the earnings- and book-implied prices IS the uncertainty, and averaging it away
+    would manufacture confidence.
+    """
+    verdict = str(item.get("value_verdict") or "unknown")
+    cls, label = _VALUE_PILL.get(verdict, ("", verdict))
+    out = f'<span class="pill {cls}">{_e(label)}</span>'
+
+    lo, hi = item.get("value_zone_lo"), item.get("value_zone_hi")
+    gap = item.get("value_gap_pct")
+
+    if verdict in ("undervalued", "fair", "overvalued") and lo and hi:
+        out += f'<br><span class="note">{rp(lo)} &ndash; {rp(hi)}</span>'
+        if gap:
+            direction = "below" if gap < 0 else "above"
+            out += f'<br><span class="note">{abs(gap) * 100:.0f}% {direction}</span>'
+    elif verdict == "one_measure" and lo:
+        out += f'<br><span class="note">~{rp(lo)}, no range</span>'
+
+    note = str(item.get("value_note") or "")
+    if "disagree" in note:
+        out += '<br><span class="pill warn">measures disagree</span>'
+    elif verdict == "unknown" and note:
+        out += f'<br><span class="note">{_e(note)}</span>'
+    return out
+
+
+def _valuation_caveat(items: List[dict]) -> str:
+    """
+    Two things that must sit next to the verdicts, not in a footnote.
+
+    Both are ways the method can be confidently wrong, and a reader who does not
+    know them will over-trust the label.
+    """
+    if not items:
+        return ""
+    rich = [i for i in items
+            if i.get("value_verdict") == "overvalued" and (i.get("roe") or 0) > 0.20]
+    quality = ""
+    if rich:
+        names = ", ".join(_e(i["ticker"]) for i in rich[:3])
+        quality = (f" {names} earn well above average on equity, and a business that "
+                   f"compounds faster than its peers <em>should</em> trade above their "
+                   f"multiples &mdash; that is not automatically a sell.")
+    return (
+        '<div class="callout"><strong>What this can and cannot see.</strong> '
+        "Every figure here is measured against other IDX names, so if the whole "
+        "market is expensive everything still reads &ldquo;in line&rdquo;. It also "
+        "takes no view on whether a premium is deserved."
+        f"{quality}</div>"
+    )
+
+
 def _verdict_card(regime) -> str:
     cls = {"RISK-ON": "good", "RISK-OFF": "bad", "MIXED": "warn"}.get(regime.label, "warn")
     sig_html = ""
@@ -295,9 +364,11 @@ def _holdings_section(holdings_rows: List[dict]) -> str:
             f'{h.get("lots", 0)} lot',
             f'<span class="money">{rp(h.get("value"))}</span>',
             pnl_html,
+            _value_cell(h),
             flag_html,
         ])
-    return _table(["Ticker", "Size", "Value now", "P&L", "Health"], rows, num_cols={2, 3})
+    return _table(["Ticker", "Size", "Value now", "P&L", "Worth vs peers", "Health"],
+                  rows, num_cols={2, 3})
 
 
 def _candidates_section(cands: List[dict]) -> str:
@@ -311,13 +382,18 @@ def _candidates_section(cands: List[dict]) -> str:
             why += f'<br><span class="note">⚠ {_e(warn)}</span>'
         rows.append([
             f'<span class="tick">{_e(c["ticker"])}</span><br><span class="note">{_e(c.get("name",""))}</span>',
-            f'{c.get("score", 0):.2f}',
+            _value_cell(c),
             f'<span class="money">{rp(c.get("lot_price"))}</span>',
+            f'{c.get("score", 0):.2f}',
             f'<span class="pill {liq_pill}">{_e(liq)}</span>',
             why,
         ])
-    return _table(["Stock", "Score", "1 lot costs", "Liquidity", "Why it ranks here"],
-                  rows, num_cols={1, 2})
+    # "Rank score", not "Score": it is min-max normalised across today's universe,
+    # so the best name scores 1.00 whatever the market is doing. The Worth column
+    # is the one that answers "is this cheap".
+    return _table(["Stock", "Worth vs peers", "1 lot costs", "Rank score",
+                   "Liquidity", "Why it ranks here"],
+                  rows, num_cols={2, 3}) + _valuation_caveat(cands)
 
 
 def _events_section(events, blind_n: int, universe_n: int, horizon: int) -> str:

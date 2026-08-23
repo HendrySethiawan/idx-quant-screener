@@ -183,6 +183,125 @@ def score_breakdown(df: pd.DataFrame, factor_weights: Dict[str, float],
 
 
 # --------------------------------------------------------------------------
+# 2b. What is it worth
+# --------------------------------------------------------------------------
+
+_VERDICT_ORDER = {"undervalued": 0, "fair": 1, "overvalued": 2,
+                  "one_measure": 3, "unknown": 4}
+
+
+def valuation_section(df: pd.DataFrame) -> str:
+    """
+    The working for every fair-price verdict the Simple view shows.
+
+    Simple gives the answer; this gives the arithmetic, so a verdict can be
+    disagreed with rather than just believed. Every input is on the row: the
+    earnings and book value per share that were derived, the peer multiple applied,
+    which peer group that was, and both resulting prices.
+    """
+    if df is None or df.empty or "value_verdict" not in df.columns:
+        return ""
+
+    from analysis.valuation import coverage
+
+    ordered = df.copy()
+    ordered["_o"] = ordered["value_verdict"].map(_VERDICT_ORDER).fillna(9)
+    ordered = ordered.sort_values(["_o", "value_gap_pct"], na_position="last")
+
+    rows = ""
+    for _, r in ordered.iterrows():
+        verdict = str(r.get("value_verdict") or "unknown")
+        cls = {"undervalued": "good", "overvalued": "bad"}.get(verdict, "")
+        gap = _num(r.get("value_gap_pct"))
+        lo, hi = _num(r.get("value_zone_lo")), _num(r.get("value_zone_hi"))
+        roe = _num(r.get("roe"))
+        note = str(r.get("value_note") or "")
+
+        zone = "-"
+        if lo and hi and verdict != "unknown":
+            zone = rp(lo) if lo == hi else f"{rp(lo)} &ndash; {rp(hi)}"
+
+        flag = ""
+        if "disagree" in note:
+            flag = '<br><span class="pill warn">measures disagree</span>'
+        elif verdict == "unknown" and note:
+            flag = f'<br><span class="note">{_e(note)}</span>'
+
+        rows += (
+            f'<tr><td><span class="tick">{_e(r.get("ticker"))}</span></td>'
+            f'<td><span class="pill {cls}">{_e(verdict.replace("_", " "))}</span>{flag}</td>'
+            f'<td class="num">{rp(_num(r.get("last_close")))}</td>'
+            f'<td class="num">{zone}</td>'
+            f'<td class="num">{f"{gap * 100:+.0f}%" if gap is not None else "-"}</td>'
+            f'<td class="num">{rp(_num(r.get("value_eps")))}</td>'
+            f'<td class="num">{rp(_num(r.get("value_bvps")))}</td>'
+            f'<td class="num">{_fmt_x(r.get("value_peer_pe"))}</td>'
+            f'<td class="num">{_fmt_x(r.get("value_peer_pb"))}</td>'
+            f'<td><span class="note">{_e(r.get("value_peer_group", "universe"))}</span></td>'
+            f'<td class="num">{f"{roe * 100:.0f}%" if roe is not None else "-"}</td></tr>'
+        )
+
+    table = (
+        '<div class="scroll"><table><thead><tr>'
+        "<th>Ticker</th><th>Verdict</th><th class=\"num\">Price</th>"
+        "<th class=\"num\">Peers imply</th><th class=\"num\">Gap</th>"
+        "<th class=\"num\">EPS</th><th class=\"num\">Book/share</th>"
+        "<th class=\"num\">Peer P/E</th><th class=\"num\">Peer P/B</th>"
+        "<th>Peer group</th><th class=\"num\">ROE</th>"
+        f"</tr></thead><tbody>{rows}</tbody></table></div>"
+    )
+
+    c = coverage(df)
+    summary = (
+        f'<div class="kpis">'
+        f'<div class="kpi"><div class="k">Below peers</div><div class="v">{c.get("undervalued", 0)}</div></div>'
+        f'<div class="kpi"><div class="k">In line</div><div class="v">{c.get("fair", 0)}</div></div>'
+        f'<div class="kpi"><div class="k">Above peers</div><div class="v">{c.get("overvalued", 0)}</div></div>'
+        f'<div class="kpi"><div class="k">One measure</div><div class="v">{c.get("one_measure", 0)}</div></div>'
+        f'<div class="kpi"><div class="k">Cannot value</div><div class="v">{c.get("unknown", 0)}</div></div>'
+        f"</div>"
+    )
+
+    gaps = [(str(r["ticker"]), float(r["value_gap_pct"]) * 100)
+            for _, r in ordered.iterrows()
+            if _num(r.get("value_gap_pct")) not in (None, 0.0)
+            and str(r.get("value_verdict")) in ("undervalued", "overvalued")]
+    chart = ""
+    if gaps:
+        chart = charts.diverging_bars(
+            gaps[:24], label="distance from the peer-implied range",
+            value_format=lambda v: f"{v:+.0f}%",
+        )
+
+    method = (
+        '<div class="callout"><strong>How this is worked out.</strong> '
+        "Earnings per share is price divided by P/E; book value per share is price "
+        "divided by P/B. Each is multiplied by the median multiple of the peer group "
+        "to give a price. The two answers bracket the range &mdash; there is no "
+        "&ldquo;within 15% is fair&rdquo; rule, because the gap between the two "
+        "measures already is the uncertainty."
+        "</div>"
+        '<div class="callout"><strong>Where the inputs come from.</strong> '
+        "The multiples used here are the pre-winsorization values. The ranking uses "
+        "clipped ones on purpose &mdash; that is what stops one bad P/B flattening a "
+        "whole factor &mdash; but clipping collapses every outlier onto the same "
+        "number, and on a real run six unrelated tickers shared a P/E of 50.738811. "
+        "Deriving earnings from that would have invented them."
+        "</div>"
+    )
+
+    note = ("Two independent estimates per name, from peer multiples. This is the only "
+            "part of the tool that answers what a stock is worth; the rank score answers "
+            "where it sits in today's list, which is a different question.")
+    return _card("What is it worth?", summary + chart + table + method, note)
+
+
+def _fmt_x(v) -> str:
+    f = _num(v)
+    return "-" if f is None else f"{f:.1f}x"
+
+
+# --------------------------------------------------------------------------
 # 3. Factor correlations
 # --------------------------------------------------------------------------
 
@@ -603,6 +722,7 @@ def render_advanced(
             "They sum to the raw score, so nothing is hidden.",
         ))
 
+    parts.append(valuation_section(df))
     parts.append(correlation_section(correlations))
     parts.append(regime_chart(benchmark, trend_ma, benchmark_name))
     parts.append(seasonality_section(seasonality_table, current_month))
