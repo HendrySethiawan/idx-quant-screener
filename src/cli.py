@@ -50,6 +50,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--png", action="store_true",
                    help="Also write the matplotlib screener_analysis.png "
                         "(the brief's Advanced view replaces it)")
+    p.add_argument("--browser", action="store_true",
+                   help="Open the brief in your browser instead of a native window")
     return p
 
 
