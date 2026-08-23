@@ -431,6 +431,7 @@ def render_brief(
     settings_html: str = "",
     ledger_html: str = "",
     trade_form_html: str = "",
+    placeholder_capital: bool = False,
     market: Optional[dict] = None,
     generated: Optional[datetime] = None,
 ) -> str:
@@ -451,6 +452,19 @@ def render_brief(
         _kpi("Cash left", rp(allocation.cash_left if allocation else capital)),
         _kpi("Est. fees", rp(fees.total)),
     ])
+
+    # The failure this exists for: a run on the shipped placeholder produced a
+    # confident ticket to buy Rp30 juta of stock, and nothing said the figure was
+    # not the reader's money. A wrong number stated confidently is worse than none.
+    placeholder_note = ""
+    if placeholder_capital:
+        placeholder_note = (
+            '<div class="callout" style="border-left-color:var(--bad)">'
+            '<strong>This is the placeholder capital, not your money.</strong> '
+            f"Every lot count below is sized for {rp(capital)}. Set your real figure "
+            'in <strong>Settings</strong>, or in <code>configs/user.yaml</code>, then '
+            "press Rebuild.</div>"
+        )
 
     granularity = ""
     if allocation and allocation.positions:
@@ -474,7 +488,8 @@ def render_brief(
     markets = T.grid([
         T.column([
             T.panel("Do this today",
-                    _ticket_section(orders, fees, capital) + granularity,
+                    placeholder_note + _ticket_section(orders, fees, capital)
+                    + granularity,
                     pid="panel-ticket", cls="print", grow=True),
             T.panel(f"Events, next {event_horizon} days",
                     _events_section(events or [], blind_n, universe_n, event_horizon)),
