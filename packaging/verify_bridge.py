@@ -109,9 +109,33 @@ DRIVER = """
 """
 
 
+def _stale(brief: Path) -> list:
+    """Source files newer than the page this harness is about to drive.
+
+    The harness copies the last brief the app generated. That page carries a frozen
+    copy of the script, so it can be driven successfully long after the source it
+    came from was rewritten -- a green result proving something about code that no
+    longer exists. It happened: the preview asserted on had been reworded two
+    commits earlier and the run still passed.
+    """
+    cutoff = brief.stat().st_mtime
+    return sorted(p.relative_to(ROOT).as_posix()
+                  for p in (ROOT / "src").rglob("*.py")
+                  if "__pycache__" not in p.parts and p.stat().st_mtime > cutoff)
+
+
 def main() -> int:
     if not BRIEF.exists():
         print(f"No brief at {BRIEF}. Run the app once first.")
+        return 2
+
+    behind = _stale(BRIEF)
+    if behind:
+        print(f"{BRIEF} predates {len(behind)} source file(s):")
+        for name in behind[:8]:
+            print(f"  {name}")
+        print("Regenerate it (run the app once) before verifying, or this checks "
+              "a page built from code you have since changed.")
         return 2
 
     # A scratch journal: this records a real trade, and it must not be yours.
@@ -121,6 +145,14 @@ def main() -> int:
                         "journal_path": str(tmp / "journal.csv"),
                         "marks_path": str(tmp / "marks.csv"),
                         "holdings_path": str(tmp / "holdings.yaml")}
+
+    # `--browser` renders the CLI fallback instead of the form, so a page generated
+    # that way has nothing to drive. Saying which artifact is wrong beats the JS
+    # reporting a bare "no-form" from inside the window.
+    if 'id="trade-form"' not in BRIEF.read_text(encoding="utf-8"):
+        print(f"{BRIEF} has no trade form -- it was generated with --browser.")
+        print("Regenerate it by launching the app normally, then verify.")
+        return 2
 
     page = tmp / "brief.html"
     shutil.copyfile(BRIEF, page)
