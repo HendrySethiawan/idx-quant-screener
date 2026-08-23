@@ -53,10 +53,29 @@ never open the other two:
 | Where the money actually sits | Sector exposure against the cap |
 | Data quality | Which names were scored neutral on what |
 
-The toggle is a CSS attribute on one file — nothing reloads, nothing refetches, and
-all three modes are rendered from the same data so they cannot disagree. Your choice
-is remembered, the toggle stays put as you scroll, and the jump list follows whichever
-mode you are in. Printing gives you the ticket only.
+### Built not to scroll
+
+Each mode gets the layout that suits it, rather than one imposed on all three:
+
+| Mode | Layout | Height |
+|---|---|---|
+| Simple | Two-column dashboard, ticket in the wide column | **1.0 screens** (was 1.8) |
+| Steps | The funnel *is* the tab strip — click a stage to open it | ~0.9 screens |
+| Advanced | Nine tabs, one section at a time | **~0.9 screens** (was 8.0) |
+
+The page uses `min(1580px, 96vw)` instead of the old 940px cap — on a 1920px monitor
+half the screen used to sit empty while you scrolled past content that would have
+fitted beside itself. Prose stays capped at `74ch`, so the extra width buys columns,
+not longer lines. Under 1000px everything collapses back to one column.
+
+A 49-row table would still make its panel three screens tall, so tables inside a
+panel scroll within their own pane (`max-height:68vh`). Bounded and local beats the
+whole page moving.
+
+The mode toggle is a CSS attribute on one file — nothing reloads, nothing refetches,
+and all three modes are rendered from the same data so they cannot disagree. Mode and
+active tab are both remembered; arrow keys move along a tab strip. Printing gives you
+the ticket only.
 
 **The Steps view is recorded, not reconstructed.** Each gate writes down what it did
 as it runs, and the view only reads that — so the explanation cannot drift away from
@@ -80,7 +99,7 @@ python main.py --png       # also write the old matplotlib screener_analysis.png
 The brief opens in your browser automatically. First run fetches ~2 years of prices
 for 49 tickers and takes a minute or two; afterwards the cache makes it fast.
 
-There is no server to start and no port to remember — the brief is a single ~220KB
+There is no server to start and no port to remember — the brief is a single ~230KB
 HTML file that opens from disk, offline, and keeps working as an archive of what the
 tool said on a given day.
 
@@ -369,7 +388,7 @@ factor does at this account size:
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                      # 408 tests, no network required
+pytest                      # 432 tests, no network required
 ```
 
 ```
@@ -393,7 +412,7 @@ lunch break, and `streamlit run` plus a port plus a terminal you must not close 
 that budget on ceremony. The one genuinely interactive question, *"what if I sized it
 differently?"*, is answered by precomputing the whole surface with the real sizer and
 embedding it, because `choose_allocation` is pure and cheap. Keeping the page a pure
-function that returns a string is also what lets all 408 tests run offline.
+function that returns a string is also what lets all 432 tests run offline.
 
 [docs/AUDIT.md](docs/AUDIT.md) records what was broken in the original build, with
 the measurements that showed it.
