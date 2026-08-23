@@ -72,6 +72,113 @@ footer{margin-top:40px;padding-top:18px;border-top:1px solid var(--line);
   padding:11px 15px;min-width:132px;flex:1}
 .kpi .k{font-size:11.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
 .kpi .v{font-size:19px;font-weight:700;font-variant-numeric:tabular-nums;margin-top:2px}
+
+/* --- Simple / Advanced -------------------------------------------------
+   The whole switch. One attribute on <body> decides which half of the page
+   exists; there is no second file and no re-render, so the two modes cannot
+   drift apart. Default is simple -- see the inline script below. */
+body[data-mode="simple"] .adv{display:none}
+nav.modes{display:flex;gap:6px;margin:14px 0 2px}
+nav.modes button{font:inherit;font-size:13px;font-weight:600;cursor:pointer;
+  padding:7px 16px;border-radius:999px;border:1px solid var(--line);
+  background:var(--surface);color:var(--muted)}
+nav.modes button[aria-pressed="true"]{background:var(--accent);border-color:transparent;color:#fff}
+nav.modes .hint{align-self:center;margin-left:6px;color:var(--muted);font-size:12.5px}
+
+.chart{width:100%;height:auto;display:block;margin:8px 0}
+th.sortable{cursor:pointer;user-select:none;white-space:nowrap}
+th.sortable:hover{color:var(--ink);text-decoration:underline}
+th.sortable[data-dir]::after{content:" \\2193";font-weight:400}
+th.sortable[data-dir="asc"]::after{content:" \\2191"}
+.whatif-controls{display:flex;gap:14px;flex-wrap:wrap;margin:4px 0 14px}
+.whatif-controls label{font-size:13px;color:var(--muted);display:flex;
+  align-items:center;gap:6px}
+.whatif-controls select{font:inherit;font-size:13px;padding:5px 8px;
+  border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--ink)}
+
+/* Print the ticket, not the research. */
+@media print{
+  nav.modes,.adv{display:none !important}
+  body{padding:0}
+  .card{break-inside:avoid}
+}
+"""
+
+# Kept out of _CSS so the f-string in render_brief never has to escape braces.
+# Three jobs, all local to the page: flip the mode, sort a table, read the
+# precomputed what-if grid. No fetch, no dependency, nothing that needs a server.
+_JS = """
+(function(){
+  var body=document.body,KEY="idx-brief-mode";
+  var btns=[].slice.call(document.querySelectorAll("nav.modes button"));
+  function setMode(m){
+    body.setAttribute("data-mode",m);
+    btns.forEach(function(b){b.setAttribute("aria-pressed",String(b.dataset.mode===m));});
+    try{localStorage.setItem(KEY,m);}catch(e){}
+  }
+  var saved=null;
+  try{saved=localStorage.getItem(KEY);}catch(e){}
+  setMode(saved==="advanced"?"advanced":"simple");
+  btns.forEach(function(b){b.addEventListener("click",function(){setMode(b.dataset.mode);});});
+
+  // Click-to-sort. Values come from each cell's data-v, so sorting uses the
+  // underlying number rather than the formatted "Rp1,234" string.
+  [].forEach.call(document.querySelectorAll("table.sortable-table"),function(tbl){
+    var heads=[].slice.call(tbl.querySelectorAll("th.sortable"));
+    heads.forEach(function(th){
+      th.addEventListener("click",function(){
+        var col=+th.dataset.col, dir=th.dataset.dir==="asc"?"desc":"asc";
+        heads.forEach(function(h){h.removeAttribute("data-dir");});
+        th.dataset.dir=dir;
+        var tb=tbl.tBodies[0], rows=[].slice.call(tb.rows);
+        rows.sort(function(a,b){
+          var x=a.cells[col].dataset.v, y=b.cells[col].dataset.v;
+          var nx=parseFloat(x), ny=parseFloat(y);
+          var both=!isNaN(nx)&&!isNaN(ny);
+          var cmp=both?(nx-ny):String(x).localeCompare(String(y));
+          return dir==="asc"?cmp:-cmp;
+        });
+        rows.forEach(function(r){tb.appendChild(r);});
+      });
+    });
+  });
+
+  // What-if: a lookup into a table computed at render time.
+  var raw=document.getElementById("wi-data");
+  if(raw){
+    var grid=JSON.parse(raw.textContent), out=document.getElementById("wi-out");
+    var cap=document.getElementById("wi-cap"),
+        nsel=document.getElementById("wi-n"),
+        dep=document.getElementById("wi-dep");
+    var rp=function(v){return "Rp"+Math.round(v).toLocaleString("en-US");};
+    function draw(){
+      var cell=grid.cells[cap.value+"|"+nsel.value+"|"+dep.value];
+      if(!cell){out.innerHTML='<div class="empty">No workable book at that setting.</div>';return;}
+      // Everything from the payload is injected as HTML, and it carries ticker
+      // names that came from a config file. Escape it here for the same reason
+      // the Python side escapes: the source being "ours" is not a guarantee.
+      var esc=function(s){var d=document.createElement("div");d.textContent=s;return d.innerHTML;};
+      var rows=cell.pos.map(function(p){
+        return "<tr><td><span class='tick'>"+esc(p.t)+"</span></td>"+
+               "<td class='num'>"+esc(p.l)+" lot</td>"+
+               "<td class='num'>"+rp(p.r)+"</td></tr>";
+      }).join("");
+      var shortfall=cell.short?'<div class="callout"><strong>Lot sizes bind here.</strong> '+esc(cell.short)+'</div>':"";
+      out.innerHTML=
+        '<div class="kpis">'+
+        '<div class="kpi"><div class="k">Positions</div><div class="v">'+cell.n+'</div></div>'+
+        '<div class="kpi"><div class="k">Deployed</div><div class="v">'+(cell.deployed*100).toFixed(0)+'%</div></div>'+
+        '<div class="kpi"><div class="k">Cash left</div><div class="v">'+rp(cell.cash)+'</div></div>'+
+        '<div class="kpi"><div class="k">Worst weight gap</div><div class="v">'+(cell.err*100).toFixed(1)+'pp</div></div>'+
+        '<div class="kpi"><div class="k">Est. fees</div><div class="v">'+rp(cell.fees)+'</div></div>'+
+        '</div>'+shortfall+
+        (rows?'<div class="scroll"><table><thead><tr><th>Ticker</th><th class="num">Size</th><th class="num">Value</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
+             :'<div class="empty">Nothing is affordable at that setting.</div>');
+    }
+    [cap,nsel,dep].forEach(function(el){el.addEventListener("change",draw);});
+    draw();
+  }
+})();
 """
 
 
@@ -282,9 +389,22 @@ def render_brief(
     seasonality: str = "",
     universe_n: int = 0,
     imputed_n: int = 0,
+    advanced_html: str = "",
     generated: Optional[datetime] = None,
 ) -> str:
     when = (generated or datetime.now()).strftime("%A, %d %B %Y %H:%M")
+
+    # The toggle only appears when there is something behind it. A dead switch is
+    # worse than no switch.
+    nav = ""
+    if advanced_html:
+        nav = (
+            '<nav class="modes">'
+            '<button type="button" data-mode="simple" aria-pressed="true">Simple</button>'
+            '<button type="button" data-mode="advanced" aria-pressed="false">Advanced</button>'
+            '<span class="hint">Simple is the decision. Advanced is the evidence.</span>'
+            "</nav>"
+        )
 
     kpis = "".join([
         _kpi("Capital", rp(capital)),
@@ -307,11 +427,13 @@ def render_brief(
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>IDX Brief</title>
 <style>{_CSS}</style>
+<body data-mode="simple">
 <div class="wrap">
 <header>
   <h1>Your IDX brief</h1>
   <div class="sub">{_e(when)} &middot; {universe_n} stocks screened</div>
 </header>
+{nav}
 
 <h2>Market right now</h2>
 {_verdict_card(regime)}
@@ -334,6 +456,8 @@ def render_brief(
 
 {_rejected_section(rejected, capped)}
 
+{advanced_html}
+
 <footer>
   <p><strong>Read this before you trade.</strong> The universe is today's list of
   tickers, so companies that already failed or delisted are missing &mdash; past
@@ -346,6 +470,8 @@ def render_brief(
   <p>This is a personal research tool, not investment advice.</p>
 </footer>
 </div>
+<script>{_JS}</script>
+</body>
 """
 
 

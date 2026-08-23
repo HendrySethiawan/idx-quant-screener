@@ -233,6 +233,10 @@ def assemble(settings, df: pd.DataFrame, regime, holdings: List[Holding],
         "orders": orders,
         "fees": fees,
         "candidates": candidates[: settings.top_picks_n],
+        # The untruncated list the sizer actually chose from. The what-if grid has
+        # to see the same names, or it would answer a different question than the
+        # ticket did.
+        "candidates_all": candidates,
         "rejected": rejected,
         "capped": capped,
         "holdings_rows": holdings_rows,

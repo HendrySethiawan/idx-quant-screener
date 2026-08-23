@@ -150,10 +150,17 @@ def _render(**kw):
 
 
 def test_brief_renders_without_network():
+    """
+    The brief must open from disk with no network. This used to be asserted as
+    "no <script> tag at all", which stopped being the property once the
+    Simple/Advanced toggle needed inline JS. The real requirement is that nothing
+    is *fetched* -- so assert that, rather than banning a tag.
+    """
     out = _render()
     assert out.startswith("<!doctype html>")
     assert "http://" not in out and "https://" not in out
-    assert "<script" not in out
+    for external in ("<script src", "<link ", "@import", "url(", "srcset"):
+        assert external not in out, f"brief reaches outside itself via {external!r}"
 
 
 def test_brief_shows_the_actual_order():

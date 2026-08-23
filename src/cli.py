@@ -47,6 +47,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Run the historical simulation of the price factors")
     p.add_argument("--events", action="store_true",
                    help="List upcoming events and which names have no earnings data")
+    p.add_argument("--png", action="store_true",
+                   help="Also write the matplotlib screener_analysis.png "
+                        "(the brief's Advanced view replaces it)")
     return p
 
 

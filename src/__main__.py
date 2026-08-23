@@ -93,12 +93,14 @@ def main() -> None:
     # period="max", not the 2y panel: two years gives ~2 observations per month,
     # which is noise rather than a base rate.
     season_line = ""
+    season_table = None
     try:
         jkse = fetcher.fetch_technical_data(
             [regime_cfg.get("benchmark", "^JKSE")], period="max"
         ).get(regime_cfg.get("benchmark", "^JKSE"))
         if jkse is not None and "Close" in jkse:
-            season_line = S.describe(S.for_month(S.monthly_seasonality(jkse["Close"])))
+            season_table = S.monthly_seasonality(jkse["Close"])
+            season_line = S.describe(S.for_month(season_table))
     except Exception as e:
         logger.warning(f"Seasonality unavailable: {e}")
 
@@ -115,6 +117,44 @@ def main() -> None:
         prices=plan["prices"],
         ihsg=_close_series(benchmark_data, regime_cfg.get("benchmark", "^JKSE")),
     )
+
+    # ---- the Advanced half --------------------------------------------------
+    # Nothing here fetches. Every input is already in memory or already on disk;
+    # the whole block exists to stop throwing that work away. Any single section
+    # that has no data renders as "" and disappears, so a failure here degrades to
+    # a smaller Advanced view rather than a broken brief.
+    advanced_html = ""
+    try:
+        from analysis.fundamental import FundamentalEngine
+        from cli import _paths
+        from portfolio.journal import load_marks
+        from report.advanced import render_advanced, whatif_grid
+
+        _, marks_path, _ = _paths(settings)
+        ticket_tickers = [o["ticker"] for o in plan["orders"] if o["action"] == "BUY"]
+        breakdown = ticket_tickers or [c["ticker"] for c in plan["candidates"][:5]]
+
+        advanced_html = render_advanced(
+            df=df,
+            factor_weights=settings.factor_weights,
+            breakdown_tickers=breakdown,
+            correlations=FundamentalEngine(settings).compute_factor_correlations(df),
+            benchmark=_close_series(benchmark_data, regime_cfg.get("benchmark", "^JKSE")),
+            trend_ma=int(regime_cfg.get("trend_ma", 200)),
+            benchmark_name=regime_cfg.get("benchmark_label", "IHSG"),
+            seasonality_table=season_table,
+            current_month=pd.Timestamp.today().month,
+            marks=load_marks(marks_path),
+            allocation=plan["allocation"],
+            max_per_sector=settings.max_per_sector,
+            whatif=whatif_grid(
+                plan["candidates_all"], settings, settings.capital_rp, regime.deploy_pct
+            ),
+            capital=settings.capital_rp,
+            deploy_pct=regime.deploy_pct,
+        )
+    except Exception as e:
+        logger.warning(f"Advanced sections unavailable: {e}")
 
     brief_path = write_brief(
         render_brief(
@@ -134,13 +174,21 @@ def main() -> None:
             seasonality=season_line,
             universe_n=len(df),
             imputed_n=int((df["imputed_factors"].fillna("").str.len() > 0).sum()),
+            advanced_html=advanced_html,
         ),
         settings.output_dir,
     )
 
-    ScreenerViz(settings.output_dir, sectors=settings.sectors).save_analysis(
-        df, benchmark_data=benchmark_data
-    )
+    # The matplotlib PNG is opt-in. It was written on every run at 896KB and no
+    # page ever linked to it, its colours are baked white so it fights the dark
+    # theme, and one of its six panels plots `beta` -- the field the scorer
+    # deliberately refuses to use. The Advanced view replaces it; --png keeps it
+    # available for anyone who wants the file.
+    if getattr(args, "png", False):
+        ScreenerViz(settings.output_dir, sectors=settings.sectors).save_analysis(
+            df, benchmark_data=benchmark_data
+        )
+        print(f"Charts: {settings.output_dir / 'screener_analysis.png'}")
 
     # ---- console summary ----------------------------------------------------
     alloc, fees = plan["allocation"], plan["fees"]
