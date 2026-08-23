@@ -1,0 +1,270 @@
+# src/runner.py
+"""
+The pipeline, split into the half that needs the network and the half that does not.
+
+`main()` used to be three hundred lines of inline orchestration, which meant the only
+way to see a change was to close the app and start it again -- including after
+recording a trade, where nothing about the market had moved at all.
+
+    full_run(...)  fetches 49 tickers, scores, ranks. ~40 seconds.
+    render(ctx)    rebuilds the page from what is already in memory. ~2 seconds.
+
+The split is the feature: **`render` must never touch the network.** Recording a
+trade, changing a setting or noting an event all change the page without changing the
+market, and paying forty seconds for that would make the app feel broken. There is a
+test that patches the fetcher to raise and calls `render`.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import pandas as pd
+
+from market import events as E
+from market.regime import assess_regime
+from pipeline import run_screener, top_picks, write_outputs
+from portfolio.holdings import load_holdings
+from report.assemble import assemble
+from report.brief import render_brief, write_brief
+
+
+def _close_series(data: dict, ticker: str):
+    frame = data.get(ticker)
+    return frame["Close"] if frame is not None and "Close" in frame else None
+
+
+@dataclass
+class RunContext:
+    """Everything a render needs. Nothing here requires another fetch."""
+    settings: Any
+    args: Any
+    logger: Any = None
+    df: Optional[pd.DataFrame] = None
+    price_data: Dict[str, Any] = field(default_factory=dict)
+    benchmark_data: Dict[str, Any] = field(default_factory=dict)
+    regime: Any = None
+    season_table: Optional[pd.DataFrame] = None
+    season_line: str = ""
+    # Filled by the most recent render, so the console summary and the API can read
+    # what the page is currently showing without recomputing it.
+    plan: Optional[dict] = None
+    perf: Any = None
+    brief_path: Optional[Path] = None
+
+
+# --------------------------------------------------------------- needs network
+def full_run(settings, args, logger=None) -> RunContext:
+    """Fetch, score and rank. The slow half."""
+    from fetchers.data_fetcher import DataFetcher
+    from market import seasonality as S
+
+    df, price_data, benchmark_data = run_screener(settings, logger)
+    write_outputs(settings, df, top_picks(settings, df), logger)
+
+    regime_cfg = settings.regime or {}
+    fetcher = DataFetcher(settings)
+    fx_data = fetcher.fetch_technical_data([regime_cfg.get("fx_ticker", "IDR=X")])
+
+    regime = assess_regime(
+        _close_series(benchmark_data, regime_cfg.get("benchmark", "^JKSE")),
+        _close_series(fx_data, regime_cfg.get("fx_ticker", "IDR=X")),
+        trend_ma=int(regime_cfg.get("trend_ma", 200)),
+        deploy_ladder=regime_cfg.get("deploy_ladder"),
+    )
+    if logger:
+        logger.info(f"Regime: {regime.label} -> deploy {regime.deploy_pct:.0%}")
+
+    # period="max", not the 2y panel: two years gives ~2 observations per month,
+    # which is noise rather than a base rate.
+    season_table, season_line = None, ""
+    try:
+        key = regime_cfg.get("benchmark", "^JKSE")
+        jkse = fetcher.fetch_technical_data([key], period="max").get(key)
+        if jkse is not None and "Close" in jkse:
+            season_table = S.monthly_seasonality(jkse["Close"])
+            season_line = S.describe(S.for_month(season_table))
+    except Exception as e:
+        if logger:
+            logger.warning(f"Seasonality unavailable: {e}")
+
+    return RunContext(
+        settings=settings, args=args, logger=logger,
+        df=df, price_data=price_data, benchmark_data=benchmark_data,
+        regime=regime, season_table=season_table, season_line=season_line,
+    )
+
+
+# ------------------------------------------------------------- no network here
+def _market_panel_data(ctx) -> Optional[dict]:
+    """Real OHLC from the frame already fetched. Daily, and the panel says so."""
+    cfg = ctx.settings.regime or {}
+    key = cfg.get("benchmark", "^JKSE")
+    raw = ctx.benchmark_data.get(key)
+    if raw is None or "Close" not in raw or len(raw) < 3:
+        return None
+
+    from report import charts
+
+    trend_ma = int(cfg.get("trend_ma", 200))
+    window = raw.tail(260)
+    closes = window["Close"].dropna()
+    ma = raw["Close"].rolling(trend_ma, min_periods=max(2, trend_ma // 4)).mean()
+
+    return {
+        "name": cfg.get("benchmark_label", "IHSG"),
+        "last": float(closes.iloc[-1]),
+        "prev": float(closes.iloc[-2]),
+        "open": float(window["Open"].iloc[-1]) if "Open" in window else None,
+        "high": float(window["High"].iloc[-1]) if "High" in window else None,
+        "low": float(window["Low"].iloc[-1]) if "Low" in window else None,
+        "ma_last": float(ma.dropna().iloc[-1]) if ma.notna().any() else None,
+        "trend_ma": trend_ma,
+        "chart": charts.line_chart(
+            [("close", closes.tolist()), (f"{trend_ma}d mean", ma.tail(len(closes)).tolist())],
+            x_labels=[d.strftime("%b %y") for d in closes.index],
+            label=f"{key} daily close against its {trend_ma}-day mean", height=190,
+        ),
+    }
+
+
+def _settings_panel(settings) -> str:
+    """A read-only view of the numbers driving every gate."""
+    from report.brief import rp
+
+    def rows(pairs):
+        return "".join(f"<tr><td>{k}</td><td class='num'>{v}</td></tr>" for k, v in pairs)
+
+    broker = settings.broker or {}
+    account = settings.account or {}
+    liq = settings.liquidity or {}
+    return (
+        '<div class="setgrp"><h3>Broker (Indopremier)</h3><table>' + rows([
+            ("Buy fee", f"{float(broker.get('buy_fee', 0)):.2%}"),
+            ("Sell fee", f"{float(broker.get('sell_fee', 0)):.2%}"),
+            ("Stamp duty, per day with a sell", rp(float(broker.get("stamp_duty_rp", 0)))),
+            ("Lot size", broker.get("lot_size", 100)),
+        ]) + "</table></div>"
+        '<div class="setgrp"><h3>Account</h3><table>' + rows([
+            ("Capital", rp(settings.capital_rp)),
+            ("Positions allowed",
+             f"{account.get('min_positions', 3)}-{account.get('max_positions', 6)}"),
+            ("Smallest position", rp(float(account.get("min_position_rp", 0)))),
+            ("Max per sector", settings.max_per_sector),
+            ("Shortlist size", settings.top_picks_n),
+        ]) + "</table></div>"
+        '<div class="setgrp"><h3>Liquidity gate</h3><table>' + rows([
+            ("Minimum traded per day", rp(float(liq.get("min_median_daily_value_rp", 0)))),
+            ("Max position vs daily volume",
+             f"{float(liq.get('max_position_pct_of_daily_value', 0)):.0%}"),
+        ]) + "</table></div>"
+        '<div class="setgrp"><h3>Factor weights</h3><table>' + rows(
+            [(k, f"{v:+.1f}") for k, v in (settings.factor_weights or {}).items()]
+        ) + "</table></div>"
+        '<div class="note">All of these live in <code>configs/default.yaml</code>; your '
+        "capital comes from <code>configs/user.yaml</code>, which stays on this machine."
+        "</div>"
+    )
+
+
+def render(ctx: RunContext) -> Path:
+    """
+    Rebuild the page from what is already in memory.
+
+    Holdings, events and the journal are re-read from disk because those are exactly
+    what a trade or an edit changes. Prices, scores and the ranking are reused: the
+    market has not moved because you recorded something.
+    """
+    settings, args, logger = ctx.settings, ctx.args, ctx.logger
+    from cli import build_performance, collect_events
+    from report.journal_view import brief_section
+
+    holdings = load_holdings(
+        (settings.account or {}).get("holdings_path", "current_holdings.yaml"),
+        lot_size=settings.lot_size,
+    )
+    all_events, blind = collect_events(settings)
+    horizon = int(getattr(settings, "event_horizon_days", 14))
+
+    plan = assemble(settings, ctx.df, ctx.regime, holdings,
+                    events=all_events, blind=blind)
+    pd.DataFrame(plan["orders"]).to_csv(settings.output_dir / "ticket.csv", index=False)
+
+    perf = build_performance(
+        settings, prices=plan["prices"],
+        ihsg=_close_series(ctx.benchmark_data,
+                           (settings.regime or {}).get("benchmark", "^JKSE")),
+    )
+
+    advanced_html = steps_html = ledger_html = trade_form_html = ""
+    try:
+        from analysis.fundamental import FundamentalEngine
+        from cli import _paths
+        from portfolio.journal import load_marks
+        from report.advanced import render_advanced, whatif_grid
+
+        _, marks_path, _ = _paths(settings)
+        bought = [o["ticker"] for o in plan["orders"] if o["action"] == "BUY"]
+        advanced_html = render_advanced(
+            df=ctx.df, factor_weights=settings.factor_weights,
+            breakdown_tickers=bought or [c["ticker"] for c in plan["candidates"][:5]],
+            correlations=FundamentalEngine(settings).compute_factor_correlations(ctx.df),
+            benchmark=_close_series(ctx.benchmark_data,
+                                    (settings.regime or {}).get("benchmark", "^JKSE")),
+            trend_ma=int((settings.regime or {}).get("trend_ma", 200)),
+            benchmark_name=(settings.regime or {}).get("benchmark_label", "IHSG"),
+            seasonality_table=ctx.season_table,
+            current_month=pd.Timestamp.today().month,
+            marks=load_marks(marks_path), allocation=plan["allocation"],
+            max_per_sector=settings.max_per_sector,
+            whatif=whatif_grid(plan["candidates_all"], settings,
+                               settings.capital_rp, ctx.regime.deploy_pct),
+            capital=settings.capital_rp, deploy_pct=ctx.regime.deploy_pct,
+        )
+    except Exception as e:
+        if logger:
+            logger.warning(f"Screener sections unavailable: {e}")
+
+    try:
+        from report.steps import render_steps
+        steps_html = render_steps(plan.get("trail"), plan["orders"])
+    except Exception as e:
+        if logger:
+            logger.warning(f"Why view unavailable: {e}")
+
+    try:
+        from desktop import available as _desktop_available
+        from report.journal_view import cli_fallback, journal_panels, trade_form
+
+        ledger_html = journal_panels(settings, prices=plan["prices"])
+        live = _desktop_available() and not getattr(args, "browser", False)
+        trade_form_html = trade_form() if live else cli_fallback()
+    except Exception as e:
+        if logger:
+            logger.warning(f"Ledger unavailable: {e}")
+
+    from first_run import is_placeholder_capital
+
+    path = write_brief(
+        render_brief(
+            regime=ctx.regime, orders=plan["orders"], fees=plan["fees"],
+            capital=settings.capital_rp, holdings_rows=plan["holdings_rows"],
+            candidates=plan["candidates"], rejected=plan["rejected"],
+            capped=plan["capped"], allocation=plan["allocation"],
+            journal_html=brief_section(perf),
+            events=E.upcoming(all_events, horizon), blind_n=len(blind),
+            event_horizon=horizon, seasonality=ctx.season_line,
+            universe_n=len(ctx.df),
+            imputed_n=int((ctx.df["imputed_factors"].fillna("").str.len() > 0).sum()),
+            advanced_html=advanced_html, steps_html=steps_html,
+            settings_html=_settings_panel(settings),
+            ledger_html=ledger_html, trade_form_html=trade_form_html,
+            market=_market_panel_data(ctx),
+            placeholder_capital=is_placeholder_capital(settings),
+        ),
+        settings.output_dir,
+    )
+
+    ctx.plan, ctx.perf, ctx.brief_path = plan, perf, path
+    return path

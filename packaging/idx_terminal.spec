@@ -33,7 +33,7 @@ datas = [
 # but these are named explicitly so a missed one fails here rather than at runtime
 # in front of the reader.
 hiddenimports = [
-    "cli", "desktop", "api",
+    "cli", "desktop", "api", "runner", "first_run",
     "core.config", "core.logger", "core.paths",
     "analysis.fundamental", "analysis.selection", "analysis.technical",
     "analysis.trace", "analysis.valuation",

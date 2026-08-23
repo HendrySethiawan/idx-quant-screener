@@ -39,6 +39,15 @@ def _use_utf8_console() -> None:
             pass
 
 
+def _can_prompt() -> bool:
+    """A prompt needs a window. Without pywebview there is nothing to ask with."""
+    try:
+        from desktop import available
+        return available()
+    except Exception:
+        return False
+
+
 def main() -> None:
     _use_utf8_console()
 
@@ -71,230 +80,34 @@ def main() -> None:
     logger = setup_logger(settings.log_dir, settings.log_level)
     logger.info("Starting idx_quant_screener")
 
-    df, price_data, benchmark_data = run_screener(settings, logger)
-    picks = top_picks(settings, df)
-    write_outputs(settings, df, picks, logger)
+    # ---- capital, before anything is fetched --------------------------------
+    # A run on the shipped placeholder produces a ticket sized to money that is not
+    # yours. Ask once, up front, so nobody waits forty seconds for that.
+    from first_run import (apply_capital, ask_capital, should_ask, warn_text)
 
-    # ---- market regime -> how much to deploy -------------------------------
-    regime_cfg = settings.regime or {}
-    from fetchers.data_fetcher import DataFetcher
-    fetcher = DataFetcher(settings)
-    fx_data = fetcher.fetch_technical_data([regime_cfg.get("fx_ticker", "IDR=X")])
+    wants_window = not args.browser
+    if should_ask(settings):
+        chosen = ask_capital(logger) if (wants_window and _can_prompt()) else None
+        if chosen:
+            apply_capital(chosen, settings)
+            logger.info(f"Capital set to Rp{chosen:,.0f} (configs/user.yaml)")
+        else:
+            # Declined, or a path that must never block: warn loudly and continue.
+            print(warn_text(settings))
 
-    regime = assess_regime(
-        _close_series(benchmark_data, regime_cfg.get("benchmark", "^JKSE")),
-        _close_series(fx_data, regime_cfg.get("fx_ticker", "IDR=X")),
-        trend_ma=int(regime_cfg.get("trend_ma", 200)),
-        deploy_ladder=regime_cfg.get("deploy_ladder"),
-    )
-    logger.info(f"Regime: {regime.label} -> deploy {regime.deploy_pct:.0%}")
+    from runner import full_run, render
+    ctx = full_run(settings, args, logger)
+    plan_holder = render(ctx)
+    plan, perf, brief_path = ctx.plan, ctx.perf, plan_holder
+    df = ctx.df
+    regime = ctx.regime
+    season_line = ctx.season_line
+    benchmark_data = ctx.benchmark_data
 
-    # ---- today's decision ---------------------------------------------------
-    holdings = load_holdings(
-        (settings.account or {}).get("holdings_path", "current_holdings.yaml"),
-        lot_size=settings.lot_size,
-    )
-    # Events and seasonality: context the user already gathers by hand.
-    from cli import collect_events
-    from market import seasonality as S
-    all_events, blind = collect_events(settings)
-    horizon = int(getattr(settings, "event_horizon_days", 14))
-    near_events = E.upcoming(all_events, horizon)
-
-    # period="max", not the 2y panel: two years gives ~2 observations per month,
-    # which is noise rather than a base rate.
-    season_line = ""
-    season_table = None
-    try:
-        jkse = fetcher.fetch_technical_data(
-            [regime_cfg.get("benchmark", "^JKSE")], period="max"
-        ).get(regime_cfg.get("benchmark", "^JKSE"))
-        if jkse is not None and "Close" in jkse:
-            season_table = S.monthly_seasonality(jkse["Close"])
-            season_line = S.describe(S.for_month(season_table))
-    except Exception as e:
-        logger.warning(f"Seasonality unavailable: {e}")
-
-    plan = assemble(settings, df, regime, holdings, events=all_events, blind=blind)
-
-    pd.DataFrame(plan["orders"]).to_csv(settings.output_dir / "ticket.csv", index=False)
-
-    # Performance reuses prices already fetched for the screen, so the journal
-    # section costs no extra network round-trips.
-    from cli import build_performance
-    from report.journal_view import brief_section, console_block
-    perf = build_performance(
-        settings,
-        prices=plan["prices"],
-        ihsg=_close_series(benchmark_data, regime_cfg.get("benchmark", "^JKSE")),
-    )
-
-    # ---- the Advanced half --------------------------------------------------
-    # Nothing here fetches. Every input is already in memory or already on disk;
-    # the whole block exists to stop throwing that work away. Any single section
-    # that has no data renders as "" and disappears, so a failure here degrades to
-    # a smaller Advanced view rather than a broken brief.
-    advanced_html = ""
-    try:
-        from analysis.fundamental import FundamentalEngine
-        from cli import _paths
-        from portfolio.journal import load_marks
-        from report.advanced import render_advanced, whatif_grid
-
-        _, marks_path, _ = _paths(settings)
-        ticket_tickers = [o["ticker"] for o in plan["orders"] if o["action"] == "BUY"]
-        breakdown = ticket_tickers or [c["ticker"] for c in plan["candidates"][:5]]
-
-        advanced_html = render_advanced(
-            df=df,
-            factor_weights=settings.factor_weights,
-            breakdown_tickers=breakdown,
-            correlations=FundamentalEngine(settings).compute_factor_correlations(df),
-            benchmark=_close_series(benchmark_data, regime_cfg.get("benchmark", "^JKSE")),
-            trend_ma=int(regime_cfg.get("trend_ma", 200)),
-            benchmark_name=regime_cfg.get("benchmark_label", "IHSG"),
-            seasonality_table=season_table,
-            current_month=pd.Timestamp.today().month,
-            marks=load_marks(marks_path),
-            allocation=plan["allocation"],
-            max_per_sector=settings.max_per_sector,
-            whatif=whatif_grid(
-                plan["candidates_all"], settings, settings.capital_rp, regime.deploy_pct
-            ),
-            capital=settings.capital_rp,
-            deploy_pct=regime.deploy_pct,
-        )
-    except Exception as e:
-        logger.warning(f"Advanced sections unavailable: {e}")
-
-    # ---- the Steps half -----------------------------------------------------
-    # Reads the trail `assemble` recorded while the gates ran. Nothing is
-    # recomputed here: an explanation that re-derives the rules would eventually
-    # disagree with them, and a confident wrong explanation is worse than none.
-    steps_html = ""
-    try:
-        from report.steps import render_steps
-        steps_html = render_steps(plan.get("trail"), plan["orders"])
-    except Exception as e:
-        logger.warning(f"Steps view unavailable: {e}")
-
-    # ---- the index panel ----------------------------------------------------
-    # Real OHLC from the cached frame, not decoration. The chart is daily and the
-    # panel says so -- a daily series dressed as an intraday line would imply a feed
-    # this tool has never had.
-    market = None
-    try:
-        bm_key = regime_cfg.get("benchmark", "^JKSE")
-        raw = benchmark_data.get(bm_key)
-        if raw is not None and "Close" in raw and len(raw) > 2:
-            from report import charts
-            trend_ma = int(regime_cfg.get("trend_ma", 200))
-            window = raw.tail(260)
-            closes = window["Close"].dropna()
-            ma = raw["Close"].rolling(trend_ma, min_periods=max(2, trend_ma // 4)).mean()
-            market = {
-                "name": regime_cfg.get("benchmark_label", "IHSG"),
-                "last": float(closes.iloc[-1]),
-                "prev": float(closes.iloc[-2]),
-                "open": float(window["Open"].iloc[-1]) if "Open" in window else None,
-                "high": float(window["High"].iloc[-1]) if "High" in window else None,
-                "low": float(window["Low"].iloc[-1]) if "Low" in window else None,
-                "ma_last": float(ma.dropna().iloc[-1]) if ma.notna().any() else None,
-                "trend_ma": trend_ma,
-                "chart": charts.line_chart(
-                    [("close", closes.tolist()),
-                     (f"{trend_ma}d mean", ma.tail(len(closes)).tolist())],
-                    x_labels=[d.strftime("%b %y") for d in closes.index],
-                    label=f"{bm_key} daily close against its {trend_ma}-day mean",
-                    height=190,
-                ),
-            }
-    except Exception as e:
-        logger.warning(f"Index panel unavailable: {e}")
-
-    # ---- the settings page --------------------------------------------------
-    # A read-only view of the numbers actually driving every gate, so a rule can be
-    # found and changed rather than merely obeyed.
-    def _rows(pairs):
-        return "".join(f"<tr><td>{k}</td><td class='num'>{v}</td></tr>" for k, v in pairs)
-
-    broker = settings.broker or {}
-    account = settings.account or {}
-    liq = settings.liquidity or {}
-    settings_html = (
-        '<div class="setgrp"><h3>Broker (Indopremier)</h3><table>' + _rows([
-            ("Buy fee", f"{float(broker.get('buy_fee', 0)):.2%}"),
-            ("Sell fee", f"{float(broker.get('sell_fee', 0)):.2%}"),
-            ("Stamp duty, per day with a sell", rp(float(broker.get("stamp_duty_rp", 0)))),
-            ("Lot size", broker.get("lot_size", 100)),
-        ]) + "</table></div>"
-        '<div class="setgrp"><h3>Account</h3><table>' + _rows([
-            ("Capital", rp(settings.capital_rp)),
-            ("Positions allowed", f"{account.get('min_positions', 3)}-{account.get('max_positions', 6)}"),
-            ("Smallest position", rp(float(account.get("min_position_rp", 0)))),
-            ("Max per sector", settings.max_per_sector),
-            ("Shortlist size", settings.top_picks_n),
-        ]) + "</table></div>"
-        '<div class="setgrp"><h3>Liquidity gate</h3><table>' + _rows([
-            ("Minimum traded per day", rp(float(liq.get("min_median_daily_value_rp", 0)))),
-            ("Max position vs daily volume",
-             f"{float(liq.get('max_position_pct_of_daily_value', 0)):.0%}"),
-        ]) + "</table></div>"
-        '<div class="setgrp"><h3>Factor weights</h3><table>' + _rows(
-            [(k, f"{v:+.1f}") for k, v in (settings.factor_weights or {}).items()]
-        ) + "</table></div>"
-        '<div class="note">All of these live in <code>configs/default.yaml</code>; '
-        "your capital comes from the git-ignored <code>configs/user.yaml</code>.</div>"
-    )
-
-    # ---- the ledger and the trade form --------------------------------------
-    # The form only works in the app window, where the Python bridge exists. Opened
-    # as a plain file it renders the equivalent command instead -- a form with
-    # nothing behind it looks like it worked.
-    ledger_html = trade_form_html = ""
-    try:
-        from desktop import available as _desktop_available
-        from report.journal_view import cli_fallback, journal_panels, trade_form
-
-        ledger_html = journal_panels(settings, prices=plan["prices"])
-        trade_form_html = (trade_form() if (_desktop_available() and not args.browser)
-                           else cli_fallback())
-    except Exception as e:
-        logger.warning(f"Ledger unavailable: {e}")
-
-    brief_path = write_brief(
-        render_brief(
-            regime=regime,
-            orders=plan["orders"],
-            fees=plan["fees"],
-            capital=settings.capital_rp,
-            holdings_rows=plan["holdings_rows"],
-            candidates=plan["candidates"],
-            rejected=plan["rejected"],
-            capped=plan["capped"],
-            allocation=plan["allocation"],
-            journal_html=brief_section(perf),
-            events=near_events,
-            blind_n=len(blind),
-            event_horizon=horizon,
-            seasonality=season_line,
-            universe_n=len(df),
-            imputed_n=int((df["imputed_factors"].fillna("").str.len() > 0).sum()),
-            advanced_html=advanced_html,
-            steps_html=steps_html,
-            settings_html=settings_html,
-            ledger_html=ledger_html,
-            trade_form_html=trade_form_html,
-            market=market,
-        ),
-        settings.output_dir,
-    )
-
-    # The matplotlib PNG is opt-in. It was written on every run at 896KB and no
-    # page ever linked to it, its colours are baked white so it fights the dark
-    # theme, and one of its six panels plots `beta` -- the field the scorer
-    # deliberately refuses to use. The Advanced view replaces it; --png keeps it
-    # available for anyone who wants the file.
+    # The matplotlib PNG is opt-in. It was written on every run at 896KB and no page
+    # ever linked to it, its colours are baked white so it fights the dark theme, and
+    # one of its six panels plots `beta` -- the field the scorer deliberately refuses
+    # to use. The Screener view replaces it; --png keeps it available.
     if getattr(args, "png", False):
         try:
             from viz.renderer import ScreenerViz
@@ -340,11 +153,27 @@ def main() -> None:
     # done and written by this point, and a window failing to open must not lose it.
     from api import TerminalAPI
     from desktop import open_result
-    route = open_result(brief_path, prefer_desktop=not args.browser,
-                        title="IDX Terminal", logger=logger,
-                        js_api=TerminalAPI(settings, prices=plan["prices"], logger=logger))
+
+    # webview.start() blocks with no output of its own, so without these lines a
+    # working app looks hung: the log simply stops after "Brief:".
+    # flush: stdout is block-buffered when it is redirected to a file rather than a
+    # console, and webview.start() then blocks for as long as the window is open. The
+    # last thing the reader saw would be nothing at all.
+    if args.browser:
+        print("\nOpening it in your browser...", flush=True)
+    else:
+        print("\nOpening the terminal window - close it to exit.", flush=True)
+        print("  Rebuild redraws in ~2s; Re-run screen fetches fresh prices.", flush=True)
+
+    route = open_result(
+        brief_path, prefer_desktop=not args.browser, title="IDX Terminal",
+        logger=logger,
+        js_api=TerminalAPI(settings, prices=plan["prices"], logger=logger, ctx=ctx),
+    )
     if route == "none":
         print("  (could not open it automatically - open the file above yourself)")
+    elif route == "desktop":
+        print("Window closed.")
 
 
 if __name__ == "__main__":

@@ -73,6 +73,13 @@ Three breakpoints, not two: a single jump from three columns to one leaves the
 900–1200px band showing three squeezed columns, which is worse than either end.
 Tables scroll sideways rather than compressing.
 
+**Rebuild and Re-run** sit in the top bar with their real cost on the label. Rebuild
+redraws from what is already loaded in about two seconds — that is the one you want
+after recording a trade or changing a setting, since the market has not moved.
+Re-run screen fetches all 49 tickers again and re-ranks, about forty seconds. Both
+appear only once the app has answered, because a refresh button that cannot refresh
+is the same lie as a form with nothing behind it.
+
 **Two things from a real broker's terminal are deliberately missing.** There is no
 BUY or SELL button — a control that looks like it trades, in a tool that sits beside
 your actual broker, is a hazard and not a feature; the top bar shows the regime and
@@ -104,12 +111,17 @@ Unzip `IDX-Terminal-windows.zip` anywhere and double-click **IDX Terminal.exe**.
 No Python, no virtualenv, no command line. ~44MB zipped, ~91MB unzipped, and it
 starts in under two seconds.
 
-Your capital goes in `configs\user.yaml` beside the exe:
+**The first launch asks how much you are investing**, before it fetches anything,
+and saves it to `configs\user.yaml` beside the exe. You can change it later in
+Settings, or by editing that file:
 
 ```yaml
 account:
   capital_rp: 25000000     # your number
 ```
+
+If it is ever still on the shipped placeholder, the ticket says so in red above the
+lot counts. Every number under that banner is sized for money that is not yours.
 
 Everything the app writes — configs, price cache, the terminal it generates, your
 journal — stays in that folder. Nothing is sent anywhere.
@@ -476,7 +488,7 @@ factor does at this account size:
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                      # 551 tests, no network required
+pytest                      # 578 tests, no network required
 ```
 
 ```
@@ -492,6 +504,8 @@ src/
 ├── cli.py         --log / --mark / --journal handlers
 ├── core/paths.py  where files live, from source or from the .exe
 ├── api.py         the bridge the page calls to record a trade
+├── runner.py      full_run (fetches) and render (does not)
+├── first_run.py   asks for capital before the first fetch
 ├── desktop.py     native window, with a browser fallback
 └── pipeline.py    shared orchestration
 ```
@@ -503,7 +517,7 @@ lunch break, and `streamlit run` plus a port plus a terminal you must not close 
 that budget on ceremony. The one genuinely interactive question, *"what if I sized it
 differently?"*, is answered by precomputing the whole surface with the real sizer and
 embedding it, because `choose_allocation` is pure and cheap. Keeping the page a pure
-function that returns a string is also what lets all 551 tests run offline.
+function that returns a string is also what lets all 578 tests run offline.
 
 [docs/AUDIT.md](docs/AUDIT.md) records what was broken in the original build, with
 the measurements that showed it.
