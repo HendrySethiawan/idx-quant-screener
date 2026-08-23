@@ -98,12 +98,48 @@ Also written: `screener_results.csv` (full ranked universe with every `z_*`),
 
 ## Quick start
 
+### Just run it (Windows)
+
+Unzip `IDX-Terminal-windows.zip` anywhere and double-click **IDX Terminal.exe**.
+No Python, no virtualenv, no command line. ~44MB zipped, ~91MB unzipped, and it
+starts in under two seconds.
+
+Your capital goes in `configs\user.yaml` beside the exe:
+
+```yaml
+account:
+  capital_rp: 25000000     # your number
+```
+
+Everything the app writes — configs, price cache, the terminal it generates, your
+journal — stays in that folder. Nothing is sent anywhere.
+
+> **Windows will warn you the first time** ("Windows protected your PC"), because the
+> build is not signed with a paid certificate. *More info → Run anyway*. Some
+> antivirus tools flag PyInstaller programs for the same reason. Building it yourself
+> from source is the alternative, below.
+
+### Or from source
+
 ```bash
 pip install -r requirements.txt
 python main.py                 # opens the terminal in a native window
 python main.py --browser       # open it in a browser tab instead
 python main.py --png           # also write the old matplotlib screener_analysis.png
 ```
+
+### Building the .exe yourself
+
+```bash
+pip install -r requirements-dev.txt
+python packaging/build.py      # -> dist/IDX-Terminal-windows.zip
+```
+
+Windows only; PyInstaller does not cross-compile. The build **refuses to finish** if
+it finds a personal file or your capital figure anywhere in the output — a comment
+in a spec file is a promise, and this is a check. It caught a real one on the first
+run: the example capital I had written into the bundled README happened to be the
+same number as the real one.
 
 First run fetches ~2 years of prices for 49 tickers and takes a minute or two;
 afterwards the cache makes it fast.
@@ -404,7 +440,7 @@ factor does at this account size:
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                      # 476 tests, no network required
+pytest                      # 503 tests, no network required
 ```
 
 ```
@@ -418,6 +454,7 @@ src/
 ├── backtest/      historical simulation under real frictions
 ├── viz/           the optional matplotlib PNG (--png)
 ├── cli.py         --log / --mark / --journal handlers
+├── core/paths.py  where files live, from source or from the .exe
 ├── desktop.py     native window, with a browser fallback
 └── pipeline.py    shared orchestration
 ```
@@ -429,7 +466,7 @@ lunch break, and `streamlit run` plus a port plus a terminal you must not close 
 that budget on ceremony. The one genuinely interactive question, *"what if I sized it
 differently?"*, is answered by precomputing the whole surface with the real sizer and
 embedding it, because `choose_allocation` is pure and cheap. Keeping the page a pure
-function that returns a string is also what lets all 476 tests run offline.
+function that returns a string is also what lets all 503 tests run offline.
 
 [docs/AUDIT.md](docs/AUDIT.md) records what was broken in the original build, with
 the measurements that showed it.
