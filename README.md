@@ -15,10 +15,10 @@ minutes.
 
 ## What it produces
 
-`data/output/brief.html` — one self-contained page with two modes.
+`data/output/brief.html` — one self-contained page with three modes.
 
 **Simple** is the default, and it is complete on its own. You can trade off it and
-never open the other half:
+never open the other two:
 
 | Section | What it answers |
 |---|---|
@@ -30,6 +30,14 @@ never open the other half:
 | Skipped | Names that ranked well but failed the liquidity or lot-size gate |
 | Events next 14 days | Earnings, ex-dividend, index reviews — labelled auto / you / est. |
 | How you're doing | Realised P&L net of fees, and your total versus the same money in IHSG |
+
+**Steps** is how it got there — the chain from 49 names to today's ticket:
+
+| Section | What it answers |
+|---|---|
+| The funnel | Every stage with its counts: `49 → 49 → 45 → 45 → 8 → 3` |
+| One card per stage | The rule in plain words, the config key that sets it, and every name it dropped with the reason that gate gave |
+| **Why wasn't this suggested?** | Type any ticker — all 49, including names cut at the first gate — and see exactly where it stopped |
 
 **Advanced** is the evidence behind it:
 
@@ -46,8 +54,15 @@ never open the other half:
 | Data quality | Which names were scored neutral on what |
 
 The toggle is a CSS attribute on one file — nothing reloads, nothing refetches, and
-the two modes are rendered from the same data so they cannot disagree. Your choice
-is remembered. Printing gives you the ticket only.
+all three modes are rendered from the same data so they cannot disagree. Your choice
+is remembered, the toggle stays put as you scroll, and the jump list follows whichever
+mode you are in. Printing gives you the ticket only.
+
+**The Steps view is recorded, not reconstructed.** Each gate writes down what it did
+as it runs, and the view only reads that — so the explanation cannot drift away from
+the decision. A test asserts the funnel reconciles at every stage (`in − dropped ==
+out`, and each stage starts where the last ended); it caught a real gap on the first
+run, where five names left the sizing stage unaccounted for.
 
 Also written: `screener_results.csv` (full ranked universe with every `z_*`),
 `top_picks.csv`, `ticket.csv`, `factor_correlations.csv`.
@@ -65,7 +80,7 @@ python main.py --png       # also write the old matplotlib screener_analysis.png
 The brief opens in your browser automatically. First run fetches ~2 years of prices
 for 49 tickers and takes a minute or two; afterwards the cache makes it fast.
 
-There is no server to start and no port to remember — the brief is a single ~140KB
+There is no server to start and no port to remember — the brief is a single ~220KB
 HTML file that opens from disk, offline, and keeps working as an archive of what the
 tool said on a given day.
 
@@ -354,17 +369,17 @@ factor does at this account size:
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                      # 365 tests, no network required
+pytest                      # 408 tests, no network required
 ```
 
 ```
 src/
 ├── core/          config + logging
 ├── fetchers/      yfinance access, windowed cache, currency repair
-├── analysis/      technical indicators, factor scoring, peer-multiple valuation
+├── analysis/      indicators, factor scoring, valuation, the decision trail
 ├── market/        regime, liquidity gate, events, seasonality
 ├── portfolio/     fees, lot-aware sizing, holdings, journal, performance
-├── report/        reasons, the HTML brief, the Advanced view, inline SVG charts
+├── report/        the brief: Simple, Steps and Advanced, plus inline SVG charts
 ├── backtest/      historical simulation under real frictions
 ├── viz/           the optional matplotlib PNG (--png)
 ├── cli.py         --log / --mark / --journal handlers
@@ -378,7 +393,7 @@ lunch break, and `streamlit run` plus a port plus a terminal you must not close 
 that budget on ceremony. The one genuinely interactive question, *"what if I sized it
 differently?"*, is answered by precomputing the whole surface with the real sizer and
 embedding it, because `choose_allocation` is pure and cheap. Keeping the page a pure
-function that returns a string is also what lets all 365 tests run offline.
+function that returns a string is also what lets all 408 tests run offline.
 
 [docs/AUDIT.md](docs/AUDIT.md) records what was broken in the original build, with
 the measurements that showed it.
