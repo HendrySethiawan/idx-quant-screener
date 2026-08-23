@@ -57,6 +57,7 @@ def launch(
     title: str = "IDX Terminal",
     size: Tuple[int, int] = DEFAULT_SIZE,
     logger=None,
+    js_api=None,
 ) -> bool:
     """
     Show `path` in a native window and block until it is closed.
@@ -86,6 +87,10 @@ def launch(
             min_size=MIN_SIZE,
             resizable=True,
             text_select=True,                    # it is a report; let people copy from it
+            # Exposed to the page as window.pywebview.api. This is what lets the
+            # terminal record a trade without a web server. Optional: a page opened
+            # as a plain file simply finds no bridge and shows the CLI command.
+            js_api=js_api,
         )
         # No `func`, so nothing runs alongside the window and there is no worker to
         # outlive it. No http_server: the page is self-contained and file:// is
@@ -107,7 +112,7 @@ def launch(
 
 
 def open_result(path, prefer_desktop: bool = True, title: str = "IDX Terminal",
-                logger=None) -> str:
+                logger=None, js_api=None) -> str:
     """
     Show the finished brief. Returns which route was taken, for the caller to print.
 
@@ -115,7 +120,7 @@ def open_result(path, prefer_desktop: bool = True, title: str = "IDX Terminal",
     registered, `webbrowser.open` raises, and the run has already done its job by
     then -- the file is on disk and the console summary is printed.
     """
-    if prefer_desktop and launch(path, title=title, logger=logger):
+    if prefer_desktop and launch(path, title=title, logger=logger, js_api=js_api):
         return "desktop"
 
     import webbrowser

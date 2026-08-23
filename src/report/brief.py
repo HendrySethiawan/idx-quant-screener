@@ -32,6 +32,43 @@ _EXTRA_CSS = """
 .verdict .why{color:var(--muted);font-size:11.5px;flex:1;min-width:160px}
 .setgrp{margin-bottom:14px}
 .setgrp h3{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+
+/* --- input ------------------------------------------------------------- */
+.trade-form{display:flex;flex-direction:column;gap:8px}
+.tf-row{display:flex;gap:9px;flex-wrap:wrap;align-items:flex-end}
+.tf-row label{display:flex;flex-direction:column;gap:3px;font-size:10.5px;
+  text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+.tf-row input,.tf-row select{font:inherit;font-size:12.5px;padding:5px 8px;
+  border-radius:5px;border:1px solid var(--line);background:var(--surface-3);
+  color:var(--ink);text-transform:none;letter-spacing:normal;max-width:150px}
+.tf-row input[type=radio]{max-width:none;margin-right:5px}
+.tf-row label:has(input[type=radio]){flex-direction:row;align-items:center;
+  font-size:12.5px;text-transform:none;letter-spacing:normal;color:var(--ink)}
+.tf-go{font:inherit;font-size:12.5px;font-weight:700;cursor:pointer;padding:7px 16px;
+  border-radius:6px;border:1px solid transparent;background:var(--accent);color:#fff}
+.tf-go:hover{filter:brightness(1.1)}
+.tf-go:disabled{opacity:.5;cursor:default}
+.tf-preview{font-size:11.5px;font-variant-numeric:tabular-nums;
+  background:var(--surface-3);border:1px solid var(--line);border-radius:6px;
+  padding:8px 11px;min-height:34px}
+.tf-preview .row{display:flex;justify-content:space-between;gap:14px}
+.tf-preview .row.total{border-top:1px solid var(--line);margin-top:5px;
+  padding-top:5px;font-weight:700}
+pre.cli{background:var(--surface-3);border:1px solid var(--line);border-radius:6px;
+  padding:9px 11px;font-size:11.5px;overflow-x:auto;margin:8px 0;
+  font-family:Consolas,"Courier New",monospace}
+.set-row{display:flex;align-items:center;gap:9px;padding:6px 0;
+  border-bottom:1px solid var(--line);flex-wrap:wrap}
+.set-row:last-child{border-bottom:none}
+.set-row .lbl{flex:1;min-width:130px;font-size:12px}
+.set-row input{font:inherit;font-size:12px;padding:4px 7px;border-radius:5px;
+  border:1px solid var(--line);background:var(--surface-3);color:var(--ink);width:130px;
+  text-align:right;font-variant-numeric:tabular-nums}
+.set-row .dflt{font-size:10.5px;color:var(--muted);min-width:96px}
+.set-row button{font:inherit;font-size:11px;padding:3px 9px;border-radius:5px;
+  border:1px solid var(--line);background:var(--surface);color:var(--muted);cursor:pointer}
+.set-row button:hover{color:var(--ink)}
+.set-row.changed .lbl::after{content:" \\2022";color:var(--accent)}
 """
 
 
@@ -392,6 +429,8 @@ def render_brief(
     advanced_html: str = "",
     steps_html: str = "",
     settings_html: str = "",
+    ledger_html: str = "",
+    trade_form_html: str = "",
     market: Optional[dict] = None,
     generated: Optional[datetime] = None,
 ) -> str:
@@ -456,11 +495,16 @@ def render_brief(
     ])
 
     portfolio = T.grid([
-        T.column([T.panel("What you hold", _holdings_section(holdings_rows), grow=True)]),
-        T.column([T.panel("How you are doing",
-                          journal_html or '<div class="empty">No trades logged yet. '
-                          "Record one with <code>python main.py --log</code>.</div>",
-                          grow=True)]),
+        T.column([
+            T.panel("Record a trade", trade_form_html, pid="panel-trade"),
+            T.panel("How you are doing",
+                    journal_html or '<div class="empty">Nothing logged yet.</div>',
+                    grow=True),
+        ]),
+        T.column([
+            T.panel("Your ledger", f'<div id="ledger">{ledger_html}</div>',
+                    pid="panel-ledger", grow=True),
+        ]),
     ])
 
     pages = [
@@ -480,8 +524,21 @@ def render_brief(
             "The decision, stage by stage"))
     pages.append(T.Page(
         "settings", "Settings", "settings",
-        T.grid([T.column([T.panel("What is driving the rules",
-                                  (settings_html or "") + disclaimer, grow=True)])]),
+        T.grid([
+            T.column([T.panel(
+                "Change a setting",
+                '<div id="settings-editor"><div class="empty">Editing needs the app '
+                "window. Opened as a file, this page shows the values but cannot "
+                "change them &mdash; edit <code>configs/user.yaml</code> instead."
+                "</div></div>"
+                '<div class="note">Edits are written to <code>configs/user.yaml</code>, '
+                "never to <code>default.yaml</code>, so the shipped defaults stay "
+                "recoverable and a bad change is one deleted file away from fixed."
+                "</div>",
+                pid="panel-settings-editor")]),
+            T.column([T.panel("What is driving the rules",
+                              (settings_html or "") + disclaimer, grow=True)]),
+        ]),
         "The numbers behind every gate"))
 
     regime_kind = {"RISK-ON": "good", "RISK-OFF": "bad"}.get(regime.label, "warn")

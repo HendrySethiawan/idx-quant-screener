@@ -33,14 +33,14 @@ datas = [
 # but these are named explicitly so a missed one fails here rather than at runtime
 # in front of the reader.
 hiddenimports = [
-    "cli", "desktop",
+    "cli", "desktop", "api",
     "core.config", "core.logger", "core.paths",
     "analysis.fundamental", "analysis.selection", "analysis.technical",
     "analysis.trace", "analysis.valuation",
     "fetchers.data_fetcher",
     "market.events", "market.liquidity", "market.regime", "market.seasonality",
     "portfolio.fees", "portfolio.holdings", "portfolio.journal",
-    "portfolio.performance", "portfolio.sizing",
+    "portfolio.ledger", "portfolio.performance", "portfolio.sizing",
     "report.advanced", "report.assemble", "report.brief", "report.charts",
     "report.explain", "report.journal_view", "report.layout", "report.steps",
     "report.terminal",

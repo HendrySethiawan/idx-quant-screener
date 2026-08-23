@@ -528,6 +528,112 @@ SHELL_JS = """
     q.addEventListener("change",lookup);
   }
 
+  // ---- the Python bridge --------------------------------------------------
+  // Present only in the app window. Opened as a plain file there is no bridge, the
+  // forms are never wired, and the page shows the equivalent command instead -- a
+  // form with nothing behind it is worse than no form, because it looks like it
+  // worked.
+  function api(){
+    return (window.pywebview && window.pywebview.api) ? window.pywebview.api : null;
+  }
+  var rpFmt=function(v){return "Rp"+Math.round(v).toLocaleString("en-US");};
+
+  var form=document.getElementById("trade-form");
+  if(form && api()){
+    var $=function(id){return document.getElementById(id);};
+    var out=$("tf-preview"), msg=$("tf-msg"), go=$("tf-submit");
+    function fields(){
+      return {
+        action:(document.querySelector("input[name=tf-action]:checked")||{}).value||"BUY",
+        ticker:$("tf-ticker").value.trim(),
+        lots:$("tf-lots").value, price:$("tf-price").value,
+        on_date:$("tf-date").value, note:$("tf-note").value,
+        source:$("tf-source").value
+      };
+    }
+    function row(k,v,cls){
+      return '<div class="row'+(cls?" "+cls:"")+'"><span>'+k+"</span><span>"+v+"</span></div>";
+    }
+    function preview(){
+      var f=fields();
+      if(!f.ticker||!f.lots||!f.price){out.innerHTML="";go.disabled=true;return;}
+      // Costed by Python against the real journal, so the stamp knows whether this
+      // would be the first sell of the day. Never recomputed here.
+      api().preview_trade(f.action,f.ticker,f.lots,f.price,f.on_date).then(function(r){
+        if(!r.ok){out.innerHTML='<span class="note">'+esc(r.message)+"</span>";go.disabled=true;return;}
+        var d=r.data, buying=d.action==="BUY";
+        out.innerHTML=
+          row("Gross",rpFmt(d.gross_rp))+
+          row((buying?"Buy":"Sell")+" fee",rpFmt(d.fee_rp))+
+          row("Stamp",d.stamp_rp>0?rpFmt(d.stamp_rp):"Rp0 - already stamped today")+
+          row(buying?"Total out of account":"Net into account",
+              rpFmt(Math.abs(d.net_rp)),"total")+
+          (r.message?'<div class="note">'+esc(r.message)+"</div>":"");
+        go.disabled=false;
+      });
+    }
+    ["tf-ticker","tf-lots","tf-price","tf-date"].forEach(function(id){
+      $(id).addEventListener("input",preview);
+    });
+    [].forEach.call(document.querySelectorAll("input[name=tf-action]"),function(el){
+      el.addEventListener("change",preview);
+    });
+    go.addEventListener("click",function(){
+      var f=fields();
+      go.disabled=true; msg.textContent="Recording...";
+      api().log_trade(f.action,f.ticker,f.lots,f.price,f.on_date,f.note,f.source)
+        .then(function(r){
+          msg.textContent=r.message;
+          msg.style.color=r.ok?"var(--good)":"var(--bad)";
+          if(r.ok){
+            var led=document.getElementById("ledger");
+            if(led&&r.data&&r.data.journal_html) led.innerHTML=r.data.journal_html;
+            $("tf-ticker").value=""; $("tf-price").value=""; $("tf-note").value="";
+            out.innerHTML="";
+          }
+          go.disabled=false;
+        });
+    });
+  }
+
+  // ---- settings editor ----------------------------------------------------
+  var editor=document.getElementById("settings-editor");
+  if(editor && api()){
+    api().get_settings().then(function(r){
+      if(!r.ok) return;
+      editor.innerHTML="";
+      r.data.fields.forEach(function(f){
+        var d=document.createElement("div");
+        d.className="set-row"+(f.overridden?" changed":"");
+        d.innerHTML='<span class="lbl">'+esc(f.label)+"</span>"+
+          '<input value="'+esc(f.value)+'">'+
+          '<span class="dflt">default '+esc(f.default)+"</span>"+
+          "<button>reset</button>";
+        var input=d.querySelector("input"), reset=d.querySelector("button");
+        function say(r2){
+          var n=document.createElement("div");
+          n.className="note"; n.textContent=r2.message;
+          n.style.color=r2.ok?"var(--good)":"var(--bad)";
+          n.style.flexBasis="100%";
+          var old=d.querySelector(".note"); if(old) d.removeChild(old);
+          d.appendChild(n);
+        }
+        input.addEventListener("change",function(){
+          api().save_setting(f.path,input.value).then(function(r2){
+            say(r2); if(r2.ok) d.classList.add("changed");
+          });
+        });
+        reset.addEventListener("click",function(){
+          api().reset_setting(f.path).then(function(r2){
+            say(r2);
+            if(r2.ok){input.value=f.default; d.classList.remove("changed");}
+          });
+        });
+        editor.appendChild(d);
+      });
+    });
+  }
+
   // ---- what-if: a lookup into a table computed at render time -------------
   var raw=document.getElementById("wi-data");
   if(raw){

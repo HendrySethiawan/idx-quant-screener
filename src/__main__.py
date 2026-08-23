@@ -247,6 +247,21 @@ def main() -> None:
         "your capital comes from the git-ignored <code>configs/user.yaml</code>.</div>"
     )
 
+    # ---- the ledger and the trade form --------------------------------------
+    # The form only works in the app window, where the Python bridge exists. Opened
+    # as a plain file it renders the equivalent command instead -- a form with
+    # nothing behind it looks like it worked.
+    ledger_html = trade_form_html = ""
+    try:
+        from desktop import available as _desktop_available
+        from report.journal_view import cli_fallback, journal_panels, trade_form
+
+        ledger_html = journal_panels(settings, prices=plan["prices"])
+        trade_form_html = (trade_form() if (_desktop_available() and not args.browser)
+                           else cli_fallback())
+    except Exception as e:
+        logger.warning(f"Ledger unavailable: {e}")
+
     brief_path = write_brief(
         render_brief(
             regime=regime,
@@ -268,6 +283,8 @@ def main() -> None:
             advanced_html=advanced_html,
             steps_html=steps_html,
             settings_html=settings_html,
+            ledger_html=ledger_html,
+            trade_form_html=trade_form_html,
             market=market,
         ),
         settings.output_dir,
@@ -321,9 +338,11 @@ def main() -> None:
     # A native window by default, a browser tab if that is not possible or if
     # --browser was asked for. `open_result` never raises: the analysis is already
     # done and written by this point, and a window failing to open must not lose it.
+    from api import TerminalAPI
     from desktop import open_result
     route = open_result(brief_path, prefer_desktop=not args.browser,
-                        title="IDX Terminal", logger=logger)
+                        title="IDX Terminal", logger=logger,
+                        js_api=TerminalAPI(settings, prices=plan["prices"], logger=logger))
     if route == "none":
         print("  (could not open it automatically - open the file above yourself)")
 

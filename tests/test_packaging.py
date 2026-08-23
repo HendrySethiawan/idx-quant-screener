@@ -165,9 +165,9 @@ def test_the_spec_names_pywebviews_windows_backend(spec_text):
 def test_the_spec_declares_the_function_level_imports(spec_text):
     """The journal subcommands import inside functions to stay fast."""
     hidden = spec_text.split("hiddenimports = [")[1].split("]")[0]
-    for module in ("cli", "desktop", "report.advanced", "report.steps",
+    for module in ("cli", "desktop", "api", "report.advanced", "report.steps",
                    "analysis.valuation", "analysis.trace", "portfolio.journal",
-                   "core.paths"):
+                   "portfolio.ledger", "core.paths"):
         assert f'"{module}"' in hidden
 
 
