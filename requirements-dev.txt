@@ -3,3 +3,4 @@ pytest>=7.4.0
 pytest-mock>=3.12.0
 black>=23.11.0
 ruff>=0.1.0
+pyinstaller>=6.0        # build the Windows package: packaging/build.py

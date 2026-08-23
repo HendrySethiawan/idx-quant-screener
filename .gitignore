@@ -44,3 +44,9 @@ models/*
 # OS specific
 .DS_Store
 Thumbs.db
+
+# PyInstaller build output. The folder is ~150MB and the zip ~60MB, both far past
+# what belongs in a git repo - build it with packaging/build.py, ship it as a
+# GitHub Release.
+build/
+dist/
