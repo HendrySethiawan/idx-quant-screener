@@ -25,7 +25,8 @@ never open the other half:
 | Market right now | Risk-on or risk-off, and what share of capital to deploy today |
 | **Do this today** | The ticket: BUY/SELL/HOLD, exact lots, exact rupiah, estimated fees |
 | What you hold | Current positions, P&L, and a health flag per name |
-| Best candidates you can afford | Ranked, with a plain-English reason for each |
+| Best candidates you can afford | Ranked, each with a fair-price range and a plain-English reason |
+| **Worth vs peers** | Below / in line / above the price peer multiples imply — on candidates *and* on what you already hold |
 | Skipped | Names that ranked well but failed the liquidity or lot-size gate |
 | Events next 14 days | Earnings, ex-dividend, index reviews — labelled auto / you / est. |
 | How you're doing | Realised P&L net of fees, and your total versus the same money in IHSG |
@@ -35,6 +36,7 @@ never open the other half:
 | Section | What it answers |
 |---|---|
 | Every stock, every factor | All 49 names with all 10 z-scores. Click any column to sort |
+| **What is it worth?** | The arithmetic behind every verdict: EPS, book value, peer multiples, both estimates, peer group |
 | Why these scored what they scored | Signed factor contributions per pick — which factor actually drove it |
 | Are the factors independent? | Correlation heatmap. Momentum counted three times is one factor, not three |
 | The regime signal, drawn | The index against its 200-day mean, so you can check the call by eye |
@@ -213,6 +215,70 @@ the daily brief uses, so it tests the strategy you actually run.
 
 ---
 
+## Ranking is not valuation
+
+These are two different questions and the tool answers them separately.
+
+**The rank score does not say anything is cheap.** `undervaluation_score` is min-max
+normalised across today's universe:
+
+```python
+df["undervaluation_score"] = (raw - raw.min()) / (raw.max() - raw.min())
+```
+
+So exactly one stock scores 1.00 and one scores 0.00 on every run, whatever the market
+is doing. In a bubble the top name still reads 1.00. It answers *"which of these 49"*,
+which is the question the ticket needs — but it is a ranking wearing a valuation's name,
+and the brief labels it **Rank score** for that reason.
+
+**Fair value is computed separately**, from two independent peer multiples:
+
+```
+EPS  = price / P/E      fair price = EPS  × peer median P/E
+BVPS = price / P/B      fair price = BVPS × peer median P/B
+```
+
+The fair zone is **the gap between those two estimates**. When they agree the zone is
+tight and the verdict is confident; when they fight it is wide and says so. There is no
+"within ±15% is fair" rule, because a fixed band would claim equal confidence for a name
+whose measures are 3% apart and one where they are 177% apart — both occur in the real
+universe. Peer group is the sector when it holds at least four names, otherwise the whole
+universe, and the brief always says which was used.
+
+Every name lands in one of five states, and none of them is silence:
+
+| State | Shown as |
+|---|---|
+| Both measures | `below peers · Rp6,560 – Rp12,999 · 71% below` |
+| One measure | `one measure · ~Rp631, no range` |
+| Measures disagree | the zone, plus `measures disagree` |
+| No usable multiple | `cannot value — no usable P/E and no usable P/B` |
+| No price | `cannot value` |
+
+On the current run: 41 of 49 valued on both measures, 7 on one, 1 not at all — and 13 of
+those 41 carry the disagreement flag.
+
+**Two things it cannot see.** Everything is relative to other IDX names, so if the whole
+market is expensive everything still reads "in line". And it takes no view on whether a
+premium is *deserved* — a company earning 60% on equity should trade above its peers, and
+this method will call it overvalued. ROE sits next to every verdict so you can apply that
+judgement yourself.
+
+> **The input subtlety that matters.** Valuation reads the *pre-winsorization* multiples.
+> Ranking uses clipped ones deliberately — that is what stops one bad P/B flattening a
+> whole factor — but clipping collapses every outlier onto the same bound, and on a real
+> run six unrelated tickers came back with `pe_ratio == 50.738811` to six decimals.
+> Deriving earnings from that would have invented them, for exactly the extreme names
+> where the question matters most.
+
+**No DCF, deliberately.** It needs cash-flow forecasts, a growth rate and a discount rate;
+yfinance supplies none of them, and a 1% change in the discount rate would move the answer
+more than everything else the tool measures. Cheapness against a stock's *own* 5-year
+average multiple would be better than peer-relative, and is blocked for the same reason
+the fundamentals cannot be backtested: yfinance gives a current snapshot only.
+
+---
+
 ## How the score works
 
 Each factor is turned into a cross-sectional z-score, multiplied by a signed weight,
@@ -275,6 +341,12 @@ factor does at this account size:
    calendar month. The line always shows `n` and says so. Context, not a rule.
 8. **Event coverage is partial.** Two-thirds of the universe has no automatic earnings
    date. The brief marks those explicitly rather than implying they are clear.
+9. **Fair value is peer-relative, not absolute.** It cannot see the whole market being
+   expensive, and it treats a deserved quality premium as overvaluation. See
+   [Ranking is not valuation](#ranking-is-not-valuation).
+10. **`gross_margin` is not reported for banks.** yfinance returns a literal `0.0`, which
+    the scorer used to read as a real observation — every bank scoring worst-in-class on
+    a factor that does not apply to them. It is now treated as missing and scored neutral.
 
 ---
 
@@ -282,14 +354,14 @@ factor does at this account size:
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                      # 323 tests, no network required
+pytest                      # 365 tests, no network required
 ```
 
 ```
 src/
 ├── core/          config + logging
 ├── fetchers/      yfinance access, windowed cache, currency repair
-├── analysis/      technical indicators, factor scoring, sector cap
+├── analysis/      technical indicators, factor scoring, peer-multiple valuation
 ├── market/        regime, liquidity gate, events, seasonality
 ├── portfolio/     fees, lot-aware sizing, holdings, journal, performance
 ├── report/        reasons, the HTML brief, the Advanced view, inline SVG charts
@@ -306,7 +378,7 @@ lunch break, and `streamlit run` plus a port plus a terminal you must not close 
 that budget on ceremony. The one genuinely interactive question, *"what if I sized it
 differently?"*, is answered by precomputing the whole surface with the real sizer and
 embedding it, because `choose_allocation` is pure and cheap. Keeping the page a pure
-function that returns a string is also what lets all 323 tests run offline.
+function that returns a string is also what lets all 365 tests run offline.
 
 [docs/AUDIT.md](docs/AUDIT.md) records what was broken in the original build, with
 the measurements that showed it.
