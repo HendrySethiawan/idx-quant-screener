@@ -274,6 +274,25 @@ def load_settings(
     return settings
 
 
+def _deep_merge(base: dict, updates: dict) -> dict:
+    """
+    Merge `updates` into `base`, recursing into nested dicts.
+
+    A shallow `dict.update` replaces a whole block: writing
+    `{"account": {"capital_rp": X}}` over a file that also held
+    `account.min_positions` would silently drop it. Editing one field at a time --
+    which is exactly what a settings screen does -- hits that on the second edit,
+    and the loss is invisible until a rule quietly reverts to its default.
+    """
+    out = dict(base)
+    for key, value in updates.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
 def save_user_overrides(updates: dict, path: str = USER_CONFIG_PATH) -> Path:
     """Write app-managed overrides to configs/user.yaml. default.yaml is never rewritten."""
     target = Path(path)
@@ -284,7 +303,43 @@ def save_user_overrides(updates: dict, path: str = USER_CONFIG_PATH) -> Path:
         with open(target, "r", encoding="utf-8") as f:
             existing = yaml.safe_load(f) or {}
 
-    existing.update(updates)
+    merged = _deep_merge(existing, updates)
     with open(target, "w", encoding="utf-8") as f:
-        yaml.safe_dump(existing, f, sort_keys=False, allow_unicode=True)
+        yaml.safe_dump(merged, f, sort_keys=False, allow_unicode=True)
+    return target
+
+
+def drop_user_override(dotted: str, path: str = USER_CONFIG_PATH) -> Path:
+    """
+    Remove one override so the value falls back to `default.yaml`.
+
+    Resetting a field has to mean "delete the override", not "write the default in
+    again": writing it back would freeze today's default into the user's file, and a
+    later change to the shipped default would silently not reach them.
+    """
+    target = Path(path)
+    if not target.exists():
+        return target
+
+    with open(target, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+
+    parts = dotted.split(".")
+    node = data
+    for part in parts[:-1]:
+        if not isinstance(node.get(part), dict):
+            return target
+        node = node[part]
+    node.pop(parts[-1], None)
+
+    # Do not leave an empty block behind; it reads as "something is overridden here".
+    for depth in range(len(parts) - 1, 0, -1):
+        parent = data
+        for part in parts[:depth - 1]:
+            parent = parent[part]
+        if isinstance(parent.get(parts[depth - 1]), dict) and not parent[parts[depth - 1]]:
+            parent.pop(parts[depth - 1])
+
+    with open(target, "w", encoding="utf-8") as f:
+        yaml.safe_dump(data, f, sort_keys=False, allow_unicode=True)
     return target
