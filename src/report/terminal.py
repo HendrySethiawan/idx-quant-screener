@@ -117,7 +117,8 @@ def rail(pages: Sequence[Page], active: str = "") -> str:
     return f'<nav class="rail" aria-label="Sections">{items}</nav>'
 
 
-def topbar(title: str, subtitle: str, stats: Sequence[Tuple[str, str, str]] = ()) -> str:
+def topbar(title: str, subtitle: str, stats: Sequence[Tuple[str, str, str]] = (),
+           placeholder_capital: bool = False) -> str:
     """
     Identity on the left, state on the right.
 
@@ -145,11 +146,19 @@ def topbar(title: str, subtitle: str, stats: Sequence[Tuple[str, str, str]] = ()
         'again.">Re-run screen <span class="cost">~40s</span></button>'
         '<span id="refresh-msg" class="note"></span></div>'
     )
+    # The banner used to sit only on the Markets ticket, which is not the page
+    # somebody is looking at when they wonder why Portfolio says Rp100,000,000. The
+    # top bar is on every page.
+    warn = ""
+    if placeholder_capital:
+        warn = ('<span class="capwarn" title="Set it in Settings, or in '
+                'configs/user.yaml">PLACEHOLDER CAPITAL &mdash; every figure here is '
+                "sized for money that is not yours</span>")
     return (
         '<header class="topbar">'
         f'<div class="brand"><strong>{_e(title)}</strong>'
         f'<span class="asof">{_e(subtitle)}</span></div>'
-        f"{refresh}"
+        f"{warn}{refresh}"
         f'<div class="topstats">{chips}</div>'
         "</header>"
     )
@@ -253,6 +262,11 @@ body{background:var(--bg);color:var(--ink);
 .refresh button:hover:not(:disabled){color:var(--ink);border-color:var(--accent)}
 .refresh button:disabled{opacity:.45;cursor:default}
 .refresh .cost{color:var(--muted);font-weight:400;font-size:10.5px;margin-left:3px}
+.capwarn{margin-left:14px;padding:4px 11px;border-radius:6px;font-size:11.5px;
+  font-weight:700;color:var(--bad);background:var(--bad-bg);border:1px solid var(--bad)}
+.flash{margin-left:14px;padding:4px 11px;border-radius:6px;font-size:11.5px;
+  font-weight:600;color:var(--good);background:var(--good-bg);
+  transition:opacity 1.2s ease}
 
 .page{display:none;min-height:0;overflow:hidden}
 .page.on{display:block;min-height:0}
@@ -436,6 +450,7 @@ footer{margin-top:34px;padding-top:15px;border-top:1px solid var(--line);
 # sort a table, and read the two precomputed payloads. No fetch, no dependency.
 SHELL_JS = """
 (function(){
+ try {
   var body=document.body, PAGE_KEY="idx-page";
 
   // ---- rail: which destination is showing --------------------------------
@@ -572,6 +587,35 @@ SHELL_JS = """
   }
   var rpFmt=function(v){return "Rp"+Math.round(v).toLocaleString("en-US");};
 
+  // Navigation happens HERE, never in Python. pywebview delivers a call's reply with
+  // evaluate_js placed outside its own try/except, and that waits for the page to be
+  // "loaded" -- so navigating from inside a call pulls the page out from under its
+  // own reply, throws on pywebview's thread, and leaves the promise unsettled. That
+  // is what left every button dead after one press.
+  //
+  // The path never changes, so a plain reload can come from cache; the timestamp
+  // forces the new file to be read.
+  function goTo(url, flash){
+    if(!url) return false;
+    if(flash){ try{ sessionStorage.setItem("idx-flash", flash); }catch(e){} }
+    location.replace(url + (url.indexOf("?") < 0 ? "?t=" : "&t=") + Date.now());
+    return true;
+  }
+
+  // A message that survives the navigation it caused. Without this the confirmation
+  // would vanish with the old page and a successful record would look like nothing.
+  (function(){
+    var flash=null;
+    try{ flash=sessionStorage.getItem("idx-flash"); sessionStorage.removeItem("idx-flash"); }catch(e){}
+    if(!flash) return;
+    var bar=document.querySelector(".topbar");
+    if(!bar) return;
+    var el=document.createElement("span");
+    el.className="flash"; el.textContent=flash;
+    bar.appendChild(el);
+    setTimeout(function(){ el.style.opacity="0"; }, 6000);
+  })();
+
   function deadBridge(){
     var host=document.getElementById("trade-form");
     if(host) host.outerHTML='<div class="callout"><strong>Could not reach Python.</strong>'+
@@ -596,9 +640,9 @@ SHELL_JS = """
       rb.disabled=rr.disabled=true;              // one pipeline at a time
       rmsg.textContent=label;
       fn().then(function(r){
-        // On success the window reloads and this page is replaced, so the only
-        // path that gets here in practice is a failure.
-        rmsg.textContent=r.message; rb.disabled=rr.disabled=false;
+        if(r.ok && r.data && goTo(r.data.url, r.message)) return;  // page replaced
+        rmsg.textContent=r.message||"That did not work.";
+        rb.disabled=rr.disabled=false;
       });
     }
     rb.addEventListener("click",function(){ run(API.rebuild,"Rebuilding\\u2026"); });
@@ -635,7 +679,12 @@ SHELL_JS = """
         out.innerHTML=
           row("Gross",rpFmt(d.gross_rp))+
           row((buying?"Buy":"Sell")+" fee",rpFmt(d.fee_rp))+
-          row("Stamp",d.stamp_rp>0?rpFmt(d.stamp_rp):"Rp0 - already stamped today")+
+          // Zero stamp means two different things, and saying the wrong one is a
+          // small lie the reader would carry into their own arithmetic: a buy is
+          // never stamped at all, while a sell is only stamped once a day.
+          row("Stamp", d.stamp_rp>0 ? rpFmt(d.stamp_rp)
+                     : (buying ? "Rp0 - buys are not stamped"
+                               : "Rp0 - already stamped by an earlier sell today"))+
           row(buying?"Total out of account":"Net into account",
               rpFmt(Math.abs(d.net_rp)),"total")+
           (r.message?'<div class="note">'+esc(r.message)+"</div>":"");
@@ -653,9 +702,11 @@ SHELL_JS = """
       go.disabled=true; msg.textContent="Recording...";
       api().log_trade(f.action,f.ticker,f.lots,f.price,f.on_date,f.note,f.source)
         .then(function(r){
+          if(r.ok && r.data && goTo(r.data.url, r.message)) return;  // page replaced
           msg.textContent=r.message;
           msg.style.color=r.ok?"var(--good)":"var(--bad)";
           if(r.ok){
+            // Fallback when a rebuild was not possible: at least refresh the ledger.
             var led=document.getElementById("ledger");
             if(led&&r.data&&r.data.journal_html) led.innerHTML=r.data.journal_html;
             $("tf-ticker").value=""; $("tf-price").value=""; $("tf-note").value="";
@@ -665,6 +716,26 @@ SHELL_JS = """
         });
     });
   }, deadBridge);
+
+  // ---- undo the last trade ------------------------------------------------
+  var undo=document.getElementById("undo-last");
+  if(undo) withApi(function(API){
+    var label=document.getElementById("undo-what");
+    API.last_trade().then(function(r){
+      if(!r.ok||!r.data){ undo.disabled=true; label.textContent="nothing recorded yet"; return; }
+      undo.disabled=false; label.textContent=r.message;
+    });
+    undo.addEventListener("click",function(){
+      // Naming what goes, rather than a bare "are you sure", so the wrong row is
+      // not removed by reflex.
+      if(!window.confirm("Remove this trade?\\n\\n"+label.textContent)) return;
+      undo.disabled=true;
+      API.remove_last_trade().then(function(r){
+        if(r.ok && r.data && goTo(r.data.url, r.message)) return;
+        label.textContent=r.message; undo.disabled=false;
+      });
+    });
+  });
 
   // ---- settings editor ----------------------------------------------------
   var editor=document.getElementById("settings-editor");
@@ -736,5 +807,23 @@ SHELL_JS = """
     [cap,nsel,dep].forEach(function(el){el.addEventListener("change",draw);});
     draw();
   }
+
+  window.__idxShellRan = true;
+ } catch (err) {
+  // One thrown error used to take every control on the page with it, silently:
+  // the rail still moved because that runs first, but the trade form, the refresh
+  // buttons and the settings editor simply never got wired and looked dead. An
+  // interface that cannot work must say so rather than pretend.
+  window.__idxError = String((err && err.stack) || err);
+  try {
+    var bar = document.querySelector(".topbar");
+    if (bar) {
+      var msg = document.createElement("span");
+      msg.className = "capwarn";
+      msg.textContent = "Interface error - buttons on this page will not respond: " + err;
+      bar.appendChild(msg);
+    }
+  } catch (e2) {}
+ }
 })();
 """

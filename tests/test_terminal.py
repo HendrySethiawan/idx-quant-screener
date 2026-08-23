@@ -193,3 +193,76 @@ def test_the_standalone_document_theme_restores_scrolling():
     """The backtest is a report you read top to bottom, not a terminal."""
     assert "html,body{overflow:auto;height:auto}" in T.DOC_CSS
     assert ".wrap{max-width:" in T.DOC_CSS
+
+
+# ==========================================================================
+# The shell script must actually parse.
+# ==========================================================================
+def _node() -> str | None:
+    import shutil as _sh
+    return _sh.which("node")
+
+
+@pytest.mark.skipif(_node() is None, reason="node is not installed")
+def test_the_shell_script_is_valid_javascript(tmp_path):
+    """
+    A syntax error in an inline <script> means the whole script never runs, and it
+    cannot be caught by a try/catch inside that same script -- so every control on
+    the page silently does nothing while the page itself looks fine.
+
+    That shipped: a stray newline inside a JS string literal disabled the trade
+    form, the refresh buttons and the settings editor at once, and the only symptom
+    was buttons that did not respond. Three separate escaping slips produced this
+    class of bug, so it is checked mechanically rather than by reading.
+    """
+    import subprocess
+
+    script = tmp_path / "shell.js"
+    script.write_text(T.SHELL_JS, encoding="utf-8")
+    out = subprocess.run([_node(), "--check", str(script)],
+                         capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, f"SHELL_JS does not parse:\n{out.stderr}"
+
+
+@pytest.mark.skipif(_node() is None, reason="node is not installed")
+def test_the_script_in_a_rendered_page_is_valid_javascript(tmp_path):
+    """
+    The same check on the assembled document, since the page is where the script
+    actually has to run and nothing else proves the two agree.
+    """
+    import subprocess
+
+    out_html = T.document(title="T", head="markets", rail_html=T.rail(PAGES),
+                          top_html=T.topbar("T", "now", []),
+                          body_html=T.pages_html(PAGES), tick_html=T.tickerbar([]),
+                          css=T.THEME_CSS, js=T.SHELL_JS)
+    script = tmp_path / "page.js"
+    script.write_text(out_html.split("<script>")[-1].split("</script>")[0],
+                      encoding="utf-8")
+    out = subprocess.run([_node(), "--check", str(script)],
+                         capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, f"the page's script does not parse:\n{out.stderr}"
+
+
+def test_no_javascript_string_literal_spans_a_newline():
+    """
+    Cheap backstop for machines with no node. Every escaping slip so far turned a
+    `\n` into a real newline inside a quoted string, which is a parse error.
+    """
+    for lineno, line in enumerate(T.SHELL_JS.splitlines(), start=1):
+        code = line.split("//")[0]
+        for quote in ('"', "'"):
+            # Count quotes that are not backslash-escaped. An odd number means one
+            # is still open when the line ends, which is a parse error.
+            open_count = 0
+            escaped = False
+            for ch in code:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == quote:
+                    open_count += 1
+            assert open_count % 2 == 0, (
+                f"unterminated {quote} string on SHELL_JS line {lineno}: {line.strip()!r}"
+            )
