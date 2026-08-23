@@ -15,7 +15,10 @@ minutes.
 
 ## What it produces
 
-`data/output/brief.html` — one self-contained page:
+`data/output/brief.html` — one self-contained page with two modes.
+
+**Simple** is the default, and it is complete on its own. You can trade off it and
+never open the other half:
 
 | Section | What it answers |
 |---|---|
@@ -27,8 +30,25 @@ minutes.
 | Events next 14 days | Earnings, ex-dividend, index reviews — labelled auto / you / est. |
 | How you're doing | Realised P&L net of fees, and your total versus the same money in IHSG |
 
+**Advanced** is the evidence behind it:
+
+| Section | What it answers |
+|---|---|
+| Every stock, every factor | All 49 names with all 10 z-scores. Click any column to sort |
+| Why these scored what they scored | Signed factor contributions per pick — which factor actually drove it |
+| Are the factors independent? | Correlation heatmap. Momentum counted three times is one factor, not three |
+| The regime signal, drawn | The index against its 200-day mean, so you can check the call by eye |
+| Seasonality by month | All twelve months with `n` on every bar, thin samples greyed |
+| What if I sized it differently? | Capital / position-count / deploy sliders over precomputed real allocations |
+| Where the money actually sits | Sector exposure against the cap |
+| Data quality | Which names were scored neutral on what |
+
+The toggle is a CSS attribute on one file — nothing reloads, nothing refetches, and
+the two modes are rendered from the same data so they cannot disagree. Your choice
+is remembered. Printing gives you the ticket only.
+
 Also written: `screener_results.csv` (full ranked universe with every `z_*`),
-`top_picks.csv`, `ticket.csv`, `factor_correlations.csv`, `screener_analysis.png`.
+`top_picks.csv`, `ticket.csv`, `factor_correlations.csv`.
 
 ---
 
@@ -37,10 +57,15 @@ Also written: `screener_results.csv` (full ranked universe with every `z_*`),
 ```bash
 pip install -r requirements.txt
 python main.py
+python main.py --png       # also write the old matplotlib screener_analysis.png
 ```
 
 The brief opens in your browser automatically. First run fetches ~2 years of prices
 for 49 tickers and takes a minute or two; afterwards the cache makes it fast.
+
+There is no server to start and no port to remember — the brief is a single ~140KB
+HTML file that opens from disk, offline, and keeps working as an archive of what the
+tool said on a given day.
 
 ### Your data stays local
 
@@ -257,7 +282,7 @@ factor does at this account size:
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                      # 259 tests, no network required
+pytest                      # 323 tests, no network required
 ```
 
 ```
@@ -267,12 +292,21 @@ src/
 ├── analysis/      technical indicators, factor scoring, sector cap
 ├── market/        regime, liquidity gate, events, seasonality
 ├── portfolio/     fees, lot-aware sizing, holdings, journal, performance
-├── report/        plain-English reasons, the HTML brief, performance view
+├── report/        reasons, the HTML brief, the Advanced view, inline SVG charts
 ├── backtest/      historical simulation under real frictions
-├── viz/           diagnostic PNG
+├── viz/           the optional matplotlib PNG (--png)
 ├── cli.py         --log / --mark / --journal handlers
 └── pipeline.py    shared orchestration
 ```
+
+**Why there is no web framework here.** The screener produces one answer per day, so
+there is nothing to stream and nothing to poll; a reactive server's whole value would
+sit idle. Startup latency is the binding constraint — the decision has to happen in a
+lunch break, and `streamlit run` plus a port plus a terminal you must not close spends
+that budget on ceremony. The one genuinely interactive question, *"what if I sized it
+differently?"*, is answered by precomputing the whole surface with the real sizer and
+embedding it, because `choose_allocation` is pure and cheap. Keeping the page a pure
+function that returns a string is also what lets all 323 tests run offline.
 
 [docs/AUDIT.md](docs/AUDIT.md) records what was broken in the original build, with
 the measurements that showed it.

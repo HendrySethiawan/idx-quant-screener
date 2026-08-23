@@ -16,6 +16,13 @@ records the behaviour discrepancies found while reading the code.
 > `data/output/screener_analysis.png` from the same run data — see
 > [Snapshot](#snapshot) at the end.
 
+> **This document describes the original build.** The PNG below is no longer
+> written on every run: no page ever linked to it, its colours are baked white so
+> it fought the brief's dark theme, and one panel plots `beta` — the field the
+> scorer deliberately refuses to use. Its content now lives in the brief's
+> **Advanced** mode as inline SVG. Pass `--png` if you still want the file.
+> See the [README](../README.md) for current behaviour.
+
 ---
 
 ## 1. At a glance
