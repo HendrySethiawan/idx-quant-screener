@@ -21,7 +21,7 @@ window. Five destinations on a left rail:
 | Rail | What it is |
 |---|---|
 | **Markets** | The decision. Ticket, IHSG, your capital, candidates, events, holdings |
-| **Portfolio** | What you own and how it has done |
+| **Portfolio** | Record a trade, and the ledger: monthly profit, open positions, every round-trip |
 | **Screener** | All 49 names and the evidence behind the ranking |
 | **Why** | The decision, stage by stage, plus a lookup for any name |
 | **Settings** | The broker fees, gates and factor weights driving every rule |
@@ -200,6 +200,42 @@ broker:
 ---
 
 ## Logging trades
+
+**In the app**, the Portfolio page has a form: pick Bought or Sold, type the ticker,
+lots and price, and the fee breakdown fills in as you type — gross, the 0.19% or
+0.29% commission, and the stamp. The button says *Record trade*, past tense: this
+records what you already did in Indopremier and places no orders.
+
+The preview is computed by Python calling the same `build_trade` that records the
+row, never re-implemented in JavaScript. That matters more than it looks: the
+Rp10,000 stamp is charged only on the **first** sell of a day, so a preview that did
+not read your journal would quote it on a second sell and then record zero, and you
+would find out reconciling against your broker weeks later.
+
+Selling more lots than you hold is refused rather than warned — it is a typo often
+enough that recording it would corrupt the FIFO matching for every later trade in
+that name.
+
+Opened as a plain file instead of in the app, there is no Python behind the page, so
+the form is replaced by the equivalent command. A form with nothing behind it is
+worse than no form, because it looks like it worked.
+
+### The ledger
+
+Three tables, all from the journal and none of them needing a price:
+
+- **Realised, by month** — a round-trip counts in the month you **sold** it, already
+  net of the buy fee paid earlier plus the sell fee and the stamp. A month's figure
+  never changes after the month ends, so month-on-month comparison means something.
+  The rows sum to the headline exactly; there is a test for that.
+- **Still open** — average cost includes the buy fee you actually paid, which is the
+  price the position has to beat to be genuinely ahead.
+- **Every completed round-trip** — matched first-in first-out, the way an Indonesian
+  broker statement does, with the fee share and net for each.
+
+`data/journal.csv` stays a plain CSV you can open in a spreadsheet and check.
+
+### Or from the command line
 
 After you execute in Indopremier, record it in one line:
 
@@ -440,7 +476,7 @@ factor does at this account size:
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                      # 503 tests, no network required
+pytest                      # 551 tests, no network required
 ```
 
 ```
@@ -449,12 +485,13 @@ src/
 ├── fetchers/      yfinance access, windowed cache, currency repair
 ├── analysis/      indicators, factor scoring, valuation, the decision trail
 ├── market/        regime, liquidity gate, events, seasonality
-├── portfolio/     fees, lot-aware sizing, holdings, journal, performance
+├── portfolio/     fees, sizing, holdings, journal, ledger, performance
 ├── report/        the terminal shell, panels, inline SVG charts
 ├── backtest/      historical simulation under real frictions
 ├── viz/           the optional matplotlib PNG (--png)
 ├── cli.py         --log / --mark / --journal handlers
 ├── core/paths.py  where files live, from source or from the .exe
+├── api.py         the bridge the page calls to record a trade
 ├── desktop.py     native window, with a browser fallback
 └── pipeline.py    shared orchestration
 ```
@@ -466,7 +503,7 @@ lunch break, and `streamlit run` plus a port plus a terminal you must not close 
 that budget on ceremony. The one genuinely interactive question, *"what if I sized it
 differently?"*, is answered by precomputing the whole surface with the real sizer and
 embedding it, because `choose_allocation` is pure and cheap. Keeping the page a pure
-function that returns a string is also what lets all 503 tests run offline.
+function that returns a string is also what lets all 551 tests run offline.
 
 [docs/AUDIT.md](docs/AUDIT.md) records what was broken in the original build, with
 the measurements that showed it.
