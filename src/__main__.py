@@ -15,7 +15,11 @@ from pipeline import run_screener, top_picks, write_outputs
 from portfolio.holdings import load_holdings
 from report.assemble import assemble
 from report.brief import render_brief, rp, write_brief
-from viz.renderer import ScreenerViz
+
+# viz.renderer is NOT imported here. It pulls matplotlib, seaborn, scipy and PIL --
+# about 180MB and 1.8 of the 3.8 seconds this entry point used to take to import --
+# for a PNG that is opt-in and that no page links to. It is imported inside the
+# --png branch instead. tests/test_packaging.py fails if it creeps back up here.
 
 
 def _close_series(data: dict, ticker: str):
@@ -37,6 +41,13 @@ def _use_utf8_console() -> None:
 
 def main() -> None:
     _use_utf8_console()
+
+    # Before anything reads a relative path. From a double-clicked exe the working
+    # directory is whatever Windows chose, so this anchors it to the exe's folder and
+    # seeds configs/ and data/ there on first run. From source it is a no-op.
+    from core.paths import bootstrap
+    bootstrap()
+
     settings = load_settings("configs/default.yaml")
 
     # Journal subcommands run without touching the screener, so recording a trade
@@ -268,10 +279,17 @@ def main() -> None:
     # deliberately refuses to use. The Advanced view replaces it; --png keeps it
     # available for anyone who wants the file.
     if getattr(args, "png", False):
-        ScreenerViz(settings.output_dir, sectors=settings.sectors).save_analysis(
-            df, benchmark_data=benchmark_data
-        )
-        print(f"Charts: {settings.output_dir / 'screener_analysis.png'}")
+        try:
+            from viz.renderer import ScreenerViz
+        except ImportError:
+            print("  --png needs the chart libraries (matplotlib, seaborn), which are "
+                  "not in this build.\n"
+                  "  Run from source if you want the PNG - the Screener view replaces it.")
+        else:
+            ScreenerViz(settings.output_dir, sectors=settings.sectors).save_analysis(
+                df, benchmark_data=benchmark_data
+            )
+            print(f"Charts: {settings.output_dir / 'screener_analysis.png'}")
 
     # ---- console summary ----------------------------------------------------
     alloc, fees = plan["allocation"], plan["fees"]
