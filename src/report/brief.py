@@ -34,7 +34,12 @@ _CSS = """
 *{box-sizing:border-box}
 body{margin:0;padding:0 16px 64px;background:var(--bg);color:var(--ink);
   font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}
-.wrap{max-width:940px;margin:0 auto}
+/* Wide enough to put things side by side. The old 940px cap left almost half a
+   1920px screen empty while the reader scrolled past content that would have fitted
+   beside itself. Prose is capped separately below -- the extra width is for layout,
+   not for longer lines of text. */
+.wrap{max-width:min(1580px,96vw);margin:0 auto}
+.card p,.card .note,.callout{max-width:74ch}
 header{padding:28px 0 8px}
 h1{font-size:24px;margin:0 0 4px;letter-spacing:-.01em}
 .sub{color:var(--muted);font-size:14px}
@@ -105,10 +110,46 @@ th.sortable[data-dir="asc"]::after{content:" \\2191"}
 .whatif-controls select{font:inherit;font-size:13px;padding:5px 8px;
   border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--ink)}
 
-/* --- Jump list ---------------------------------------------------------- */
-.jump{display:flex;gap:4px;flex-wrap:wrap;align-items:center;margin-left:auto}
-.jump select{font:inherit;font-size:12.5px;padding:5px 8px;border-radius:8px;
-  border:1px solid var(--line);background:var(--surface);color:var(--ink);max-width:230px}
+/* --- Tabs ---------------------------------------------------------------
+   Nine Advanced sections are never useful at the same moment. One on screen at
+   a time turned an eight-screen scroll into eight one-screen panels. */
+.tabs{display:flex;gap:5px;flex-wrap:wrap;margin:14px 0 12px;
+  border-bottom:1px solid var(--line);padding-bottom:9px}
+button.tab{font:inherit;font-size:13px;font-weight:600;cursor:pointer;
+  padding:6px 13px;border-radius:999px;border:1px solid var(--line);
+  background:var(--surface);color:var(--muted)}
+button.tab:hover{color:var(--ink)}
+button.tab.on{background:var(--ink);border-color:transparent;color:var(--bg)}
+.panel{display:none}
+.panel.on{display:block}
+/* A 50-row table would make its panel three screens tall, which is the scrolling
+   this layout exists to remove. Cap it and let the table scroll inside its own
+   pane: bounded and local beats the whole page moving. Simple is left uncapped --
+   it is short enough already, and its tables are the thing you came to read. */
+.panel .scroll{max-height:68vh;overflow:auto}
+
+/* --- Simple as a dashboard ----------------------------------------------
+   Two columns on a wide screen, one below 1000px so nothing is lost on a phone.
+   The ticket takes the wide column because it is the only thing here you act on. */
+.dash{display:grid;gap:14px;grid-template-columns:minmax(0,1.55fr) minmax(0,1fr);
+  align-items:start}
+.dash>.full{grid-column:1/-1}
+.dash h2{margin:0 0 8px}
+.dash .card{margin-bottom:0}
+@media (max-width:1000px){
+  .dash{grid-template-columns:1fr}
+  .dash>.full{grid-column:auto}
+}
+.dash-col{display:flex;flex-direction:column;gap:14px;min-width:0}
+.dash-col>section:empty{display:none}
+
+/* --- Folded blocks ------------------------------------------------------- */
+.fold>summary{cursor:pointer;font-size:15px;font-weight:600;color:var(--muted);
+  padding:9px 0;list-style:none}
+.fold>summary::-webkit-details-marker{display:none}
+.fold>summary::before{content:"\\25B8 ";color:var(--muted)}
+.fold[open]>summary::before{content:"\\25BE "}
+.fold>summary:hover{color:var(--ink)}
 
 /* --- The funnel --------------------------------------------------------- */
 .funnel{display:flex;flex-direction:column;gap:3px;margin:14px 0}
@@ -163,32 +204,48 @@ _JS = """
 (function(){
   var body=document.body,KEY="idx-brief-mode",MODES=["simple","steps","advanced"];
   var btns=[].slice.call(document.querySelectorAll("nav.modes button"));
-  var jump=document.getElementById("jump-to");
-
-  // The jump list is rebuilt per mode from the headings that are actually
-  // visible, so it can never offer a link to a hidden section.
-  function buildJump(){
-    if(!jump) return;
-    var opts='<option value="">Jump to section&hellip;</option>';
-    [].forEach.call(document.querySelectorAll("h2"),function(h,i){
-      if(!h.offsetParent) return;                  // hidden by the current mode
-      if(!h.id) h.id="sec-"+i;
-      opts+='<option value="#'+h.id+'">'+h.textContent.trim()+"</option>";
-    });
-    jump.innerHTML=opts;
-  }
   function setMode(m){
     body.setAttribute("data-mode",m);
     btns.forEach(function(b){b.setAttribute("aria-pressed",String(b.dataset.mode===m));});
     try{localStorage.setItem(KEY,m);}catch(e){}
-    buildJump();
   }
   var saved=null;
   try{saved=localStorage.getItem(KEY);}catch(e){}
   setMode(MODES.indexOf(saved)>=0?saved:"simple");
   btns.forEach(function(b){b.addEventListener("click",function(){setMode(b.dataset.mode);});});
-  if(jump) jump.addEventListener("change",function(){
-    if(jump.value){location.hash=jump.value;jump.value="";}
+
+  // Tabs. Each strip owns the panels its buttons name, so two strips on the page
+  // never fight over the same panel. The choice is remembered per group.
+  [].forEach.call(document.querySelectorAll(".tabs"),function(strip){
+    var group=strip.dataset.group||"tabs";
+    var tabs=[].slice.call(strip.querySelectorAll("button.tab"));
+    if(!tabs.length) return;
+    function show(id,remember){
+      tabs.forEach(function(t){
+        var on=t.dataset.panel===id;
+        t.classList.toggle("on",on);
+        t.setAttribute("aria-selected",String(on));
+        var p=document.getElementById(t.dataset.panel);
+        if(p) p.classList.toggle("on",on);
+      });
+      if(remember){try{localStorage.setItem("idx-tab-"+group,id);}catch(e){}}
+    }
+    tabs.forEach(function(t,i){
+      t.addEventListener("click",function(){show(t.dataset.panel,true);});
+      // Arrow keys move along the strip, which is what a tablist is expected to do.
+      t.addEventListener("keydown",function(e){
+        var d=e.key==="ArrowRight"?1:(e.key==="ArrowLeft"?-1:0);
+        if(!d) return;
+        e.preventDefault();
+        var n=tabs[(i+d+tabs.length)%tabs.length];
+        show(n.dataset.panel,true); n.focus();
+      });
+    });
+    var want=null;
+    try{want=localStorage.getItem("idx-tab-"+group);}catch(e){}
+    // Only restore a tab this strip actually owns -- a remembered id from an older
+    // version of the page would otherwise hide every panel and blank the section.
+    if(want&&tabs.some(function(t){return t.dataset.panel===want;})) show(want,false);
   });
 
   // Per-stock trace: look up any name in the universe and see where it stopped.
@@ -388,6 +445,12 @@ def _valuation_caveat(items: List[dict]) -> str:
     )
 
 
+def _block(title: str, body: str, cls: str = "") -> str:
+    """One heading-plus-card pair as a single grid child."""
+    heading = f"<h2>{_e(title)}</h2>" if title else ""
+    return f'<section class="{cls}">{heading}<div class="card">{body}</div></section>'
+
+
 def _verdict_card(regime) -> str:
     cls = {"RISK-ON": "good", "RISK-OFF": "bad", "MIXED": "warn"}.get(regime.label, "warn")
     sig_html = ""
@@ -522,7 +585,14 @@ def _events_section(events, blind_n: int, universe_n: int, horizon: int) -> str:
             f'<div class="card">{table}{coverage}</div>')
 
 
-def _rejected_section(rejected: Dict[str, str], capped: Optional[Dict[str, str]] = None) -> str:
+def _fold(summary: str, body: str) -> str:
+    """A collapsed block. Content is present, just not taking up a screen."""
+    return (f'<details class="fold"><summary>{_e(summary)}</summary>'
+            f'<div class="card">{body}</div></details>')
+
+
+def _rejected_section(rejected: Dict[str, str], capped: Optional[Dict[str, str]] = None,
+                      compact: bool = False) -> str:
     """
     Two different things, kept apart on purpose.
 
@@ -534,15 +604,27 @@ def _rejected_section(rejected: Dict[str, str], capped: Optional[Dict[str, str]]
     if rejected:
         rows = [[f'<span class="tick">{_e(t)}</span>', f'<span class="note">{_e(r)}</span>']
                 for t, r in rejected.items()]
-        out += ("<h2>Skipped &mdash; you could not safely trade these</h2>"
-                '<div class="card">' + _table(["Ticker", "Reason"], rows) + "</div>")
+        table = _table(["Ticker", "Reason"], rows)
+        if compact:
+            # Folded, not dropped. It is the one Simple section that repeats a Steps
+            # stage, so it earns the least vertical space -- but a reader who wants
+            # the list still gets it in one click.
+            out += _fold(f"Skipped — {len(rejected)} you could not safely trade", table)
+        else:
+            out += ("<h2>Skipped &mdash; you could not safely trade these</h2>"
+                    '<div class="card">' + table + "</div>")
     if capped:
         rows = [[f'<span class="tick">{_e(t)}</span>', f'<span class="note">{_e(r)}</span>']
                 for t, r in capped.items()]
-        out += ("<h2>Held back for diversification</h2>"
-                '<div class="card"><p class="note">These ranked well but the sector cap '
-                'already filled their slots. Nothing is wrong with them.</p>'
-                + _table(["Ticker", "Reason"], rows) + "</div>")
+        intro = ('<p class="note">These ranked well but the sector cap already filled '
+                 "their slots. Nothing is wrong with them.</p>")
+        if compact:
+            out += _fold(f"Held back for diversification — {len(capped)}",
+                         intro + _table(["Ticker", "Reason"], rows))
+        else:
+            out += ("<h2>Held back for diversification</h2>"
+                    '<div class="card">' + intro
+                    + _table(["Ticker", "Reason"], rows) + "</div>")
     return out
 
 
@@ -585,12 +667,13 @@ def render_brief(
         hint = ("Simple is the decision, Steps is how it got there, Advanced is the "
                 "evidence." if steps_html and advanced_html
                 else "Simple is the decision. Advanced is the evidence.")
+        # No jump list any more. It existed to make sixteen stacked sections
+        # navigable; Simple now fits a screen and the other two are tabbed, so a
+        # dropdown listing the one visible heading would be worse than nothing.
         nav = (
             '<nav class="modes">'
             f"{buttons}"
             f'<span class="hint">{hint}</span>'
-            '<span class="jump"><select id="jump-to" aria-label="Jump to section">'
-            "</select></span>"
             "</nav>"
         )
 
@@ -623,26 +706,31 @@ def render_brief(
 </header>
 {nav}
 
-<h2>Market right now</h2>
-{_verdict_card(regime)}
-{f'<div class="callout"><strong>Seasonality.</strong> {_e(seasonality)}</div>' if seasonality else ''}
+<div class="dash">
 
-<div class="kpis">{kpis}</div>
+  <section class="full">
+    <h2>Market right now</h2>
+    {_verdict_card(regime)}
+    {f'<div class="callout"><strong>Seasonality.</strong> {_e(seasonality)}</div>' if seasonality else ''}
+  </section>
 
-<h2>Do this today</h2>
-<div class="card">{_ticket_section(orders, fees, capital)}{granularity}</div>
+  <section class="full"><div class="kpis">{kpis}</div></section>
 
-<h2>What you hold</h2>
-<div class="card">{_holdings_section(holdings_rows)}</div>
+  <div class="dash-col">
+    {_block("Do this today", _ticket_section(orders, fees, capital) + granularity)}
+  </div>
 
-<h2>Best candidates you can actually afford</h2>
-<div class="card">{_candidates_section(candidates)}</div>
+  <div class="dash-col">
+    {_block("What you hold", _holdings_section(holdings_rows))}
+    <section>{_events_section(events or [], blind_n, universe_n, event_horizon)}</section>
+    <section>{journal_html}</section>
+  </div>
 
-{_events_section(events or [], blind_n, universe_n, event_horizon)}
+  {_block("Best candidates you can actually afford", _candidates_section(candidates), cls="full")}
 
-{journal_html}
+  <section class="full">{_rejected_section(rejected, capped, compact=True)}</section>
 
-{_rejected_section(rejected, capped)}
+</div>
 
 {steps_html}
 

@@ -58,7 +58,7 @@ def _brief(**kw):
 # --------------------------------------------------------------- the funnel
 def test_the_funnel_has_a_row_per_stage(trail):
     out = S.funnel(trail)
-    assert out.count('class="funnel-row"') == len(trail.stages)
+    assert out.count("funnel-row") == len(trail.stages)
     for stage in trail.stages:
         assert stage.title in out
 
@@ -69,11 +69,25 @@ def test_the_funnel_shows_the_real_counts(trail):
     assert "&minus;2" in out and "&minus;5" in out
 
 
-def test_funnel_rows_link_to_their_stage(trail):
+def test_the_funnel_is_the_tab_strip_for_the_stages(trail):
+    """
+    The funnel already lists every stage with its counts, so a second row of tabs
+    above it would be the same navigation twice. Each row opens its own stage.
+    """
     out = S.funnel(trail)
+    assert 'role="tablist"' in out
     for stage in trail.stages:
-        assert f'href="#step-{stage.key}"' in out
-        assert f'id="step-{stage.key}"' in S.stage_card(stage, 1)
+        assert f'data-panel="step-{stage.key}"' in out
+        card = S.stage_card(stage, 1)
+        assert f'id="step-{stage.key}"' in card and "panel" in card
+
+
+def test_exactly_one_stage_starts_open(trail):
+    out = S.funnel(trail) + "".join(
+        S.stage_card(s, i, active=(i == 1)) for i, s in enumerate(trail.stages, 1)
+    )
+    assert out.count('aria-selected="true"') == 1
+    assert out.count('class="card step panel on"') == 1
 
 
 def test_the_bar_narrows_as_names_drop(trail):
@@ -206,11 +220,19 @@ def test_each_mode_hides_the_others(trail):
     assert re.search(r'body\[data-mode="advanced"\][^{}]*\.steps\s*\{[^}]*display:none', css)
 
 
-def test_the_nav_stays_put_while_scrolling(trail):
-    """With 16+ sections it used to scroll away exactly when you needed it."""
+def test_the_mode_nav_stays_put_while_scrolling(trail):
+    """It used to scroll away exactly when you needed it."""
     out = _brief(steps_html=S.render_steps(trail))
     assert "position:sticky" in out
-    assert 'id="jump-to"' in out
+
+
+def test_the_jump_list_is_gone_now_that_tabs_replace_it():
+    """
+    A dropdown listing the one heading the current mode leaves visible is worse
+    than nothing. Tabs do that job.
+    """
+    out = _brief(advanced_html='<div class="adv">x</div>')
+    assert 'id="jump-to"' not in out
 
 
 def test_printing_drops_the_steps_too(trail):

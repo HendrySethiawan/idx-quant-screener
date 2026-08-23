@@ -21,6 +21,7 @@ import json
 from typing import List, Optional
 
 from analysis.trace import DROPPED, NOT_REACHED, PASSED
+from report.layout import tabbed
 
 
 def _e(v) -> str:
@@ -44,15 +45,22 @@ def funnel(trail) -> str:
         pct = max(1.0, r["width"] * 100)
         drop = (f'<span class="funnel-drop">&minus;{r["n_dropped"]}</span>'
                 if r["n_dropped"] else '<span class="note">&nbsp;</span>')
+        on = " on" if i == 1 else ""
+        # The funnel is the tab strip. It already lists every stage with its
+        # counts, so building a second row of tabs above it would be the same
+        # navigation twice. Clicking a row opens that stage in place.
         out += (
-            f'<a class="funnel-row" href="#step-{_e(r["key"])}">'
+            f'<button type="button" class="funnel-row tab{on}" role="tab" '
+            f'data-panel="step-{_e(r["key"])}" '
+            f'aria-selected="{"true" if i == 1 else "false"}" '
+            f'aria-controls="step-{_e(r["key"])}">'
             f'<span class="funnel-n">{i}</span>'
             f'<span class="funnel-title">{_e(r["title"])}</span>'
             f'<span class="funnel-bar"><span style="width:{pct:.1f}%"></span></span>'
             f'<span class="funnel-out">{r["n_out"]}</span>'
-            f"{drop}</a>"
+            f"{drop}</button>"
         )
-    return f'<div class="funnel">{out}</div>'
+    return f'<div class="funnel tabs" role="tablist" data-group="steps">{out}</div>'
 
 
 def _dropped_table(stage) -> str:
@@ -67,7 +75,7 @@ def _dropped_table(stage) -> str:
             f"<th>Why it stopped here</th></tr></thead><tbody>{body}</tbody></table></div>")
 
 
-def stage_card(stage, index: int) -> str:
+def stage_card(stage, index: int, active: bool = False) -> str:
     """
     One gate, in full: the rule, the setting that controls it, the arithmetic, and
     every name it dropped with the reason the gate itself gave.
@@ -89,8 +97,10 @@ def stage_card(stage, index: int) -> str:
         + "</div>"
     )
 
+    on = " on" if active else ""
     return (
-        f'<section id="step-{_e(stage.key)}" class="card step">'
+        f'<section id="step-{_e(stage.key)}" class="card step panel{on}" '
+        f'role="tabpanel" aria-label="{_e(stage.title)}">'
         f'<div class="step-head"><span class="step-n">{index}</span>'
         f'<h3>{_e(stage.title)}</h3></div>'
         f'<p>{_e(stage.rule)}</p>{setting}{arithmetic}{note}'
@@ -151,17 +161,19 @@ def render_steps(trail=None, orders: Optional[List[dict]] = None) -> str:
     if trail is None or not getattr(trail, "stages", None):
         return ""
 
-    cards = "".join(stage_card(s, i) for i, s in enumerate(trail.stages, start=1))
+    cards = "".join(stage_card(s, i, active=(i == 1))
+                    for i, s in enumerate(trail.stages, start=1))
 
-    intro = (
+    chain = (
         "<h2>How today's picks were chosen</h2>"
         '<div class="card">'
         "<p>Every stage below is recorded by the rule that ran it, not reconstructed "
         "afterwards, so this is what actually happened rather than a description of "
-        "what should have. Click a row to jump to it.</p>"
+        "what should have. Pick a stage to see who it dropped and why.</p>"
         f"{funnel(trail)}"
         f"{outcome_line(trail, orders)}"
         "</div>"
+        f"{cards}"
     )
 
     lookup = (
@@ -173,4 +185,7 @@ def render_steps(trail=None, orders: Optional[List[dict]] = None) -> str:
         "</div>"
     )
 
-    return f'<div class="steps">{intro}{cards}{lookup}</div>'
+    # Two tabs at the top level: the chain, and the lookup box. Inside the chain the
+    # funnel itself acts as the tab strip for the stage cards, so the stages are not
+    # nested under a second row of tabs.
+    return f'<div class="steps">{tabbed([("The chain", chain), ("Look up a stock", lookup)], "steps-top")}</div>'

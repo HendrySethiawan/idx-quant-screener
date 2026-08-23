@@ -30,6 +30,7 @@ from portfolio.fees import FeeConfig, estimate_fees
 from portfolio.sizing import choose_allocation
 from report import charts
 from report.brief import rp
+from report.layout import tabbed
 
 # The z-columns, in the order the README documents the factor groups.
 FACTOR_ORDER = [
@@ -703,35 +704,44 @@ def render_advanced(
     capital: float = 0.0,
     deploy_pct: float = 1.0,
 ) -> str:
-    """Compose the Advanced block. Any section with no data returns "" and vanishes."""
-    parts: List[str] = []
+    """
+    Compose the Advanced block as tab panels. A section with no data returns "" and
+    both it and its tab disappear -- `tabbed` drops empty panels before it builds
+    anything, so a live tab can never point at nothing.
+
+    The short labels here are the tab text. They are deliberately terser than the
+    headings inside the panels ("Worth" over "What is it worth?") because a strip of
+    nine full headings is unreadable, and because writing them at the compose site
+    means nothing has to parse the generated HTML to find a title.
+    """
+    panels: List[Tuple[str, str]] = []
 
     if df is not None and not df.empty:
-        parts.append(_card(
+        panels.append(("Universe", _card(
             "Every stock, every factor", universe_table(df),
             "The full screen, not just what you can afford. Click any column to sort. "
             "A z-score is standard deviations from the universe mean, already signed so "
             "positive always means better.",
-        ))
+        )))
 
     if breakdown_tickers and factor_weights:
-        parts.append(_card(
+        panels.append(("Why", _card(
             "Why these scored what they scored",
             score_breakdown(df, factor_weights, breakdown_tickers),
             "Each bar is one factor's signed contribution: its weight times its z-score. "
             "They sum to the raw score, so nothing is hidden.",
-        ))
+        )))
 
-    parts.append(valuation_section(df))
-    parts.append(correlation_section(correlations))
-    parts.append(regime_chart(benchmark, trend_ma, benchmark_name))
-    parts.append(seasonality_section(seasonality_table, current_month))
-    parts.append(equity_section(marks))
-    parts.append(whatif_section(whatif, capital, deploy_pct))
-    parts.append(sector_section(df, allocation, max_per_sector))
-    parts.append(data_quality_section(df))
+    panels.append(("Worth", valuation_section(df)))
+    panels.append(("Overlap", correlation_section(correlations)))
+    panels.append(("Regime", regime_chart(benchmark, trend_ma, benchmark_name)))
+    panels.append(("Seasons", seasonality_section(seasonality_table, current_month)))
+    panels.append(("Your curve", equity_section(marks)))
+    panels.append(("What if", whatif_section(whatif, capital, deploy_pct)))
+    panels.append(("Sectors", sector_section(df, allocation, max_per_sector)))
+    panels.append(("Data gaps", data_quality_section(df)))
 
-    body = "".join(p for p in parts if p)
+    body = tabbed(panels, "adv")
     if not body:
         return ""
     return f'<div class="adv">{body}</div>'
