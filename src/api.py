@@ -333,11 +333,20 @@ class TerminalAPI:
                 "its effect." if dotted in self._RERANK else "")
         return _ok(f"Saved to {Path(path).as_posix()}.{note}", path=str(path), value=value)
 
+    # Capital has no sensible default -- the shipped value is a placeholder that
+    # produces tickets sized to money nobody has. "Reset" on it would quietly put the
+    # reader back to a Rp30 juta ticket on a Rp10 juta account, which is the exact
+    # failure the first-run prompt exists to prevent.
+    _NO_RESET = ("account.capital_rp",)
+
     @guarded
     def reset_setting(self, dotted: str) -> Dict[str, Any]:
         """Delete the override so the value follows default.yaml again."""
         if dotted not in {p for p, _, _ in self._EDITABLE}:
             return _fail(f"{dotted} is not editable from here.")
+        if dotted in self._NO_RESET:
+            return _fail("Capital has no default to fall back to - the shipped figure "
+                         "is a placeholder. Type the number you want instead.")
         from core.config import drop_user_override
         drop_user_override(dotted)
         return _ok("Back to the default. Re-run to pick it up.")

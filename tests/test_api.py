@@ -195,19 +195,34 @@ def test_resetting_removes_the_override_rather_than_writing_the_default(api, tmp
     later change to the shipped default would silently never reach them.
     """
     monkeypatch.chdir(tmp_path)
-    api.save_setting("account.capital_rp", 15_000_000)
     api.save_setting("account.min_positions", 4)
-    assert api.reset_setting("account.capital_rp")["ok"]
+    api.save_setting("top_picks_n", 12)
+    assert api.reset_setting("top_picks_n")["ok"]
 
     saved = yaml.safe_load((tmp_path / "configs" / "user.yaml").read_text(encoding="utf-8"))
-    assert "capital_rp" not in saved.get("account", {})
+    assert "top_picks_n" not in saved
     assert saved["account"]["min_positions"] == 4
+
+
+def test_capital_cannot_be_reset_to_the_placeholder(api, tmp_path, monkeypatch):
+    """
+    Capital has no sensible default: the shipped figure is a placeholder that sizes
+    a Rp30 juta ticket for a Rp10 juta account. A reset button beside it is a
+    one-click way back to exactly that.
+    """
+    monkeypatch.chdir(tmp_path)
+    api.save_setting("account.capital_rp", 15_000_000)
+    out = api.reset_setting("account.capital_rp")
+
+    assert out["ok"] is False and "no default" in out["message"]
+    saved = yaml.safe_load((tmp_path / "configs" / "user.yaml").read_text(encoding="utf-8"))
+    assert saved["account"]["capital_rp"] == 15_000_000, "capital was wiped anyway"
 
 
 def test_resetting_the_last_override_leaves_no_empty_block(api, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    api.save_setting("account.capital_rp", 15_000_000)
-    api.reset_setting("account.capital_rp")
+    api.save_setting("account.min_positions", 5)
+    api.reset_setting("account.min_positions")
     saved = yaml.safe_load((tmp_path / "configs" / "user.yaml").read_text(encoding="utf-8")) or {}
     assert "account" not in saved, "an empty block reads as 'something is overridden'"
 
