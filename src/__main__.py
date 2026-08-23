@@ -70,6 +70,9 @@ def main() -> None:
         raise SystemExit(cmd_event(settings, args))
     if args.events:
         raise SystemExit(cmd_events(settings))
+    if args.audit_prices:
+        from cli import cmd_audit_prices
+        raise SystemExit(cmd_audit_prices(settings))
     if args.backtest:
         raise SystemExit(cmd_backtest(settings))
     if args.journal:

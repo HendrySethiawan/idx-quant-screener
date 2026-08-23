@@ -50,6 +50,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--png", action="store_true",
                    help="Also write the matplotlib screener_analysis.png "
                         "(the brief's Advanced view replaces it)")
+    p.add_argument("--audit-prices", action="store_true",
+                   help="Check every ticker's price against its own series and flag "
+                        "anything valued on a stale session")
     p.add_argument("--browser", action="store_true",
                    help="Open the brief in your browser instead of a native window")
     return p
@@ -321,4 +324,59 @@ def cmd_backtest(settings, logger=None) -> int:
 
     path = R.write_html(R.render_html(sections, surv), settings.output_dir)
     print(f"\n  Full report: {path}\n")
+    return 0
+
+
+def cmd_audit_prices(settings, logger=None) -> int:
+    """
+    Is the price the tool values your positions at the real last close?
+
+    A stale or mis-scaled price is the failure mode that shows up as a wrong "value
+    now" and never announces itself -- the position simply looks better or worse than
+    it is. This compares every ticker's `last_close` against the last bar in its own
+    cached series, and flags anything whose last session is older than the rest of
+    the universe.
+    """
+    import joblib
+
+    from fetchers.data_fetcher import DataFetcher
+
+    fetcher = DataFetcher(settings)
+    frames = fetcher.fetch_technical_data(settings.stock_tickers)
+
+    rows = []
+    for ticker in settings.stock_tickers:
+        frame = frames.get(ticker)
+        if frame is None or "Close" not in frame:
+            rows.append((ticker, None, None, "no price data at all"))
+            continue
+        closes = frame["Close"].dropna()
+        if closes.empty:
+            rows.append((ticker, None, None, "series is empty"))
+            continue
+        rows.append((ticker, float(closes.iloc[-1]), closes.index[-1].date(), ""))
+
+    dated = [r for r in rows if r[2] is not None]
+    newest = max((r[2] for r in dated), default=None)
+
+    print("\nPRICE AUDIT")
+    print("=" * 58)
+    print(f"  {'ticker':10s} {'last close':>13s}  {'session':<12s} note")
+    stale = 0
+    for ticker, price, when, note in sorted(rows):
+        if not note and when != newest:
+            note = f"STALE - {(newest - when).days} day(s) behind"
+            stale += 1
+        shown = "-" if price is None else f"Rp{price:,.0f}"
+        print(f"  {ticker:10s} {shown:>13s}  {str(when or '-'):<12s} {note}")
+
+    print("-" * 58)
+    print(f"  {len(rows)} tickers, newest session {newest}")
+    if stale:
+        print(f"  {stale} behind the rest - those positions would be valued on an "
+              f"old price.")
+    else:
+        print("  every ticker is on the same session; nothing is being valued stale.")
+    print("  Prices are daily closes from Yahoo Finance, not live quotes.")
+    print("=" * 58 + "\n")
     return 0
