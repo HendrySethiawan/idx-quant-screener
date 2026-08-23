@@ -676,7 +676,7 @@ SHELL_JS = """
       api().preview_trade(f.action,f.ticker,f.lots,f.price,f.on_date).then(function(r){
         if(!r.ok){out.innerHTML='<span class="note">'+esc(r.message)+"</span>";go.disabled=true;return;}
         var d=r.data, buying=d.action==="BUY";
-        out.innerHTML=
+        var html =
           row("Gross",rpFmt(d.gross_rp))+
           row((buying?"Buy":"Sell")+" fee",rpFmt(d.fee_rp))+
           // Zero stamp means two different things, and saying the wrong one is a
@@ -686,8 +686,19 @@ SHELL_JS = """
                      : (buying ? "Rp0 - buys are not stamped"
                                : "Rp0 - already stamped by an earlier sell today"))+
           row(buying?"Total out of account":"Net into account",
-              rpFmt(Math.abs(d.net_rp)),"total")+
-          (r.message?'<div class="note">'+esc(r.message)+"</div>":"");
+              rpFmt(Math.abs(d.net_rp)),"total");
+
+        // Break-even, always. A 75-point gain on one lot loses money because the
+        // Rp10,000 stamp is bigger than the profit, and that is invisible until
+        // after it has happened.
+        if(d.break_even){
+          html += row("Break even at", rpFmt(d.break_even)+
+                      " ("+(d.break_even_move_pct>=0?"+":"")+
+                      d.break_even_move_pct.toFixed(1)+"%)");
+        }
+        if(d.match_note){ html += '<div class="note">'+esc(d.match_note)+"</div>"; }
+        if(r.message){ html += '<div class="pricewarn">'+esc(r.message)+"</div>"; }
+        out.innerHTML = html;
         go.disabled=false;
       });
     }
@@ -735,6 +746,34 @@ SHELL_JS = """
         label.textContent=r.message; undo.disabled=false;
       });
     });
+  });
+
+  // ---- remove any one trade, not only the newest --------------------------
+  // The buttons live inside the ledger, which `rebuild` replaces wholesale, so the
+  // handler is delegated from the document rather than bound per button.
+  document.addEventListener("click",function(ev){
+    var btn=ev.target.closest?ev.target.closest(".rm-trade"):null;
+    if(!btn) return;
+    ev.preventDefault();
+    var what=btn.dataset.ticker+" at "+rpFmt(Number(btn.dataset.price))+
+             " on "+btn.dataset.date;
+    if(!window.confirm("Remove this trade?\\n\\n"+what)) return;
+    btn.disabled=true; btn.textContent="...";
+    withApi(function(API){
+      API.remove_trade(Number(btn.dataset.index),btn.dataset.ticker,
+                       Number(btn.dataset.price),btn.dataset.date)
+        .then(function(r){
+          if(r.ok && r.data && goTo(r.data.url, r.message)) return;
+          // A refusal explains itself in place -- naming the sale that would be
+          // orphaned is the whole point, so it must not vanish into an alert.
+          btn.disabled=false; btn.textContent="remove";
+          var say=btn.parentNode.querySelector(".rm-why");
+          if(!say){ say=document.createElement("div"); say.className="note rm-why";
+                    btn.parentNode.appendChild(say); }
+          say.textContent=r.message;
+          say.style.color=r.ok?"var(--muted)":"var(--bad)";
+        });
+    },function(){ btn.disabled=false; btn.textContent="remove"; });
   });
 
   // ---- settings editor ----------------------------------------------------

@@ -199,3 +199,77 @@ def test_marks_roundtrip_and_dedupe(tmp_path):
     marks = J.append_mark(1_100_000, 400_000, 6200.0, path, on_date="2026-08-01")
     assert len(marks) == 1, "same-day mark should overwrite, not duplicate"
     assert marks.iloc[0]["total_rp"] == 1_500_000
+
+
+# ------------------------------------------------------- removing one trade
+# "Remove last trade" could only reach the newest row. A mistyped Rp125 buy sitting
+# under a later entry was therefore uncorrectable, and pressing undo took the good
+# trade instead -- which is how a typo ended up matched against a real sale.
+def test_any_row_can_be_removed_not_only_the_newest(tmp_path):
+    path = tmp_path / "j.csv"
+    _log(path, "BUY", "SRTG", 1, 125, "2026-08-20")     # the typo
+    _log(path, "BUY", "BBRI", 2, 4150, "2026-08-21")
+    _log(path, "BUY", "TLKM", 1, 2600, "2026-08-22")
+
+    result = J.remove_trade_at(path, 0)
+    assert result["ok"], result["message"]
+    assert result["removed"]["price"] == 125
+
+    left = J.load_journal(path)
+    assert list(left["ticker"]) == ["BBRI.JK", "TLKM.JK"]
+
+
+def test_removing_a_buy_a_later_sell_consumed_is_refused(tmp_path):
+    """
+    The FIFO loop stops when a queue empties, so an orphaned sale under-counts in
+    silence -- the one case where deleting a row corrupts rather than corrects.
+    """
+    path = tmp_path / "j.csv"
+    _log(path, "BUY", "BBRI", 2, 4000, "2026-08-10")
+    _log(path, "SELL", "BBRI", 2, 4300, "2026-08-20")
+
+    result = J.remove_trade_at(path, 0)
+    assert not result["ok"]
+    assert "BBRI" in result["message"]
+    assert len(J.load_journal(path)) == 2      # nothing was written
+
+
+def test_the_sell_itself_can_still_be_removed(tmp_path):
+    """Removing the sale first is the way out: it orphans nothing."""
+    path = tmp_path / "j.csv"
+    _log(path, "BUY", "BBRI", 2, 4000, "2026-08-10")
+    _log(path, "SELL", "BBRI", 2, 4300, "2026-08-20")
+
+    assert J.remove_trade_at(path, 1)["ok"]
+    assert J.remove_trade_at(path, 0)["ok"]
+    assert J.load_journal(path).empty
+
+
+def test_a_row_that_is_not_the_one_displayed_is_refused(tmp_path):
+    """
+    The index comes from a page that may have been rebuilt since. Removing whatever
+    now sits at that position would delete a trade the reader never chose.
+    """
+    path = tmp_path / "j.csv"
+    _log(path, "BUY", "SRTG", 1, 125, "2026-08-20")
+    _log(path, "BUY", "BBRI", 2, 4150, "2026-08-21")
+
+    stale = J.remove_trade_at(path, 1, {"ticker": "SRTG.JK", "price": 125})
+    assert not stale["ok"]
+    assert len(J.load_journal(path)) == 2
+
+    assert J.remove_trade_at(path, 0, {"ticker": "SRTG.JK", "price": 125})["ok"]
+
+
+def test_removing_out_of_range_says_so_rather_than_raising(tmp_path):
+    path = tmp_path / "j.csv"
+    _log(path, "BUY", "BBRI", 2, 4150, "2026-08-21")
+    assert not J.remove_trade_at(path, 7)["ok"]
+    assert not J.remove_trade_at(tmp_path / "none.csv", 0)["ok"]
+
+
+def test_unmatched_sells_are_zero_on_a_sane_journal(tmp_path):
+    path = tmp_path / "j.csv"
+    _log(path, "BUY", "BBRI", 2, 4000, "2026-08-10")
+    _log(path, "SELL", "BBRI", 1, 4300, "2026-08-20")
+    assert J.unmatched_sell_shares(J.load_journal(path)) == {}

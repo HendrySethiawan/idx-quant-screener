@@ -232,3 +232,38 @@ def test_a_position_is_valued_at_the_market_price_not_what_you_paid(tmp_path):
     row = open_positions(load_journal(path), {"SRTG.JK": 1915.0}).iloc[0]
     assert row["avg_cost"] == pytest.approx(125 * 1.0019, abs=1)   # yours
     assert row["value_now"] == pytest.approx(191_500, abs=1)       # the market's
+
+
+# --------------------------------------------------- a return nobody should believe
+# +1412% on a same-day trade implies a 15x move in the price. That is a mistyped
+# entry, and printing it beside real results lends it the same authority.
+def test_an_absurd_return_is_marked():
+    from portfolio.ledger import implausible
+    j = _journal([("BUY", "SRTG", 1, 125, "2026-08-22"),
+                  ("SELL", "SRTG", 1, 2000, "2026-08-22")])
+    row = closed_trades(j).iloc[0]
+    assert row["return_pct"] > 1000
+    note = implausible(row)
+    assert "check the entry" in note
+    assert "Rp125" in note and "Rp2,000" in note
+
+
+def test_an_ordinary_win_is_not_marked():
+    from portfolio.ledger import implausible
+    j = _journal([("BUY", "BBRI", 3, 4150, "2026-01-05"),
+                  ("SELL", "BBRI", 3, 4300, "2026-02-05")])
+    assert implausible(closed_trades(j).iloc[0]) == ""
+
+
+def test_a_total_loss_is_not_marked_as_a_typo():
+    """-100% is possible. The band has to be one a real trade cannot reach."""
+    from portfolio.ledger import implausible
+    j = _journal([("BUY", "BBRI", 3, 4150, "2026-01-05"),
+                  ("SELL", "BBRI", 3, 100, "2026-02-05")])
+    assert implausible(closed_trades(j).iloc[0]) == ""
+
+
+def test_a_malformed_row_is_not_marked():
+    from portfolio.ledger import implausible
+    assert implausible({"return_pct": None, "buy_price": 1, "sell_price": 2}) == ""
+    assert implausible({}) == ""

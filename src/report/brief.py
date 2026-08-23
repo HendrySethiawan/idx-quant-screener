@@ -54,6 +54,19 @@ _EXTRA_CSS = """
 .tf-preview .row{display:flex;justify-content:space-between;gap:14px}
 .tf-preview .row.total{border-top:1px solid var(--line);margin-top:5px;
   padding-top:5px;font-weight:700}
+.tf-preview .pricewarn{margin-top:6px;padding:5px 7px;border-radius:5px;
+  background:color-mix(in srgb,var(--bad) 14%,transparent);
+  border:1px solid color-mix(in srgb,var(--bad) 40%,transparent);
+  color:var(--bad);line-height:1.45}
+.tf-preview .note{margin-top:5px;color:var(--muted);line-height:1.45}
+.rm-trade{font:inherit;font-size:10.5px;padding:2px 8px;border-radius:5px;cursor:pointer;
+  border:1px solid var(--line);background:var(--surface);color:var(--muted)}
+.rm-trade:hover:not(:disabled){color:var(--bad);border-color:var(--bad)}
+.rm-trade:disabled{opacity:.5;cursor:default}
+.rm-why{max-width:230px;white-space:normal;font-size:10.5px;margin-top:4px}
+.pill.warn{background:color-mix(in srgb,var(--bad) 16%,transparent);color:var(--bad);
+  border:1px solid color-mix(in srgb,var(--bad) 38%,transparent);
+  white-space:normal;display:inline-block;margin-top:3px;text-align:left}
 pre.cli{background:var(--surface-3);border:1px solid var(--line);border-radius:6px;
   padding:9px 11px;font-size:11.5px;overflow-x:auto;margin:8px 0;
   font-family:Consolas,"Courier New",monospace}

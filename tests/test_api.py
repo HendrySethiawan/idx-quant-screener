@@ -415,3 +415,123 @@ def test_removing_from_an_empty_journal_is_refused(ctx_api):
 
 def test_last_trade_on_an_empty_journal_says_so(ctx_api):
     assert "Nothing recorded" in ctx_api.last_trade()["message"]
+
+
+# --------------------------------------------------- catching a bad entry
+# The trade that started all of this. A Rp125 buy for a stock trading near Rp1,900
+# went in unquestioned, and the resulting +1412% round-trip read as a result.
+def test_a_price_far_from_the_last_close_is_flagged(api):
+    r = api.preview_trade("BUY", "BBRI", 1, 300)      # close is 4,200
+    assert r["ok"]
+    assert "93% below" in r["message"]
+    assert "4,200" in r["message"]
+
+
+def test_a_price_near_the_last_close_is_not_flagged(api):
+    assert api.preview_trade("BUY", "BBRI", 1, 4100)["message"] == ""
+
+
+def test_an_odd_price_is_still_allowed_to_be_recorded(api):
+    """A warning, not a veto: some names have no price and some gaps are real."""
+    assert api.log_trade("BUY", "BBRI", 1, 300)["ok"]
+
+
+def test_a_ticker_with_no_known_price_is_not_flagged(api):
+    assert api.preview_trade("BUY", "ZZZZ", 1, 1)["message"] == ""
+
+
+# ------------------------------------------------------------- break even
+def test_break_even_is_above_the_buy_price_by_every_cost(api):
+    """
+    Buy one lot at 1,925: 192,865.75 out with the fee. Selling has to clear the
+    0.29% sell fee and the Rp10,000 stamp on top, so 2,000 is not enough.
+    """
+    d = api.preview_trade("BUY", "SRTG", 1, 1925)["data"]
+    assert d["break_even"] == pytest.approx(2034.56, abs=0.01)
+    assert round(d["break_even"]) == 2035
+    assert d["break_even_move_pct"] == pytest.approx(5.69, abs=0.01)
+
+
+def test_the_trade_that_looked_like_a_win_actually_loses(api):
+    """
+    Pinned by hand. Buy 1,925, sell 2,000, one lot: a 75-point gain that loses
+    Rp3,446, because the stamp alone is larger than the Rp7,500 of profit.
+    """
+    buy = api.log_trade("BUY", "SRTG", 1, 1925, "2026-08-21")["data"]["trade"]
+    sell = api.log_trade("SELL", "SRTG", 1, 2000, "2026-08-22")["data"]["trade"]
+
+    assert buy["fee_rp"] == 365.75
+    assert sell["fee_rp"] == 580.0 and sell["stamp_rp"] == 10_000
+    assert sell["net_rp"] == pytest.approx(189_420.0, abs=0.01)
+    # The stamp is Rp10,000 against Rp7,500 of gross gain. It cannot come out ahead.
+    assert sell["net_rp"] + buy["net_rp"] == pytest.approx(-3445.75, abs=0.01)
+
+
+def test_a_sell_has_no_break_even_of_its_own(api):
+    api.log_trade("BUY", "BBRI", 1, 4000)
+    assert "break_even" not in api.preview_trade("SELL", "BBRI", 1, 4200)["data"]
+
+
+# ------------------------------------------------- what a sell would close
+def test_a_sell_preview_names_the_lot_it_consumes(api):
+    """
+    "This closes 1 lot bought at Rp125" is the sentence that catches the typo while
+    it is still fixable -- before the sale, not in the ledger afterwards.
+    """
+    api.log_trade("BUY", "SRTG", 1, 125, "2026-08-20")
+    note = api.preview_trade("SELL", "SRTG", 1, 2000, "2026-08-22")["data"]["match_note"]
+    assert "1 lot bought at Rp125" in note
+    assert "20 Aug" in note
+
+
+def test_selling_what_is_not_held_says_so(api):
+    note = api.preview_trade("SELL", "BBRI", 1, 4200)["data"]["match_note"]
+    assert "no open" in note.lower()
+
+
+# ----------------------------------------------------- removal through the bridge
+def test_the_bridge_removes_the_row_it_was_shown(api):
+    api.log_trade("BUY", "SRTG", 1, 125, "2026-08-20")
+    api.log_trade("BUY", "BBRI", 2, 4150, "2026-08-21")
+
+    rows = api.list_trades()["data"]["trades"]
+    typo = next(r for r in rows if r["price"] == 125)
+
+    out = api.remove_trade(typo["index"], typo["ticker"], typo["price"], typo["date"])
+    assert out["ok"], out["message"]
+
+    left = [r["ticker"] for r in api.list_trades()["data"]["trades"]]
+    assert left == ["BBRI.JK"]
+
+
+def test_the_bridge_refuses_a_row_that_has_moved(api):
+    api.log_trade("BUY", "SRTG", 1, 125, "2026-08-20")
+    api.log_trade("BUY", "BBRI", 2, 4150, "2026-08-21")
+    assert not api.remove_trade(1, "SRTG.JK", 125, "2026-08-20")["ok"]
+    assert len(api.list_trades()["data"]["trades"]) == 2
+
+
+def test_removal_never_raises_across_the_bridge(api):
+    for bad in [("x", "", None, ""), (99, "", None, ""), (0, "", None, "")]:
+        assert api.remove_trade(*bad)["ok"] is False
+
+
+def test_the_previewed_realisation_matches_what_gets_recorded(api):
+    """
+    Across several lots at different prices, and a partial one. The preview is what
+    the decision is made on, so it may not be an approximation of its own outcome.
+    """
+    from portfolio.journal import closed_trades, load_journal
+
+    api.log_trade("BUY", "BBRI", 2, 4000, "2026-08-10")
+    api.log_trade("BUY", "BBRI", 3, 4400, "2026-08-11")
+
+    note = api.preview_trade("SELL", "BBRI", 4, 4600, "2026-08-20")["data"]["match_note"]
+    assert "2 lot bought at Rp4,000" in note and "2 lot bought at Rp4,400" in note
+
+    previewed = float(note.split("Rp")[-1].rstrip(".").replace(",", ""))
+    api.log_trade("SELL", "BBRI", 4, 4600, "2026-08-20")
+
+    journal_path, _, _ = api._paths()
+    realised = closed_trades(load_journal(journal_path))["net_pnl"].sum()
+    assert previewed == pytest.approx(realised, abs=1.0)

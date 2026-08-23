@@ -243,3 +243,84 @@ def test_hit_rate_and_averages():
     assert perf.hit_rate == 50.0
     assert perf.avg_win > 0
     assert perf.avg_loss < 0
+
+
+# ------------------------------------------- cash and holdings are separate
+# The panel used to show one merged figure -- capital plus realised profit plus the
+# value of what is held. A Rp176,896 profit inside Rp100,176,896 is invisible, and
+# the headline percentage was measured against capital that was never deployed.
+def test_cash_and_holdings_add_up_to_the_total():
+    j = _journal([("BUY", "BBRI", 3, 4150.0, "2026-01-01"),
+                  ("BUY", "TLKM", 2, 2600.0, "2026-02-01"),
+                  ("SELL", "BBRI", 1, 4400.0, "2026-03-01")])
+    perf = _evaluate(j, {"BBRI.JK": 4400.0, "TLKM.JK": 2700.0})
+    assert perf.cash + perf.position_value == pytest.approx(perf.total_value)
+    assert perf.cash < CAPITAL and perf.position_value > 0
+
+
+def test_return_on_closed_measures_the_money_actually_used():
+    """
+    `sum(net_pnl) / sum(cost)` over closed round-trips, taken from the same rows the
+    ledger prints, so the tile and the table cannot disagree.
+    """
+    j = _journal([("BUY", "BBRI", 3, 4150.0, "2026-01-01"),
+                  ("SELL", "BBRI", 3, 4300.0, "2026-06-01")])
+    perf = _evaluate(j, {})
+    closed = J.closed_trades(j)
+
+    cost = float((closed["shares"] * closed["buy_price"]).sum()
+                 + closed["fees"].sum() / 2)
+    assert perf.closed_cost == pytest.approx(cost, abs=0.01)
+    assert perf.return_on_closed_pct == pytest.approx(
+        closed["net_pnl"].sum() / cost * 100, abs=0.01)
+
+
+def test_return_on_deployed_is_far_larger_than_return_on_capital():
+    """The two answer different questions, and only one of them is comparable to IHSG."""
+    j = _journal([("BUY", "BBRI", 3, 4150.0, "2026-01-01"),
+                  ("SELL", "BBRI", 3, 4300.0, "2026-06-01")])
+    perf = _evaluate(j, {})
+    assert perf.return_on_closed_pct > perf.return_pct * 5
+
+
+def test_open_cost_is_the_fee_inclusive_basis_of_what_is_held():
+    j = _journal([("BUY", "BBRI", 3, 4150.0, "2026-01-01")])
+    perf = _evaluate(j, {"BBRI.JK": 4300.0})
+    assert perf.open_cost == pytest.approx(1_245_000 + 2_365.50, abs=0.01)
+    assert perf.return_on_open_pct == pytest.approx(
+        perf.unrealized_pnl / perf.open_cost * 100, abs=0.01)
+
+
+def test_nothing_closed_leaves_the_closed_return_unstated():
+    """Nothing measured is None, not 0.0 -- a zero would read as breaking even."""
+    perf = _evaluate(_journal([("BUY", "BBRI", 3, 4150.0, "2026-01-01")]), {})
+    assert perf.return_on_closed_pct is None
+    assert perf.closed_cost == 0.0
+
+
+# ------------------------------------------- when there is nothing to compare
+def test_a_same_day_round_trip_reports_nothing_to_compare():
+    """
+    Bought and sold in one session, both sides of the comparison hold identical cash
+    and no units, so "ahead by Rp0 (+0.00%)" is arithmetic, not a dead heat. A daily
+    close series cannot separate them even in principle.
+    """
+    j = _journal([("BUY", "BBRI", 3, 4150.0, "2026-03-01"),
+                  ("SELL", "BBRI", 3, 4300.0, "2026-03-01")])
+    perf = _evaluate(j, {}, _ihsg(6000, 7200))
+    assert not perf.comparable
+    assert perf.vs_ihsg_rp is None
+
+
+def test_holding_something_overnight_is_comparable():
+    j = _journal([("BUY", "BBRI", 3, 4150.0, "2026-03-01")])
+    assert _evaluate(j, {"BBRI.JK": 4300.0}, _ihsg(6000, 7200)).comparable
+
+
+def test_trading_across_two_sessions_is_comparable_even_when_flat():
+    """A genuine dead heat over months of flat index is a real result, not a non-event."""
+    j = _journal([("BUY", "BBRI", 3, 4150.0, "2026-01-01"),
+                  ("SELL", "BBRI", 3, 4300.0, "2026-06-01")])
+    perf = _evaluate(j, {}, _ihsg(6000, 6000))
+    assert perf.comparable
+    assert perf.vs_ihsg_rp is not None

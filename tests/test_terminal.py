@@ -266,3 +266,19 @@ def test_no_javascript_string_literal_spans_a_newline():
             assert open_count % 2 == 0, (
                 f"unterminated {quote} string on SHELL_JS line {lineno}: {line.strip()!r}"
             )
+
+
+def test_every_bridge_method_the_script_calls_actually_exists():
+    """
+    A mistyped bridge name fails as a rejected promise with no message, which on
+    screen is a button that does nothing at all -- no error, no log, no clue. The
+    two sides are written in different languages and nothing else links them.
+    """
+    from api import TerminalAPI
+
+    called = set(re.findall(r"API\.([A-Za-z_]\w*)\s*\(", T.SHELL_JS))
+    assert called, "no bridge calls found - the regex has drifted"
+
+    exposed = {n for n in dir(TerminalAPI) if not n.startswith("_")
+               and callable(getattr(TerminalAPI, n))}
+    assert called <= exposed, f"called but not exposed: {sorted(called - exposed)}"

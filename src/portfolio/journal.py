@@ -160,6 +160,107 @@ def append_trade(trade: dict, path: str | Path) -> pd.DataFrame:
     return updated
 
 
+def unmatched_sell_shares(journal: Optional[pd.DataFrame]) -> Dict[str, int]:
+    """
+    Shares sold that no purchase accounts for, per ticker.
+
+    `closed_trades` matches FIFO with `while remaining > 0 and queues[ticker]`, so a
+    sale with nothing left to match against simply stops -- silently, and the P&L is
+    quietly short by whatever it could not pair. Normally zero; it goes positive only
+    if a purchase is deleted out from under a later sale, which is exactly the case
+    `remove_trade_at` has to refuse.
+    """
+    if journal is None or journal.empty:
+        return {}
+
+    df = journal.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.sort_values("date", kind="stable")
+
+    held: Dict[str, int] = {}
+    orphaned: Dict[str, int] = {}
+    for _, row in df.iterrows():
+        ticker, shares = row["ticker"], int(row["shares"])
+        if str(row["action"]).upper() == "BUY":
+            held[ticker] = held.get(ticker, 0) + shares
+            continue
+        available = held.get(ticker, 0)
+        matched = min(shares, available)
+        held[ticker] = available - matched
+        if shares > matched:
+            orphaned[ticker] = orphaned.get(ticker, 0) + (shares - matched)
+    return orphaned
+
+
+def remove_trade_at(path: str | Path, index: int,
+                    expect: Optional[dict] = None) -> dict:
+    """
+    Remove one row by its position in the date-sorted journal.
+
+    Any row, not only the newest. An earlier version restricted this to the last
+    entry on the theory that an older one might already be matched against a sale --
+    but `closed_trades` and `_open_lots` replay the whole journal on every call and
+    store nothing, so removing a row only changes the replay. That restriction meant
+    a mistyped price buried under later trades could never be corrected, which is
+    the failure that prompted this.
+
+    Two guards remain:
+
+      * `expect` is the row the caller believes it is removing. If the row at that
+        index differs, the removal is refused rather than deleting something else.
+      * A removal that would leave a sale with no purchase to match is refused, since
+        the FIFO replay would silently under-count from then on.
+
+    Returns `{ok, message, removed}`; it never raises.
+    """
+    journal = load_journal(path)
+    if journal.empty:
+        return {"ok": False, "message": "There is nothing to remove.", "removed": None}
+
+    df = journal.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.sort_values("date", kind="stable").reset_index(drop=True)
+
+    if not 0 <= int(index) < len(df):
+        return {"ok": False, "message": "That trade is no longer in the journal.",
+                "removed": None}
+
+    row = df.loc[int(index)]
+    if expect:
+        for field, want in expect.items():
+            if field not in df.columns or want in (None, ""):
+                continue
+            have = row[field]
+            if field == "date":
+                have = pd.to_datetime(have).strftime("%Y-%m-%d")
+                want = pd.to_datetime(want).strftime("%Y-%m-%d")
+            elif field in ("price", "lots", "shares"):
+                if abs(float(have) - float(want)) > 0.01:
+                    return {"ok": False, "removed": None, "message":
+                            "The journal changed since that row was shown. "
+                            "Rebuild and try again."}
+                continue
+            if str(have) != str(want):
+                return {"ok": False, "removed": None, "message":
+                        "The journal changed since that row was shown. "
+                        "Rebuild and try again."}
+
+    remaining = df.drop(index=int(index)).reset_index(drop=True)
+    orphans = unmatched_sell_shares(remaining)
+    if orphans:
+        ticker, shares = next(iter(orphans.items()))
+        return {"ok": False, "removed": None, "message":
+                f"Removing this would leave {shares // 100} lot of {ticker} sold with "
+                f"no purchase to match against, and the profit maths would quietly be "
+                f"short. Remove the later sale first."}
+
+    removed = row.to_dict()
+    save_journal(remaining, path)
+    return {"ok": True, "removed": removed, "message":
+            f"Removed {removed['action']} {int(removed['lots'])} lot "
+            f"{removed['ticker']} at Rp{float(removed['price']):,.0f}."}
+
+
 def remove_last_trade(path: str | Path) -> Optional[dict]:
     """
     Drop the most recently dated row and return it, or None if there is nothing.

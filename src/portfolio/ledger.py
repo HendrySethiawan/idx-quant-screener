@@ -138,6 +138,25 @@ def open_positions(journal: Optional[pd.DataFrame],
     return pd.DataFrame(rows, columns=OPEN_COLS)
 
 
+# A round-trip beyond this is almost always a mistyped entry price rather than a
+# result: +1412% on a same-day trade implies a 15x move.
+IMPLAUSIBLE_RETURN_PCT = 200.0
+
+
+def implausible(row) -> str:
+    """Why a round-trip's return should not be believed, or "" if it is fine."""
+    try:
+        ret = float(row["return_pct"])
+        buy, sell = float(row["buy_price"]), float(row["sell_price"])
+    except (TypeError, ValueError, KeyError):
+        return ""
+    if abs(ret) < IMPLAUSIBLE_RETURN_PCT:
+        return ""
+    move = (sell / buy - 1) * 100 if buy else 0.0
+    return (f"implies a {move:+,.0f}% move in the price - check the entry, "
+            f"Rp{buy:,.0f} to Rp{sell:,.0f}")
+
+
 def recent_trades(journal: Optional[pd.DataFrame], limit: int = 20) -> pd.DataFrame:
     """The raw log, newest first -- every buy and sell exactly as recorded."""
     if journal is None or journal.empty:

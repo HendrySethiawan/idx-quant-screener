@@ -32,7 +32,10 @@ def console_block(perf) -> str:
 
     if perf.shadow.unavailable:
         add("  vs IHSG              no index history available")
-    elif perf.shadow_total <= 0:
+    elif not perf.comparable:
+        add("  vs IHSG              nothing to compare yet - everything you recorded")
+        add("                       was bought and sold on the same day")
+    elif not perf.shadow_total:
         add("  vs IHSG              nothing deployed yet")
     else:
         verb = "AHEAD of" if perf.vs_ihsg_rp >= 0 else "BEHIND"
@@ -88,15 +91,33 @@ def brief_section(perf) -> str:
         return (f'<div class="kpi"><div class="k">{html.escape(k)}</div>'
                 f'<div class="v">{html.escape(v)}</div>{sub_html}</div>')
 
+    # Cash and holdings are shown apart. Merged into one "Portfolio" figure, a
+    # Rp176,896 profit disappeared inside a Rp100,000,000 total and the headline
+    # read +0.2%, which says nothing about the decision that produced it.
     kpis = "".join([
-        kpi("Portfolio", rp(perf.total_value)),
-        kpi("Total P&L", rp(perf.total_pnl), _pct(perf.return_pct)),
+        kpi("Cash", rp(perf.cash)),
+        kpi("Holdings", rp(perf.position_value)),
+        kpi("Total", rp(perf.total_value), _pct(perf.return_pct) + " of capital"),
+        kpi("Realised", rp(perf.realized_pnl),
+            (f"{perf.return_on_closed_pct:+.1f}% on {rp(perf.closed_cost)} closed"
+             if perf.return_on_closed_pct is not None else "nothing closed yet")),
+        kpi("Unrealised", rp(perf.unrealized_pnl),
+            (f"{perf.return_on_open_pct:+.1f}% on {rp(perf.open_cost)} at risk"
+             if perf.return_on_open_pct is not None else "nothing held")),
         kpi("Fees paid", rp(perf.total_fees), f"{perf.fee_drag_pct:.2f}% of capital"),
         kpi("Closed trades", str(perf.n_closed)),
     ])
 
     bench = ""
-    if not perf.shadow.unavailable and perf.shadow_total > 0:
+    if not perf.comparable:
+        bench = (
+            '<div class="callout"><strong>Nothing to compare against the index yet.</strong> '
+            "Everything you have recorded was bought and sold on the same day, and this "
+            "tool works from daily closes &mdash; so the index cannot differ from itself "
+            "over that span. The comparison starts meaning something once a position is "
+            "held overnight.</div>"
+        )
+    elif not perf.shadow.unavailable and perf.shadow_total:
         ahead = perf.vs_ihsg_rp >= 0
         bench = (
             f'<div class="callout {"save" if ahead else ""}">'
@@ -122,9 +143,17 @@ def brief_section(perf) -> str:
 
     verdict = f'<div class="callout"><strong>Verdict.</strong> {html.escape(perf.verdict)}</div>'
 
+    deployed_note = (
+        '<div class="note">Realised and unrealised percentages are measured against '
+        "the money actually put at risk, not against your whole capital. Trading the "
+        "same rupiah repeatedly inflates that base, so they answer &ldquo;how did the "
+        "money I committed do&rdquo;, not &ldquo;how did my account do&rdquo; &mdash; "
+        "the figure under Total is the one comparable to the index.</div>"
+    )
     return f"""
 <h2>How you're doing</h2>
 <div class="kpis">{kpis}</div>
+{deployed_note}
 <div class="card">{bench}{stamp}{verdict}</div>"""
 
 
@@ -218,6 +247,55 @@ def open_positions_table(positions) -> str:
     )
 
 
+def _row_actions(index: int, row) -> str:
+    """A remove control on every row, not only the newest."""
+    when = pd.to_datetime(row["date"], errors="coerce")
+    return (f'<button type="button" class="rm-trade" data-index="{int(index)}" '
+            f'data-ticker="{_e(row["ticker"])}" data-price="{float(row["price"])}" '
+            f'data-date="{when:%Y-%m-%d}" title="Remove this trade">remove</button>')
+
+
+def trade_log_table(journal) -> str:
+    """
+    Every recorded row, with its own remove control.
+
+    "Remove last trade" could not reach a mistyped price once anything was recorded
+    after it -- and undoing three good trades to fix one bad one is not a repair.
+    """
+    if journal is None or getattr(journal, "empty", True):
+        return '<div class="empty">Nothing recorded yet.</div>'
+
+    df = journal.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.sort_values("date", kind="stable").reset_index(drop=True)
+
+    body = ""
+    for i, r in df.iterrows():
+        cls = "buy" if str(r["action"]).upper() == "BUY" else "sell"
+        body += (
+            f'<tr><td class="num"><span class="note">{r["date"]:%d %b %y}</span></td>'
+            f'<td><span class="act {cls}">{_e(r["action"])}</span></td>'
+            f'<td><span class="tick">{_e(r["ticker"])}</span></td>'
+            f'<td class="num">{int(r["lots"])} lot</td>'
+            f'<td class="num">{rp(r["price"])}</td>'
+            f'<td class="num"><span class="note">{rp(r["fee_rp"] + r["stamp_rp"])}</span></td>'
+            f'<td class="num">{_signed(r["net_rp"])}</td>'
+            f'<td><span class="pill">{_e(r["source"])}</span></td>'
+            f"<td>{_row_actions(i, r)}</td></tr>"
+        )
+
+    return (
+        '<div class="scroll"><table><thead><tr>'
+        '<th class="num">Date</th><th>Do</th><th>Ticker</th><th class="num">Size</th>'
+        '<th class="num">Price</th><th class="num">Cost</th>'
+        '<th class="num">Cash</th><th>Whose call</th><th></th>'
+        f"</tr></thead><tbody>{body}</tbody></table></div>"
+        '<div class="note">Any row can be removed. One whose purchase a later sale '
+        "has already been matched against is refused, because the profit maths would "
+        "quietly come up short.</div>"
+    )
+
+
 def closed_trades_table(closed, limit: int = 40) -> str:
     """Every round-trip, newest first. Computed on every run and never shown before."""
     if closed is None or getattr(closed, "empty", True):
@@ -227,9 +305,12 @@ def closed_trades_table(closed, limit: int = 40) -> str:
     df["sell_date"] = pd.to_datetime(df["sell_date"], errors="coerce")
     df = df.sort_values("sell_date", ascending=False).head(int(limit))
 
+    from portfolio.ledger import implausible
+
     body = ""
     for _, r in df.iterrows():
         sold = r["sell_date"]
+        doubt = implausible(r)
         body += (
             f'<tr><td><span class="tick">{_e(r["ticker"])}</span></td>'
             f'<td class="num"><span class="note">'
@@ -240,7 +321,9 @@ def closed_trades_table(closed, limit: int = 40) -> str:
             f'<td class="num">{_signed(r["gross_pnl"])}</td>'
             f'<td class="num"><span class="note">{rp(r["fees"])}</span></td>'
             f'<td class="num"><strong>{_signed(r["net_pnl"])}</strong></td>'
-            f'<td class="num">{_signed(r["return_pct"], lambda v: f"{v:+.1f}%")}</td>'
+            f'<td class="num">{_signed(r["return_pct"], lambda v: f"{v:+.1f}%")}'
+            + (f'<br><span class="pill warn">{_e(doubt)}</span>' if doubt else "")
+            + "</td>"
             f'<td class="num"><span class="note">{int(r["holding_days"])}d</span></td>'
             f'<td><span class="pill">{_e(r["source"])}</span></td></tr>'
         )
@@ -352,4 +435,5 @@ def journal_panels(settings, prices: Optional[Dict[str, float]] = None) -> str:
         f'<h2>Realised, by month</h2>{monthly_table(monthly, totals)}'
         f'<h2>Still open</h2>{open_positions_table(positions)}'
         f'<h2>Every completed round-trip</h2>{closed_trades_table(closed)}'
+        f'<h2>Everything you recorded</h2>{trade_log_table(journal)}'
     )

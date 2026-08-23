@@ -179,8 +179,97 @@ class TerminalAPI:
             cfg=self._fee_cfg(), journal=self._journal(),
             on_date=on_date or None,
         )
-        warning = self._sell_warning(trade)
-        return _ok(warning, **trade)
+        notes = [n for n in (self._price_warning(trade), self._sell_warning(trade)) if n]
+        extra = self._break_even(trade)
+        extra.update(self._sell_match(trade))
+        return _ok(" ".join(notes), **trade, **extra)
+
+    # How far a price may sit from the last close before it is worth questioning.
+    # A typo is usually an order of magnitude out; a genuine gap or a stale close is
+    # rarely more than a quarter.
+    _PRICE_TOLERANCE = 0.25
+
+    def _price_warning(self, trade: dict) -> str:
+        """
+        Flag a price far from what the market last closed at.
+
+        A buy recorded at Rp125 for a name that closed at Rp1,915 produced a
+        +1412% round-trip that looked like a result and was a typo. The tool knew
+        the close and said nothing.
+        """
+        last = self._prices.get(trade["ticker"])
+        if not last or last <= 0:
+            return ""
+        gap = trade["price"] / float(last) - 1.0
+        if abs(gap) <= self._PRICE_TOLERANCE:
+            return ""
+        direction = "above" if gap > 0 else "below"
+        return (f"Rp{trade['price']:,.0f} is {abs(gap) * 100:.0f}% {direction} "
+                f"{trade['ticker']}'s last close of Rp{float(last):,.0f}. "
+                f"Check it before recording.")
+
+    def _break_even(self, trade: dict) -> Dict[str, Any]:
+        """
+        What the position must reach to cover every cost of a round trip.
+
+        A 75-point gain on one lot loses money, because the Rp10,000 stamp is larger
+        than the profit. That is invisible until it has happened.
+        """
+        if trade["action"] != "BUY":
+            return {}
+        cfg = self._fee_cfg()
+        shares = int(trade["shares"])
+        cost = trade["gross_rp"] + trade["fee_rp"]
+        denominator = shares * (1.0 - cfg.sell_fee)
+        if denominator <= 0:
+            return {}
+        # The stamp is assumed payable on the eventual sale: it is the honest
+        # worst case, since it is only waived if something else sells the same day.
+        price = (cost + cfg.stamp_duty_rp) / denominator
+        return {
+            "break_even": round(price, 2),
+            "break_even_move_pct": round((price / trade["price"] - 1) * 100, 2),
+        }
+
+    def _sell_match(self, trade: dict) -> Dict[str, Any]:
+        """
+        Which purchase a sale would close, and what it would realise.
+
+        Shown before the sale rather than after: "this closes 1 lot bought at Rp125"
+        is the sentence that would have caught the typo while it was still fixable.
+        """
+        if trade["action"] != "SELL":
+            return {}
+        from portfolio.journal import _open_lots
+
+        lots = _open_lots(self._journal()).get(trade["ticker"], [])
+        if not lots:
+            return {"match_note": f"You have no open {trade['ticker']} lots to close."}
+
+        remaining = int(trade["shares"])
+        gross = cost = buy_fees = 0.0
+        parts = []
+        sell_per_share = (trade["fee_rp"] + trade["stamp_rp"]) / max(1, trade["shares"])
+        for lot in lots:
+            if remaining <= 0:
+                break
+            # `take`, not the lot's whole size: one sale can close part of a lot, and
+            # charging the entire lot's buy fee against it would overstate the loss.
+            take = min(remaining, int(lot["shares"]))
+            gross += take * (trade["price"] - lot["price"])
+            buy_fees += take * lot["per_share_fee"]
+            cost += take * (lot["price"] + lot["per_share_fee"])
+            parts.append(f"{take // 100} lot bought at Rp{lot['price']:,.0f} "
+                         f"on {pd.to_datetime(lot['date']):%d %b}")
+            remaining -= take
+
+        matched = int(trade["shares"]) - remaining
+        net = gross - matched * sell_per_share - buy_fees
+        return {
+            "match_note": (f"This closes {', '.join(parts)} and realises "
+                           f"about Rp{net:,.0f}."),
+            "match_return_pct": round(net / cost * 100, 2) if cost else None,
+        }
 
     @guarded
     def log_trade(self, action: str, ticker: str, lots: Any, price: Any,
@@ -237,6 +326,61 @@ class TerminalAPI:
             + (f" on {when:%d %b %Y}" if pd.notna(when) else ""),
             ticker=str(row["ticker"]), action=str(row["action"]),
         )
+
+    @guarded
+    def list_trades(self, limit: int = 40) -> Dict[str, Any]:
+        """
+        Every recorded trade with the index `remove_trade` takes.
+
+        Indexes are positions in the date-sorted journal, which is the order the
+        ledger displays, so what is shown and what is removed cannot diverge.
+        """
+        journal = self._journal()
+        if journal.empty:
+            return _ok("Nothing recorded yet.", trades=[])
+
+        df = journal.copy()
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df = df.sort_values("date", kind="stable").reset_index(drop=True)
+
+        rows = []
+        for i, row in df.tail(int(limit)).iterrows():
+            rows.append({
+                "index": int(i),
+                "date": pd.to_datetime(row["date"]).strftime("%Y-%m-%d"),
+                "ticker": str(row["ticker"]), "action": str(row["action"]),
+                "lots": int(row["lots"]), "price": float(row["price"]),
+                "label": (f"{row['action']} {int(row['lots'])} lot {row['ticker']} at "
+                          f"Rp{float(row['price']):,.0f} on "
+                          f"{pd.to_datetime(row['date']):%d %b %Y}"),
+            })
+        return _ok("", trades=rows)
+
+    @guarded
+    def remove_trade(self, index: Any, ticker: str = "", price: Any = None,
+                     on_date: str = "") -> Dict[str, Any]:
+        """Remove one specific row -- not only the newest."""
+        from cli import _sync_holdings
+        from portfolio.journal import load_journal, remove_trade_at
+
+        journal_path, _, holdings_path = self._paths()
+        expect = {"ticker": ticker or None, "date": on_date or None,
+                  "price": None if price in (None, "") else self._as_float(price, "Price")}
+        result = remove_trade_at(journal_path, self._as_int(index, "Row"), expect)
+        if not result["ok"]:
+            return _fail(result["message"])
+
+        try:
+            _sync_holdings(load_journal(journal_path), holdings_path,
+                           self._settings.lot_size)
+        except Exception as e:
+            if self._logger:
+                self._logger.warning(f"Could not rewrite holdings: {e}")
+
+        rebuilt = self.rebuild()
+        if rebuilt["ok"]:
+            return _ok(result["message"], url=rebuilt["data"]["url"])
+        return _ok(result["message"], journal_html=self._journal_html())
 
     @guarded
     def remove_last_trade(self) -> Dict[str, Any]:

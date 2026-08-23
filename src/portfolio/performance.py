@@ -33,6 +33,7 @@ import numpy as np
 import pandas as pd
 
 from portfolio.fees import FeeConfig
+from portfolio.journal import _open_lots
 
 DEFAULT_MIN_TRADES = 30
 
@@ -78,11 +79,23 @@ class Performance:
     sell_days: int = 0
     fee_drag_pct: float = 0.0
 
+    # Return measured against money actually put at risk, not against total
+    # capital. A Rp176,896 profit on a Rp12,524 position reads as +0.2% of a
+    # Rp100,000,000 account, which tells you nothing about the decision.
+    closed_cost: float = 0.0          # cost basis of every closed round-trip
+    open_cost: float = 0.0            # cost basis of what is still held
+    return_on_closed_pct: Optional[float] = None
+    return_on_open_pct: Optional[float] = None
+
     # benchmark
+    comparable: bool = True           # False when there is nothing to compare yet
     shadow: ShadowResult = field(default_factory=ShadowResult)
-    shadow_total: float = 0.0        # cash + shadow index units, i.e. total wealth
-    vs_ihsg_rp: float = 0.0
-    vs_ihsg_pct: float = 0.0
+    # None, not 0.0. A computed zero is a genuine dead heat and worth saying; an
+    # uncomputed one used to render as "ahead by Rp0 (+0.00%)", which reads as a
+    # photo finish when in fact no race was run.
+    shadow_total: Optional[float] = None   # cash + shadow index units = total wealth
+    vs_ihsg_rp: Optional[float] = None
+    vs_ihsg_pct: Optional[float] = None
 
     # closed-trade stats
     n_closed: int = 0
@@ -245,8 +258,35 @@ def evaluate(
     perf.sell_days = int(stamps["sell_days"])
     perf.fee_drag_pct = (perf.total_fees / starting_capital * 100) if starting_capital else 0.0
 
+    # Cost basis, for a return that means something at this account size.
+    if not closed.empty:
+        buy_cost = (closed["shares"] * closed["buy_price"]).sum()
+        perf.closed_cost = round(float(buy_cost + closed["fees"].sum() / 2), 2)
+        if perf.closed_cost > 0:
+            perf.return_on_closed_pct = round(
+                perf.realized_pnl / perf.closed_cost * 100, 2)
+
+    open_lots = _open_lots(journal)
+    perf.open_cost = round(float(sum(
+        lot["shares"] * (lot["price"] + lot["per_share_fee"])
+        for lots in open_lots.values() for lot in lots)), 2)
+    if perf.open_cost > 0:
+        perf.return_on_open_pct = round(perf.unrealized_pnl / perf.open_cost * 100, 2)
+
     perf.shadow = ihsg_shadow(journal, ihsg_close)
-    if not perf.shadow.unavailable:
+    # The comparison needs at least one overnight hold. Everything bought and sold
+    # on the same day cannot differ from a daily-close index series by construction,
+    # and reporting that as "ahead by Rp0 (+0.00%)" reads as a dead heat rather than
+    # as no contest. Still holding something, or having traded across more than one
+    # session, both count as a real comparison -- including a genuine dead heat over
+    # months of flat index.
+    trade_dates = pd.to_datetime(journal["date"], errors="coerce").dt.date.dropna()
+    perf.comparable = bool(
+        perf.position_value > 0
+        or perf.shadow.units > 0
+        or trade_dates.nunique() > 1
+    )
+    if not perf.shadow.unavailable and perf.comparable:
         # Compare TOTAL WEALTH, not bare position value. The two sides share an
         # identical cash balance by construction, but once positions are closed out
         # your position value is 0 while the shadow may still hold units -- comparing
