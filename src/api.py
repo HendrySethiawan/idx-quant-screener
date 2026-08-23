@@ -102,15 +102,19 @@ class TerminalAPI:
         return get_context()
 
     # ------------------------------------------------------------------ refresh
-    def _reload_window(self, path) -> None:
-        """Point the window at the page that was just written."""
-        try:
-            import webview
-            if webview.windows:
-                webview.windows[0].load_url(Path(path).resolve().as_uri())
-        except Exception as e:
-            if self._logger:
-                self._logger.warning(f"Could not reload the window: {e}")
+    #
+    # Nothing here navigates the window. pywebview delivers a call's reply with
+    # `window.evaluate_js(...)` placed OUTSIDE its own try/except, and that call
+    # waits up to 20 seconds for the page to be `loaded`. Calling `load_url` from
+    # inside an API call therefore navigates the page out from under the reply: the
+    # wait times out, `WebViewException('Main window failed to start')` is raised on
+    # pywebview's thread, and the JS promise never settles -- which left Rebuild and
+    # Re-run disabled forever and the trade form dead after one use.
+    #
+    # So the URL is returned and the page navigates itself, once the reply is in.
+    @staticmethod
+    def _url_for(path) -> str:
+        return Path(path).resolve().as_uri()
 
     @guarded
     def rebuild(self) -> Dict[str, Any]:
@@ -126,8 +130,7 @@ class TerminalAPI:
         from runner import render
         self._prices = dict(ctx.plan["prices"]) if ctx.plan else self._prices
         path = render(ctx)
-        self._reload_window(path)
-        return _ok("Rebuilt.", path=str(path))
+        return _ok("Rebuilt.", path=str(path), url=self._url_for(path))
 
     @guarded
     def rerun(self) -> Dict[str, Any]:
@@ -142,8 +145,7 @@ class TerminalAPI:
         path = render(fresh)
         set_context(fresh)
         self._prices = dict(fresh.plan["prices"]) if fresh.plan else {}
-        self._reload_window(path)
-        return _ok("Re-ran the screen.", path=str(path))
+        return _ok("Re-ran the screen.", path=str(path), url=self._url_for(path))
 
     # ------------------------------------------------------------------ paths
     def _paths(self):
@@ -210,11 +212,62 @@ class TerminalAPI:
             if self._logger:
                 self._logger.warning(f"Could not rewrite holdings: {e}")
 
+        # Rebuild the whole page rather than only swapping the ledger: the KPIs and
+        # the top-bar chips are rendered from `perf` at build time, so a ledger that
+        # visibly gained a trade sat next to P&L, fees and closed-trades all reading
+        # zero. If the rebuild is not possible, the fresh ledger still goes back.
+        message = (f"Recorded {trade['action']} {trade['lots']} lot {trade['ticker']} "
+                   f"at Rp{trade['price']:,.0f}.")
+        rebuilt = self.rebuild()
+        if rebuilt["ok"]:
+            return _ok(message, trade=trade, url=rebuilt["data"]["url"])
+        return _ok(message, trade=trade, journal_html=self._journal_html())
+
+    @guarded
+    def last_trade(self) -> Dict[str, Any]:
+        """What "remove last trade" would remove, so it can be named before it goes."""
+        journal = self._journal()
+        if journal.empty:
+            return _ok("Nothing recorded yet.")
+        row = journal.sort_values("date", kind="stable").iloc[-1]
+        when = pd.to_datetime(row["date"], errors="coerce")
         return _ok(
-            f"Recorded {trade['action']} {trade['lots']} lot {trade['ticker']} "
-            f"at Rp{trade['price']:,.0f}.",
-            trade=trade, journal_html=self._journal_html(),
+            f"{row['action']} {int(row['lots'])} lot {row['ticker']} at "
+            f"Rp{float(row['price']):,.0f}"
+            + (f" on {when:%d %b %Y}" if pd.notna(when) else ""),
+            ticker=str(row["ticker"]), action=str(row["action"]),
         )
+
+    @guarded
+    def remove_last_trade(self) -> Dict[str, Any]:
+        """
+        Undo the most recent entry.
+
+        A trade typed at the wrong price is otherwise permanent, and the ledger
+        carries the nonsense forever -- a position recorded at Rp125 instead of
+        Rp1,915 shows +1429% and nothing can be done about it.
+        """
+        from cli import _sync_holdings
+        from portfolio.journal import load_journal, remove_last_trade
+
+        journal_path, _, holdings_path = self._paths()
+        removed = remove_last_trade(journal_path)
+        if removed is None:
+            return _fail("There is nothing to remove.")
+
+        try:
+            _sync_holdings(load_journal(journal_path), holdings_path,
+                           self._settings.lot_size)
+        except Exception as e:
+            if self._logger:
+                self._logger.warning(f"Could not rewrite holdings: {e}")
+
+        message = (f"Removed {removed['action']} {int(removed['lots'])} lot "
+                   f"{removed['ticker']} at Rp{float(removed['price']):,.0f}.")
+        rebuilt = self.rebuild()
+        if rebuilt["ok"]:
+            return _ok(message, url=rebuilt["data"]["url"])
+        return _ok(message, journal_html=self._journal_html())
 
     def _held(self, ticker: str) -> int:
         from portfolio.journal import net_positions

@@ -69,6 +69,12 @@ pre.cli{background:var(--surface-3);border:1px solid var(--line);border-radius:6
   border:1px solid var(--line);background:var(--surface);color:var(--muted);cursor:pointer}
 .set-row button:hover{color:var(--ink)}
 .set-row.changed .lbl::after{content:" \\2022";color:var(--accent)}
+.undo-row{display:flex;align-items:center;gap:9px;margin-top:9px;flex-wrap:wrap}
+.undo-row button{font:inherit;font-size:11.5px;font-weight:600;cursor:pointer;
+  padding:5px 12px;border-radius:6px;border:1px solid var(--line);
+  background:var(--surface-3);color:var(--ink-dim)}
+.undo-row button:hover:not(:disabled){color:var(--bad);border-color:var(--bad)}
+.undo-row button:disabled{opacity:.45;cursor:default}
 """
 
 
@@ -565,6 +571,7 @@ def render_brief(
             ("Cash", rp(allocation.cash_left if allocation else capital), ""),
             ("Est. fees", rp(fees.total), ""),
         ],
+        placeholder_capital=placeholder_capital,
     )
 
     ticks = []

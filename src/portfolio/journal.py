@@ -160,6 +160,35 @@ def append_trade(trade: dict, path: str | Path) -> pd.DataFrame:
     return updated
 
 
+def remove_last_trade(path: str | Path) -> Optional[dict]:
+    """
+    Drop the most recently dated row and return it, or None if there is nothing.
+
+    Only the last one, deliberately. A typo has to be correctable -- a trade entered
+    at the wrong price is otherwise permanent, and the ledger carries the nonsense
+    forever. But removing an *older* row could delete a buy that a later sell has
+    already been matched against, and `closed_trades` would then compute round-trips
+    against a lot that no longer exists. The newest row can never have been matched
+    against by anything, so undoing it is always safe.
+
+    Ties on date are broken by position, so the row removed is the one `append_trade`
+    added last.
+    """
+    journal = load_journal(path)
+    if journal.empty:
+        return None
+
+    journal = journal.copy()
+    journal["date"] = pd.to_datetime(journal["date"], errors="coerce")
+    order = journal["date"].rank(method="first", na_option="top")
+    drop_idx = order.idxmax()
+
+    removed = journal.loc[drop_idx].to_dict()
+    remaining = journal.drop(index=drop_idx).reset_index(drop=True)
+    save_journal(remaining, path)
+    return removed
+
+
 def net_positions(journal: pd.DataFrame) -> Dict[str, int]:
     """Shares held per ticker. Fully-closed names are dropped."""
     if journal is None or journal.empty:

@@ -172,3 +172,63 @@ def test_recent_trades_are_newest_first(three_months):
     out = recent_trades(three_months, limit=3)
     assert len(out) == 3
     assert list(out["date"]) == sorted(out["date"], reverse=True)
+
+
+# ------------------------------------------------ undoing a mistyped trade
+def test_removing_the_last_trade_returns_it_and_shortens_the_journal(tmp_path):
+    from portfolio.journal import append_trade, load_journal, remove_last_trade
+
+    path = tmp_path / "journal.csv"
+    append_trade(build_trade("BUY", "BBRI", 3, 4000, CFG, on_date="2026-06-02"), path)
+    append_trade(build_trade("BUY", "TLKM", 2, 2600, CFG, on_date="2026-06-05"), path)
+
+    removed = remove_last_trade(path)
+    assert removed["ticker"] == "TLKM.JK"
+    remaining = load_journal(path)
+    assert len(remaining) == 1 and remaining.iloc[0]["ticker"] == "BBRI.JK"
+
+
+def test_removing_from_nothing_returns_none(tmp_path):
+    from portfolio.journal import remove_last_trade
+    assert remove_last_trade(tmp_path / "absent.csv") is None
+
+
+def test_undo_restores_the_earlier_state_exactly(tmp_path):
+    """A typo must leave no trace once removed."""
+    from portfolio.journal import append_trade, load_journal, remove_last_trade
+
+    path = tmp_path / "journal.csv"
+    append_trade(build_trade("BUY", "SRTG", 6, 1900, CFG, on_date="2026-08-01"), path)
+    before = load_journal(path)
+
+    append_trade(build_trade("BUY", "SRTG", 1, 125, CFG, on_date="2026-08-02"), path)
+    remove_last_trade(path)
+
+    # .equals, not ==: an unfilled `note` is NaN, and NaN != NaN would fail a
+    # dict comparison on two rows that are in fact identical.
+    assert load_journal(path).equals(before)
+
+
+def test_undo_takes_the_newest_when_two_share_a_date(tmp_path):
+    """Ties break on insertion order, so it removes what was just added."""
+    from portfolio.journal import append_trade, remove_last_trade
+
+    path = tmp_path / "journal.csv"
+    append_trade(build_trade("BUY", "AAA", 1, 100, CFG, on_date="2026-08-01"), path)
+    append_trade(build_trade("BUY", "ZZZ", 1, 200, CFG, on_date="2026-08-01"), path)
+    assert remove_last_trade(path)["ticker"] == "ZZZ.JK"
+
+
+def test_a_position_is_valued_at_the_market_price_not_what_you_paid(tmp_path):
+    """
+    The confusion behind the report: AVG COST is what you typed, VALUE NOW is the
+    market. A silly entry price must not leak into the valuation.
+    """
+    from portfolio.journal import append_trade, load_journal
+
+    path = tmp_path / "journal.csv"
+    append_trade(build_trade("BUY", "SRTG", 1, 125, CFG, on_date="2026-08-01"), path)
+
+    row = open_positions(load_journal(path), {"SRTG.JK": 1915.0}).iloc[0]
+    assert row["avg_cost"] == pytest.approx(125 * 1.0019, abs=1)   # yours
+    assert row["value_now"] == pytest.approx(191_500, abs=1)       # the market's

@@ -284,3 +284,134 @@ def test_rebuild_without_a_context_says_so(settings_mock):
     set_context(None)
     out = TerminalAPI(settings_mock).rebuild()
     assert out["ok"] is False and "restart" in out["message"]
+
+
+# ============================================================================
+# The crash: navigating the window from inside an API call.
+# ============================================================================
+class _NoNavWebview:
+    """A webview whose load_url fails the test if anything reaches for it."""
+
+    def __init__(self):
+        self.windows = [self]
+
+    def load_url(self, *a, **k):
+        raise AssertionError(
+            "an API method navigated the window. pywebview delivers a call's reply "
+            "with evaluate_js OUTSIDE its own try/except, and that waits for the page "
+            "to be loaded - navigating mid-call throws on pywebview's thread and "
+            "leaves the JS promise unsettled, which killed every button."
+        )
+
+
+@pytest.fixture
+def ctx_api(settings_mock, tmp_path):
+    """An API with a real render context behind it, so rebuild actually works."""
+    import numpy as np
+
+    from api import TerminalAPI, set_context
+    from market.regime import Regime, Signal
+    from runner import RunContext
+
+    tickers = list(settings_mock.stock_tickers)
+    df = pd.DataFrame([{
+        "ticker": t, "name": t, "sector": settings_mock.sectors[t],
+        "undervaluation_score": 1.0 - i * 0.1, "composite_score": 1.0 - i * 0.1,
+        "raw_score": 1.0 - i * 0.1, "last_close": 1000.0 + i * 100,
+        "median_daily_value_rp": 5e9, "imputed_factors": "",
+        "pe_ratio": 10.0 + i, "price_to_book": 1.0 + i * 0.1, "roe": 0.15,
+        "unclipped_pe_ratio": 10.0 + i, "unclipped_price_to_book": 1.0 + i * 0.1,
+    } for i, t in enumerate(tickers)])
+
+    idx = pd.date_range("2025-01-01", periods=300, freq="D")
+    bench = pd.DataFrame({c: np.linspace(6000, 6500, 300)
+                          for c in ("Open", "High", "Low", "Close")}, index=idx)
+    bench["Volume"] = 1e9
+
+    settings_mock.output_dir = tmp_path / "out"
+    settings_mock.output_dir.mkdir(parents=True, exist_ok=True)
+    settings_mock.account = {
+        **settings_mock.account,
+        "journal_path": str(tmp_path / "journal.csv"),
+        "marks_path": str(tmp_path / "marks.csv"),
+        "holdings_path": str(tmp_path / "holdings.yaml"),
+        "capital_rp": 10_000_000,
+    }
+    settings_mock.events_path = str(tmp_path / "events.yaml")
+
+    class Args:
+        browser = True
+        png = False
+
+    set_context(RunContext(
+        settings=settings_mock, args=Args(), df=df, price_data={},
+        benchmark_data={"^JKSE": bench},
+        regime=Regime([Signal("IHSG trend", "^JKSE", True, "up")], 1.0,
+                      "RISK-ON", "G", "Deploy 100%."),
+    ))
+    yield TerminalAPI(settings_mock, prices={t: 1000.0 for t in tickers})
+    set_context(None)
+
+
+def test_rebuild_does_not_navigate_the_window(ctx_api, monkeypatch):
+    """The regression guard for the WebViewException that killed every button."""
+    import sys
+    monkeypatch.setitem(sys.modules, "webview", _NoNavWebview())
+    out = ctx_api.rebuild()
+    assert out["ok"], out["message"]
+
+
+def test_rebuild_hands_back_a_url_for_the_page_to_follow(ctx_api):
+    out = ctx_api.rebuild()
+    assert out["ok"]
+    assert out["data"]["url"].startswith("file:")
+    assert out["data"]["url"].endswith(".html")
+
+
+def test_recording_a_trade_returns_a_url_so_the_whole_page_refreshes(ctx_api):
+    """
+    Swapping only the ledger left the KPIs and the top bar reading zero next to a
+    ledger that visibly had a trade in it.
+    """
+    out = ctx_api.log_trade("BUY", list(ctx_api._settings.stock_tickers)[0], 3, 1000)
+    assert out["ok"]
+    assert out["data"].get("url"), "the page has nothing to navigate to"
+
+
+def test_a_second_trade_records(ctx_api):
+    """The reported symptom: one record worked, the next did nothing."""
+    ticker = list(ctx_api._settings.stock_tickers)[0]
+    assert ctx_api.log_trade("BUY", ticker, 3, 1000)["ok"]
+    assert ctx_api.log_trade("BUY", ticker, 2, 1100)["ok"]
+
+    rows = pd.read_csv(ctx_api._settings.account["journal_path"])
+    assert len(rows) == 2, f"only {len(rows)} row(s) written"
+
+
+# ------------------------------------------------------------ undo a mistake
+def test_the_last_trade_can_be_named_before_it_is_removed(ctx_api):
+    ticker = list(ctx_api._settings.stock_tickers)[0]
+    ctx_api.log_trade("BUY", ticker, 3, 125)
+    out = ctx_api.last_trade()
+    assert out["ok"] and ticker in out["message"] and "125" in out["message"]
+
+
+def test_removing_the_last_trade_undoes_exactly_it(ctx_api):
+    """A price typed wrong is otherwise permanent, and +1429% sits there forever."""
+    ticker = list(ctx_api._settings.stock_tickers)[0]
+    ctx_api.log_trade("BUY", ticker, 3, 1900, "2026-08-01")
+    ctx_api.log_trade("BUY", ticker, 1, 125, "2026-08-02")     # the typo
+
+    assert ctx_api.remove_last_trade()["ok"]
+    rows = pd.read_csv(ctx_api._settings.account["journal_path"])
+    assert len(rows) == 1
+    assert float(rows.iloc[0]["price"]) == 1900.0, "it removed the wrong row"
+
+
+def test_removing_from_an_empty_journal_is_refused(ctx_api):
+    out = ctx_api.remove_last_trade()
+    assert out["ok"] is False and "nothing to remove" in out["message"].lower()
+
+
+def test_last_trade_on_an_empty_journal_says_so(ctx_api):
+    assert "Nothing recorded" in ctx_api.last_trade()["message"]

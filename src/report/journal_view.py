@@ -208,7 +208,7 @@ def open_positions_table(positions) -> str:
 
     return (
         '<div class="scroll"><table><thead><tr>'
-        '<th>Ticker</th><th class="num">Size</th><th class="num">Avg cost</th>'
+        '<th>Ticker</th><th class="num">Size</th><th class="num">YOUR avg cost</th>'
         '<th class="num">Cost basis</th><th class="num">Value now</th>'
         '<th class="num">Unrealised</th><th class="num">%</th>'
         f"</tr></thead><tbody>{body}</tbody></table></div>"
@@ -304,7 +304,14 @@ def trade_form(today: str = "") -> str:
     <span id="tf-msg" class="note"></span>
   </div>
 </form>
-<div class="note">Records what you already did. It places no orders.</div>"""
+<div class="note">Records what you already did. It places no orders.</div>
+<div class="undo-row">
+  <button type="button" id="undo-last" disabled>Remove last trade</button>
+  <span id="undo-what" class="note">checking&hellip;</span>
+</div>
+<div class="note">Only the most recent entry can be removed. An older one may already
+have been matched against a sale, and undoing it would leave the round-trip maths
+pointing at a purchase that no longer exists.</div>"""
 
 
 def cli_fallback() -> str:
