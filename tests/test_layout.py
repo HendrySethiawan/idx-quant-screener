@@ -115,39 +115,106 @@ def _brief(**kw):
     return render_brief(**defaults)
 
 
-def test_simple_is_laid_out_as_a_grid():
+def test_the_shell_is_a_full_height_grid():
     out = _brief()
-    assert '<div class="dash">' in out
-    assert ".dash{display:grid" in out
+    assert '<div class="app">' in out
+    assert ".app{height:100%;display:grid" in out
+    assert 'class="rail"' in out
 
 
-def test_the_grid_collapses_on_a_narrow_screen():
-    """A wide-screen layout must not strand a phone reader."""
-    css = _brief().split("<style>")[1].split("</style>")[0]
-    narrow = css.split("@media (max-width:1000px)")[1][:160]
-    assert ".dash{grid-template-columns:1fr}" in narrow
-
-
-def test_the_page_uses_the_whole_screen_but_not_the_whole_line():
-    """Wider layout, same readable measure -- the width is for columns, not prose."""
-    out = _brief()
-    assert "max-width:min(1580px,96vw)" in out
-    assert "max-width:74ch" in out
-
-
-def test_the_ticket_is_never_behind_a_tab():
+def test_the_page_itself_cannot_scroll_but_panels_can():
     """
-    The completeness rule under the new layout: everything you act on is outside
-    every .panel, so no tab can ever hide the decision.
+    The rule the whole terminal rests on: the window never moves, so the ticket
+    stays put while you read a 49-row table beside it.
+    """
+    css = _brief().split("<style>")[1].split("</style>")[0]
+    assert "html,body{height:100%;margin:0;overflow:hidden}" in css
+    assert ".pnl-bd{padding:9px 11px;overflow:auto" in css
+
+
+def test_a_phone_gets_its_scrollbar_back():
+    """Panels need room. Below 900px there is none, so the page scrolls normally."""
+    css = _brief().split("<style>")[1].split("</style>")[0]
+    narrow = css.split("@media (max-width:900px)")[1]
+    assert "html,body{overflow:auto;height:auto}" in narrow
+    assert ".pnl-bd{overflow:visible" in narrow
+
+
+def test_there_is_a_middle_breakpoint_so_nothing_is_squashed():
+    """
+    One jump from three columns to one leaves the 900-1200px band showing three
+    squeezed columns, which is worse than either end.
+    """
+    css = _brief().split("<style>")[1].split("</style>")[0]
+    for width in ("1400px", "1100px", "900px"):
+        assert f"@media (max-width:{width})" in css
+
+
+def test_the_ticket_is_the_first_panel_of_the_first_page():
+    """
+    Ten panels of z-scores can make it feel as though something must be done today.
+    The ticket comes first in the DOM and in the reading order, whatever it says.
     """
     out = _brief(advanced_html='<div class="adv">x</div>')
-    before_panels = re.split(r'<section class="panel', out)[0]
-    for essential in ("Do this today", "BBRI.JK", "3 lot", "RISK-ON", "Estimated cost"):
-        assert essential in before_panels, f"{essential!r} ended up behind a tab"
+    assert 'id="panel-ticket"' in out
+    first_page = out.split('<div class="page on" id="page-markets"')[1]
+    assert first_page.index('id="panel-ticket"') < 400, "the ticket is not the first panel"
+    for essential in ("Do this today", "BBRI.JK", "3 lot", "Estimated cost"):
+        assert essential in out
+
+
+def test_the_ticket_is_on_the_landing_page_not_behind_navigation():
+    out = _brief(advanced_html='<div class="adv">x</div>')
+    markets = out.split('id="page-markets"')[1].split('<div class="page"')[0]
+    for essential in ("Do this today", "BBRI.JK", "3 lot", "Estimated cost"):
+        assert essential in markets, f"{essential!r} needs a click to reach"
+
+
+def test_no_control_looks_like_it_places_a_trade():
+    """
+    The reference layout has BUY and SELL buttons that send real orders. A control
+    that looks like it trades, in a tool sitting beside the real broker, is a
+    hazard: this page says what to do, it must never look like it does it.
+    """
+    out = _brief(advanced_html='<div class="adv">x</div>')
+
+    # The ticket's own "BUY" label is content -- it is the instruction, and it must
+    # stay. What must not exist is a *control* that reads BUY or SELL, because that
+    # is the thing a hand clicks by reflex.
+    for tag in ("button", "a", "input"):
+        for element in re.findall(rf"<{tag}[^>]*>(.*?)</{tag}>", out, re.S):
+            text = re.sub(r"<[^>]+>", "", element).strip().lower()
+            assert text not in ("buy", "sell"), f"a <{tag}> reads {text!r}"
+    assert "<form" not in out.lower(), "nothing on this page should submit anything"
+
+
+def test_the_ticket_fits_a_720p_window_without_its_own_scrollbar():
+    """
+    720 minus the top bar (48), the ticker (32) and padding (24) leaves about
+    616px. A worst-case ticket -- six orders, every one carrying an event warning
+    -- has to fit that, or the one panel you must read hides half of itself.
+
+    The estimate is markup-derived, not a real pixel measurement: a true check
+    needs a browser and that would mean a new test dependency. It catches the
+    regression that matters -- a row growing, a callout being added.
+    """
+    orders = [{"action": "BUY", "ticker": f"AA{i}.JK", "lots": 3, "shares": 300,
+               "price": 4150.0, "rupiah": 1_245_000, "note": "target weight 16%",
+               "event_state": "known", "event_note": "earnings in 4 days"}
+              for i in range(6)]
+    out = _brief(orders=orders,
+                 fees=estimate_fees([{"action": "BUY", "rupiah": 1_245_000}] * 6,
+                                    FeeConfig()))
+    body = out.split('id="panel-ticket"')[1].split("</section>")[0]
+
+    rows = body.count("<tr>")
+    callouts = body.count('class="callout')
+    est = 30 + 22 + rows * 44 + callouts * 46      # header + thead + rows + callouts
+    assert est <= 616, f"ticket needs ~{est}px, only ~616px available at 720p"
 
 
 def test_skipped_is_folded_not_dropped():
-    """Least vertical space of anything in Simple, but still one click away."""
+    """Least vertical space of anything on the page, but still one click away."""
     out = _brief(rejected={"WIKA.JK": "no trading volume in the last 20 sessions"})
     assert "<details" in out
     assert "Skipped" in out
@@ -156,17 +223,15 @@ def test_skipped_is_folded_not_dropped():
 
 
 def test_printing_still_gives_the_ticket_alone():
-    block = _brief(advanced_html='<div class="adv">x</div>').split("@media print")[1][:220]
-    assert ".adv" in block and ".steps" in block and "display:none" in block
+    block = _brief(advanced_html='<div class="adv">x</div>').split("@media print")[1]
+    assert ".pnl{display:none}" in block
+    assert ".pnl.print{display:block" in block
+    assert ".rail,.topbar,.tickbar" in block
 
 
-def test_a_tall_table_scrolls_inside_its_panel_not_the_page():
-    """
-    The 49-row universe table would make its panel three screens tall, which is
-    exactly the scrolling this layout removes.
-    """
-    css = _brief().split("<style>")[1].split("</style>")[0]
-    assert re.search(r"\.panel \.scroll\{[^}]*max-height", css)
+def test_prose_keeps_a_readable_measure():
+    """A terminal is wide. Paragraphs still must not run the whole width."""
+    assert "max-width:78ch" in _brief()
 
 
 # --------------------------------------------- the guard, on the whole page

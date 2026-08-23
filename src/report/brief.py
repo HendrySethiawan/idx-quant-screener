@@ -18,323 +18,20 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
-_CSS = """
-:root{
-  --bg:#f7f7f5; --surface:#fff; --surface-alt:#f0efec; --ink:#1a1a18; --muted:#6b6b65;
-  --line:#dedcd6; --accent:#2f5fd0; --good:#1a7f4b; --bad:#b3261e; --warn:#8a5a00;
-  --good-bg:#e6f4ec; --bad-bg:#fbe9e7; --warn-bg:#fdf3e0;
-}
-@media (prefers-color-scheme:dark){
-  :root:not([data-theme=light]){
-    --bg:#16161a; --surface:#1e1e24; --surface-alt:#26262e; --ink:#ececf0; --muted:#9a9aa4;
-    --line:#33333d; --accent:#7aa2f7; --good:#5ec98a; --bad:#f28b82; --warn:#e0b657;
-    --good-bg:#152b1f; --bad-bg:#2e1a18; --warn-bg:#2b2313;
-  }
-}
-*{box-sizing:border-box}
-body{margin:0;padding:0 16px 64px;background:var(--bg);color:var(--ink);
-  font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}
-/* Wide enough to put things side by side. The old 940px cap left almost half a
-   1920px screen empty while the reader scrolled past content that would have fitted
-   beside itself. Prose is capped separately below -- the extra width is for layout,
-   not for longer lines of text. */
-.wrap{max-width:min(1580px,96vw);margin:0 auto}
-.card p,.card .note,.callout{max-width:74ch}
-header{padding:28px 0 8px}
-h1{font-size:24px;margin:0 0 4px;letter-spacing:-.01em}
-.sub{color:var(--muted);font-size:14px}
-h2{font-size:15px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);
-  margin:32px 0 10px;font-weight:600}
-.card{background:var(--surface);border:1px solid var(--line);border-radius:12px;
-  padding:18px 20px;margin-bottom:14px}
-.verdict{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
-.verdict .big{font-size:30px;font-weight:700;letter-spacing:-.02em}
-.verdict .why{color:var(--muted);font-size:14px;flex:1;min-width:240px}
-.pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;
-  font-weight:600;border:1px solid var(--line);background:var(--surface-alt)}
-.pill.good{color:var(--good);background:var(--good-bg);border-color:transparent}
-.pill.bad{color:var(--bad);background:var(--bad-bg);border-color:transparent}
-.pill.warn{color:var(--warn);background:var(--warn-bg);border-color:transparent}
-.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
-table{border-collapse:collapse;width:100%;font-size:14px;min-width:520px}
-th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
-th{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:600}
-td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
-tr:last-child td{border-bottom:none}
-.act{font-weight:700;font-size:13px;letter-spacing:.03em}
-.act.buy{color:var(--good)} .act.sell{color:var(--bad)} .act.hold{color:var(--muted)}
-.tick{font-weight:600}
-.note{color:var(--muted);font-size:13px}
-.money{font-variant-numeric:tabular-nums;white-space:nowrap}
-.callout{border-left:3px solid var(--accent);padding:10px 14px;background:var(--surface-alt);
-  border-radius:0 8px 8px 0;margin:12px 0;font-size:14px}
-.callout.save{border-left-color:var(--good)}
-.empty{color:var(--muted);font-style:italic;padding:6px 0}
-footer{margin-top:40px;padding-top:18px;border-top:1px solid var(--line);
-  color:var(--muted);font-size:12.5px;line-height:1.6}
-.kpis{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}
-.kpi{background:var(--surface);border:1px solid var(--line);border-radius:10px;
-  padding:11px 15px;min-width:132px;flex:1}
-.kpi .k{font-size:11.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
-.kpi .v{font-size:19px;font-weight:700;font-variant-numeric:tabular-nums;margin-top:2px}
+from report import terminal as T
+from report.terminal import SHELL_JS, THEME_CSS
 
-/* --- Simple / Steps / Advanced -----------------------------------------
-   The whole switch. One attribute on <body> decides which parts of the page
-   exist; there is no second file and no re-render, so the modes cannot drift
-   apart. Simple content is never hidden -- the other modes add to it rather
-   than replacing it, so the decision is always on screen. */
-body[data-mode="simple"] .adv,
-body[data-mode="simple"] .steps{display:none}
-body[data-mode="steps"] .adv{display:none}
-body[data-mode="advanced"] .steps{display:none}
-
-/* Sticky, because with 16+ sections the toggle used to scroll away and become
-   unreachable exactly when you needed to switch. */
-nav.modes{display:flex;gap:6px;margin:14px 0 2px;position:sticky;top:0;z-index:5;
-  background:var(--bg);padding:10px 0 8px;flex-wrap:wrap;
-  border-bottom:1px solid var(--line)}
-nav.modes button{font:inherit;font-size:13px;font-weight:600;cursor:pointer;
-  padding:7px 16px;border-radius:999px;border:1px solid var(--line);
-  background:var(--surface);color:var(--muted)}
-nav.modes button[aria-pressed="true"]{background:var(--accent);border-color:transparent;color:#fff}
-nav.modes .hint{align-self:center;margin-left:6px;color:var(--muted);font-size:12.5px}
-
-.chart{width:100%;height:auto;display:block;margin:8px 0}
-th.sortable{cursor:pointer;user-select:none;white-space:nowrap}
-th.sortable:hover{color:var(--ink);text-decoration:underline}
-th.sortable[data-dir]::after{content:" \\2193";font-weight:400}
-th.sortable[data-dir="asc"]::after{content:" \\2191"}
-.whatif-controls{display:flex;gap:14px;flex-wrap:wrap;margin:4px 0 14px}
-.whatif-controls label{font-size:13px;color:var(--muted);display:flex;
-  align-items:center;gap:6px}
-.whatif-controls select{font:inherit;font-size:13px;padding:5px 8px;
-  border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--ink)}
-
-/* --- Tabs ---------------------------------------------------------------
-   Nine Advanced sections are never useful at the same moment. One on screen at
-   a time turned an eight-screen scroll into eight one-screen panels. */
-.tabs{display:flex;gap:5px;flex-wrap:wrap;margin:14px 0 12px;
-  border-bottom:1px solid var(--line);padding-bottom:9px}
-button.tab{font:inherit;font-size:13px;font-weight:600;cursor:pointer;
-  padding:6px 13px;border-radius:999px;border:1px solid var(--line);
-  background:var(--surface);color:var(--muted)}
-button.tab:hover{color:var(--ink)}
-button.tab.on{background:var(--ink);border-color:transparent;color:var(--bg)}
-.panel{display:none}
-.panel.on{display:block}
-/* A 50-row table would make its panel three screens tall, which is the scrolling
-   this layout exists to remove. Cap it and let the table scroll inside its own
-   pane: bounded and local beats the whole page moving. Simple is left uncapped --
-   it is short enough already, and its tables are the thing you came to read. */
-.panel .scroll{max-height:68vh;overflow:auto}
-
-/* --- Simple as a dashboard ----------------------------------------------
-   Two columns on a wide screen, one below 1000px so nothing is lost on a phone.
-   The ticket takes the wide column because it is the only thing here you act on. */
-.dash{display:grid;gap:14px;grid-template-columns:minmax(0,1.55fr) minmax(0,1fr);
-  align-items:start}
-.dash>.full{grid-column:1/-1}
-.dash h2{margin:0 0 8px}
-.dash .card{margin-bottom:0}
-@media (max-width:1000px){
-  .dash{grid-template-columns:1fr}
-  .dash>.full{grid-column:auto}
-}
-.dash-col{display:flex;flex-direction:column;gap:14px;min-width:0}
-.dash-col>section:empty{display:none}
-
-/* --- Folded blocks ------------------------------------------------------- */
-.fold>summary{cursor:pointer;font-size:15px;font-weight:600;color:var(--muted);
-  padding:9px 0;list-style:none}
-.fold>summary::-webkit-details-marker{display:none}
-.fold>summary::before{content:"\\25B8 ";color:var(--muted)}
-.fold[open]>summary::before{content:"\\25BE "}
-.fold>summary:hover{color:var(--ink)}
-
-/* --- The funnel --------------------------------------------------------- */
-.funnel{display:flex;flex-direction:column;gap:3px;margin:14px 0}
-.funnel-row{display:grid;grid-template-columns:22px minmax(96px,1.1fr) 3fr 34px 34px;
-  gap:9px;align-items:center;padding:6px 8px;border-radius:8px;
-  text-decoration:none;color:var(--ink)}
-.funnel-row:hover{background:var(--surface-alt)}
-.funnel-n{font-size:11.5px;font-weight:700;color:var(--muted);
-  text-align:center;font-variant-numeric:tabular-nums}
-.funnel-title{font-size:13.5px}
-.funnel-bar{background:var(--surface-alt);border-radius:999px;height:11px;overflow:hidden}
-.funnel-bar>span{display:block;height:100%;background:var(--accent);
-  border-radius:999px;min-width:2px}
-.funnel-out{font-weight:700;font-variant-numeric:tabular-nums;text-align:right;font-size:13.5px}
-.funnel-drop{color:var(--bad);font-size:12px;font-variant-numeric:tabular-nums;text-align:right}
-
-/* --- Stage cards -------------------------------------------------------- */
-.step-head{display:flex;align-items:center;gap:11px;margin-bottom:6px}
-.step-head h3{margin:0;font-size:17px;letter-spacing:-.01em}
-.step-n{display:flex;align-items:center;justify-content:center;flex:none;
-  width:26px;height:26px;border-radius:999px;background:var(--accent);color:#fff;
-  font-size:13px;font-weight:700}
-.step-count{margin:12px 0;font-size:15px;font-variant-numeric:tabular-nums}
-.step-count strong{font-size:19px}
-.step{scroll-margin-top:64px}
-
-/* --- Per-stock trace ---------------------------------------------------- */
-.trace-box{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin:6px 0 14px}
-.trace-box label{font-size:13px;color:var(--muted)}
-.trace-box input{font:inherit;font-size:14px;padding:8px 11px;border-radius:9px;
-  border:1px solid var(--line);background:var(--surface);color:var(--ink);min-width:210px}
-.trace-step{display:grid;grid-template-columns:26px 1fr;gap:11px;
-  padding:8px 0;border-bottom:1px solid var(--line)}
-.trace-step:last-child{border-bottom:none}
-.trace-mark{font-weight:700;text-align:center}
-.trace-mark.pass{color:var(--good)}
-.trace-mark.stop{color:var(--bad)}
-.trace-mark.na{color:var(--muted)}
-
-/* Print the ticket, not the research. */
-@media print{
-  nav.modes,.adv,.steps{display:none !important}
-  body{padding:0}
-  .card{break-inside:avoid}
-}
-"""
-
-# Kept out of _CSS so the f-string in render_brief never has to escape braces.
-# Three jobs, all local to the page: flip the mode, sort a table, read the
-# precomputed what-if grid. No fetch, no dependency, nothing that needs a server.
-_JS = """
-(function(){
-  var body=document.body,KEY="idx-brief-mode",MODES=["simple","steps","advanced"];
-  var btns=[].slice.call(document.querySelectorAll("nav.modes button"));
-  function setMode(m){
-    body.setAttribute("data-mode",m);
-    btns.forEach(function(b){b.setAttribute("aria-pressed",String(b.dataset.mode===m));});
-    try{localStorage.setItem(KEY,m);}catch(e){}
-  }
-  var saved=null;
-  try{saved=localStorage.getItem(KEY);}catch(e){}
-  setMode(MODES.indexOf(saved)>=0?saved:"simple");
-  btns.forEach(function(b){b.addEventListener("click",function(){setMode(b.dataset.mode);});});
-
-  // Tabs. Each strip owns the panels its buttons name, so two strips on the page
-  // never fight over the same panel. The choice is remembered per group.
-  [].forEach.call(document.querySelectorAll(".tabs"),function(strip){
-    var group=strip.dataset.group||"tabs";
-    var tabs=[].slice.call(strip.querySelectorAll("button.tab"));
-    if(!tabs.length) return;
-    function show(id,remember){
-      tabs.forEach(function(t){
-        var on=t.dataset.panel===id;
-        t.classList.toggle("on",on);
-        t.setAttribute("aria-selected",String(on));
-        var p=document.getElementById(t.dataset.panel);
-        if(p) p.classList.toggle("on",on);
-      });
-      if(remember){try{localStorage.setItem("idx-tab-"+group,id);}catch(e){}}
-    }
-    tabs.forEach(function(t,i){
-      t.addEventListener("click",function(){show(t.dataset.panel,true);});
-      // Arrow keys move along the strip, which is what a tablist is expected to do.
-      t.addEventListener("keydown",function(e){
-        var d=e.key==="ArrowRight"?1:(e.key==="ArrowLeft"?-1:0);
-        if(!d) return;
-        e.preventDefault();
-        var n=tabs[(i+d+tabs.length)%tabs.length];
-        show(n.dataset.panel,true); n.focus();
-      });
-    });
-    var want=null;
-    try{want=localStorage.getItem("idx-tab-"+group);}catch(e){}
-    // Only restore a tab this strip actually owns -- a remembered id from an older
-    // version of the page would otherwise hide every panel and blank the section.
-    if(want&&tabs.some(function(t){return t.dataset.panel===want;})) show(want,false);
-  });
-
-  // Per-stock trace: look up any name in the universe and see where it stopped.
-  var traceRaw=document.getElementById("trace-data");
-  if(traceRaw){
-    var trace=JSON.parse(traceRaw.textContent);
-    var q=document.getElementById("trace-q"), tout=document.getElementById("trace-out");
-    var esc=function(s){var d=document.createElement("div");d.textContent=s;return d.innerHTML;};
-    var MARK={passed:["pass","✓"],dropped:["stop","✕"],not_reached:["na","·"]};
-    function lookup(){
-      var key=(q.value||"").trim().toUpperCase();
-      if(!key){tout.innerHTML="";return;}
-      var hit=trace.names[key]||trace.names[key+".JK"];
-      if(!hit){
-        tout.innerHTML='<div class="empty">'+esc(q.value)+
-          " is not in the universe, so it was never considered.</div>";
-        return;
-      }
-      var rows=hit.rows.map(function(r){
-        var m=MARK[r.status]||MARK.not_reached;
-        var detail=r.detail?'<div class="note">'+esc(r.detail)+"</div>":"";
-        return '<div class="trace-step"><div class="trace-mark '+m[0]+'">'+m[1]+
-               '</div><div>'+esc(r.title)+detail+"</div></div>";
-      }).join("");
-      tout.innerHTML='<div class="card"><div><span class="tick">'+esc(key)+
-        '</span></div>'+rows+'<div class="callout">'+esc(hit.outcome)+"</div></div>";
-    }
-    q.addEventListener("input",lookup);
-    q.addEventListener("change",lookup);
-  }
-
-  // Click-to-sort. Values come from each cell's data-v, so sorting uses the
-  // underlying number rather than the formatted "Rp1,234" string.
-  [].forEach.call(document.querySelectorAll("table.sortable-table"),function(tbl){
-    var heads=[].slice.call(tbl.querySelectorAll("th.sortable"));
-    heads.forEach(function(th){
-      th.addEventListener("click",function(){
-        var col=+th.dataset.col, dir=th.dataset.dir==="asc"?"desc":"asc";
-        heads.forEach(function(h){h.removeAttribute("data-dir");});
-        th.dataset.dir=dir;
-        var tb=tbl.tBodies[0], rows=[].slice.call(tb.rows);
-        rows.sort(function(a,b){
-          var x=a.cells[col].dataset.v, y=b.cells[col].dataset.v;
-          var nx=parseFloat(x), ny=parseFloat(y);
-          var both=!isNaN(nx)&&!isNaN(ny);
-          var cmp=both?(nx-ny):String(x).localeCompare(String(y));
-          return dir==="asc"?cmp:-cmp;
-        });
-        rows.forEach(function(r){tb.appendChild(r);});
-      });
-    });
-  });
-
-  // What-if: a lookup into a table computed at render time.
-  var raw=document.getElementById("wi-data");
-  if(raw){
-    var grid=JSON.parse(raw.textContent), out=document.getElementById("wi-out");
-    var cap=document.getElementById("wi-cap"),
-        nsel=document.getElementById("wi-n"),
-        dep=document.getElementById("wi-dep");
-    var rp=function(v){return "Rp"+Math.round(v).toLocaleString("en-US");};
-    function draw(){
-      var cell=grid.cells[cap.value+"|"+nsel.value+"|"+dep.value];
-      if(!cell){out.innerHTML='<div class="empty">No workable book at that setting.</div>';return;}
-      // Everything from the payload is injected as HTML, and it carries ticker
-      // names that came from a config file. Escape it here for the same reason
-      // the Python side escapes: the source being "ours" is not a guarantee.
-      var esc=function(s){var d=document.createElement("div");d.textContent=s;return d.innerHTML;};
-      var rows=cell.pos.map(function(p){
-        return "<tr><td><span class='tick'>"+esc(p.t)+"</span></td>"+
-               "<td class='num'>"+esc(p.l)+" lot</td>"+
-               "<td class='num'>"+rp(p.r)+"</td></tr>";
-      }).join("");
-      var shortfall=cell.short?'<div class="callout"><strong>Lot sizes bind here.</strong> '+esc(cell.short)+'</div>':"";
-      out.innerHTML=
-        '<div class="kpis">'+
-        '<div class="kpi"><div class="k">Positions</div><div class="v">'+cell.n+'</div></div>'+
-        '<div class="kpi"><div class="k">Deployed</div><div class="v">'+(cell.deployed*100).toFixed(0)+'%</div></div>'+
-        '<div class="kpi"><div class="k">Cash left</div><div class="v">'+rp(cell.cash)+'</div></div>'+
-        '<div class="kpi"><div class="k">Worst weight gap</div><div class="v">'+(cell.err*100).toFixed(1)+'pp</div></div>'+
-        '<div class="kpi"><div class="k">Est. fees</div><div class="v">'+rp(cell.fees)+'</div></div>'+
-        '</div>'+shortfall+
-        (rows?'<div class="scroll"><table><thead><tr><th>Ticker</th><th class="num">Size</th><th class="num">Value</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
-             :'<div class="empty">Nothing is affordable at that setting.</div>');
-    }
-    [cap,nsel,dep].forEach(function(el){el.addEventListener("change",draw);});
-    draw();
-  }
-})();
+# Styling that belongs to content this module renders, not to the shell.
+_EXTRA_CSS = """
+.mkt-head{display:flex;align-items:baseline;gap:11px;flex-wrap:wrap;margin-bottom:4px}
+.mkt-last{font-size:23px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.mkt-chg{font-size:12.5px;font-weight:700;font-variant-numeric:tabular-nums}
+.mkt-chg.good{color:var(--good)} .mkt-chg.bad{color:var(--bad)}
+.verdict{display:flex;align-items:center;gap:11px;flex-wrap:wrap;margin-bottom:6px}
+.verdict .big{font-size:17px;font-weight:800;letter-spacing:-.01em}
+.verdict .why{color:var(--muted);font-size:11.5px;flex:1;min-width:160px}
+.setgrp{margin-bottom:14px}
+.setgrp h3{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
 """
 
 
@@ -628,6 +325,52 @@ def _rejected_section(rejected: Dict[str, str], capped: Optional[Dict[str, str]]
     return out
 
 
+def _market_panel(market):
+    """
+    The index, with its real last session.
+
+    Open/High/Low come straight from the cached OHLCV frame, so they are the actual
+    session -- not decoration. The chart is DAILY and says so: the reference this
+    layout is modelled on shows an intraday line, and letting a daily series pass
+    for one would imply a live feed this tool has never had.
+    """
+    if not market:
+        return ""
+    last, prev = market.get("last"), market.get("prev")
+    if last is None:
+        return ""
+
+    delta = None if not prev else (last - prev)
+    pct = None if not prev else delta / prev * 100
+    cls = "" if delta is None else ("good" if delta >= 0 else "bad")
+    arrow = "" if delta is None else ("&#9650;" if delta >= 0 else "&#9660;")
+
+    head = '<div class="mkt-head"><span class="mkt-last">' + f"{last:,.2f}" + "</span>"
+    if delta is not None:
+        head += (f'<span class="mkt-chg {cls}">{arrow} {abs(delta):,.2f} '
+                 f"({pct:+.2f}%)</span>")
+    head += "</div>"
+
+    stats = ""
+    for key in ("open", "high", "low"):
+        v = market.get(key)
+        if v is not None:
+            stats += (f'<div class="kpi"><div class="k">{key}</div>'
+                      f'<div class="v">{v:,.2f}</div></div>')
+    ma = market.get("ma_last")
+    if ma:
+        side = "above" if last >= ma else "below"
+        stats += (f'<div class="kpi"><div class="k">{market.get("trend_ma", 200)}d mean</div>'
+                  f'<div class="v">{ma:,.0f}</div>'
+                  f'<div class="note">{side}</div></div>')
+
+    return (head + market.get("chart", "")
+            + f'<div class="kpis">{stats}</div>'
+            + '<div class="note">Daily closes, not intraday &mdash; this tool has no '
+              "live feed. The line is the index against its long-run mean, which is "
+              "the whole trend signal.</div>")
+
+
 def render_brief(
     *,
     regime,
@@ -648,38 +391,23 @@ def render_brief(
     imputed_n: int = 0,
     advanced_html: str = "",
     steps_html: str = "",
+    settings_html: str = "",
+    market: Optional[dict] = None,
     generated: Optional[datetime] = None,
 ) -> str:
-    when = (generated or datetime.now()).strftime("%A, %d %B %Y %H:%M")
+    """
+    The terminal. One document, five destinations, nothing scrolls but panels.
 
-    # Each button only appears when there is something behind it. A dead switch is
-    # worse than no switch.
-    nav = ""
-    if advanced_html or steps_html:
-        buttons = ('<button type="button" data-mode="simple" '
-                   'aria-pressed="true">Simple</button>')
-        if steps_html:
-            buttons += ('<button type="button" data-mode="steps" '
-                        'aria-pressed="false">Steps</button>')
-        if advanced_html:
-            buttons += ('<button type="button" data-mode="advanced" '
-                        'aria-pressed="false">Advanced</button>')
-        hint = ("Simple is the decision, Steps is how it got there, Advanced is the "
-                "evidence." if steps_html and advanced_html
-                else "Simple is the decision. Advanced is the evidence.")
-        # No jump list any more. It existed to make sixteen stacked sections
-        # navigable; Simple now fits a screen and the other two are tabbed, so a
-        # dropdown listing the one visible heading would be worse than nothing.
-        nav = (
-            '<nav class="modes">'
-            f"{buttons}"
-            f'<span class="hint">{hint}</span>'
-            "</nav>"
-        )
+    The ticket is the first panel of the first page, in the DOM before anything
+    else, and it keeps that place when it says HOLD or is empty. Ten panels of
+    z-scores can make it feel as though something must be done today; the honest
+    answer is usually that nothing must, and an empty ticket is a result.
+    """
+    when = (generated or datetime.now()).strftime("%a %d %b %Y, %H:%M")
 
     kpis = "".join([
         _kpi("Capital", rp(capital)),
-        _kpi("Deploy now", f"{regime.deploy_pct:.0%}"),
+        _kpi("Deploy", f"{regime.deploy_pct:.0%}"),
         _kpi("Positions", str(allocation.n_positions if allocation else 0)),
         _kpi("Cash left", rp(allocation.cash_left if allocation else capital)),
         _kpi("Est. fees", rp(fees.total)),
@@ -688,69 +416,103 @@ def render_brief(
     granularity = ""
     if allocation and allocation.positions:
         granularity = (
-            f'<div class="callout"><strong>Lot rounding.</strong> IDX trades in 100-share lots, so '
-            f'weights cannot land exactly on target. Largest gap in this book: '
-            f'{allocation.max_weight_error * 100:.1f} percentage points.</div>'
+            '<div class="callout"><strong>Lot rounding.</strong> IDX trades in '
+            "100-share lots, so weights cannot land exactly on target. Largest gap "
+            f"in this book: {allocation.max_weight_error * 100:.1f} percentage points.</div>"
         )
 
-    return f"""<!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>IDX Brief</title>
-<style>{_CSS}</style>
-<body data-mode="simple">
-<div class="wrap">
-<header>
-  <h1>Your IDX brief</h1>
-  <div class="sub">{_e(when)} &middot; {universe_n} stocks screened</div>
-</header>
-{nav}
+    disclaimer = (
+        '<div class="callout"><strong>Before you trade.</strong> The universe is '
+        "today's tickers, so companies that already failed or delisted are missing "
+        f"and any implied history is flattered by that. {imputed_n} of {universe_n} "
+        "names are missing at least one data point and were scored neutral on it. "
+        "Prices come from Yahoo Finance and can be stale &mdash; check the live price "
+        "in your broker before sending an order. Fees use Indopremier's schedule and "
+        "are an estimate. A personal research tool, not investment advice.</div>"
+    )
 
-<div class="dash">
+    # ---- Markets: the decision, and the ticket comes first --------------------
+    markets = T.grid([
+        T.column([
+            T.panel("Do this today",
+                    _ticket_section(orders, fees, capital) + granularity,
+                    pid="panel-ticket", cls="print", grow=True),
+            T.panel(f"Events, next {event_horizon} days",
+                    _events_section(events or [], blind_n, universe_n, event_horizon)),
+        ]),
+        T.column([
+            T.panel((market or {}).get("name", "IHSG") + " &middot; daily",
+                    _market_panel(market)),
+            T.panel("Regime and capital",
+                    _verdict_card(regime) + f'<div class="kpis">{kpis}</div>'
+                    + (f'<div class="callout">{_e(seasonality)}</div>' if seasonality else "")),
+            T.panel("What you hold", _holdings_section(holdings_rows), grow=True),
+        ]),
+        T.column([
+            T.panel("Best candidates you can afford",
+                    _candidates_section(candidates), grow=True),
+            T.panel("Skipped", _rejected_section(rejected, capped, compact=True)),
+        ]),
+    ])
 
-  <section class="full">
-    <h2>Market right now</h2>
-    {_verdict_card(regime)}
-    {f'<div class="callout"><strong>Seasonality.</strong> {_e(seasonality)}</div>' if seasonality else ''}
-  </section>
+    portfolio = T.grid([
+        T.column([T.panel("What you hold", _holdings_section(holdings_rows), grow=True)]),
+        T.column([T.panel("How you are doing",
+                          journal_html or '<div class="empty">No trades logged yet. '
+                          "Record one with <code>python main.py --log</code>.</div>",
+                          grow=True)]),
+    ])
 
-  <section class="full"><div class="kpis">{kpis}</div></section>
+    pages = [
+        T.Page("markets", "Markets", "markets", markets, "Today's decision"),
+        T.Page("portfolio", "Portfolio", "portfolio", portfolio, "What you own"),
+    ]
+    if advanced_html:
+        pages.append(T.Page(
+            "screener", "Screener", "screener",
+            T.grid([T.column([T.panel("The whole universe", advanced_html, grow=True)])]),
+            "All 49 names and the evidence"))
+    if steps_html:
+        pages.append(T.Page(
+            "why", "Why", "why",
+            T.grid([T.column([T.panel("How today's picks were chosen",
+                                      steps_html, grow=True)])]),
+            "The decision, stage by stage"))
+    pages.append(T.Page(
+        "settings", "Settings", "settings",
+        T.grid([T.column([T.panel("What is driving the rules",
+                                  (settings_html or "") + disclaimer, grow=True)])]),
+        "The numbers behind every gate"))
 
-  <div class="dash-col">
-    {_block("Do this today", _ticket_section(orders, fees, capital) + granularity)}
-  </div>
+    regime_kind = {"RISK-ON": "good", "RISK-OFF": "bad"}.get(regime.label, "warn")
+    top = T.topbar(
+        "IDX Terminal",
+        f"as of {when} · {universe_n} names screened",
+        [
+            (regime.label, f"deploy {regime.deploy_pct:.0%}", regime_kind),
+            ("Cash", rp(allocation.cash_left if allocation else capital), ""),
+            ("Est. fees", rp(fees.total), ""),
+        ],
+    )
 
-  <div class="dash-col">
-    {_block("What you hold", _holdings_section(holdings_rows))}
-    <section>{_events_section(events or [], blind_n, universe_n, event_horizon)}</section>
-    <section>{journal_html}</section>
-  </div>
+    ticks = []
+    for c in candidates[:12]:
+        gap = c.get("value_gap_pct")
+        # Negated on purpose: a price BELOW the peer range is the good direction, and
+        # a green arrow next to "-71%" would read backwards.
+        ticks.append((c.get("ticker", ""), rp(c.get("price")),
+                      None if gap is None else -float(gap)))
 
-  {_block("Best candidates you can actually afford", _candidates_section(candidates), cls="full")}
-
-  <section class="full">{_rejected_section(rejected, capped, compact=True)}</section>
-
-</div>
-
-{steps_html}
-
-{advanced_html}
-
-<footer>
-  <p><strong>Read this before you trade.</strong> The universe is today's list of
-  tickers, so companies that already failed or delisted are missing &mdash; past
-  performance implied by any ranking here is flattered by that.
-  {imputed_n} of {universe_n} stocks are missing at least one data point and were
-  scored neutral on it; those are marked &#9888; above.</p>
-  <p>Prices come from Yahoo Finance and can be stale or wrong. Check the live price
-  in your broker before sending an order. Fees shown use Indopremier's schedule
-  (0.19% buy, 0.29% sell, Rp10,000 stamp per day with a sell) and are an estimate.</p>
-  <p>This is a personal research tool, not investment advice.</p>
-</footer>
-</div>
-<script>{_JS}</script>
-</body>
-"""
+    return T.document(
+        title="IDX Terminal",
+        head="markets",
+        rail_html=T.rail(pages, "markets"),
+        top_html=top,
+        body_html=T.pages_html(pages, "markets"),
+        tick_html=T.tickerbar(ticks),
+        css=THEME_CSS + _EXTRA_CSS,
+        js=SHELL_JS,
+    )
 
 
 def write_brief(html_text: str, output_dir: Path, filename: str = "brief.html") -> Path:

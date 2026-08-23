@@ -189,56 +189,54 @@ def test_simple_stays_complete_with_a_third_mode(trail):
 
 
 def _nav(out: str) -> str:
-    """Just the toggle bar. `data-mode` also appears in the CSS for every mode,
-    so searching the whole document cannot tell you which buttons exist."""
-    return out.split('<nav class="modes">')[1].split("</nav>")[0] if "modes" in out else ""
+    """Just the rail. `data-page` also appears elsewhere, so searching the whole
+    document cannot tell you which destinations actually exist."""
+    return out.split('<nav class="rail"')[1].split("</nav>")[0] if 'class="rail"' in out else ""
 
 
-def test_three_buttons_appear_when_all_three_modes_exist(trail):
+def test_every_destination_appears_in_the_rail(trail):
     nav = _nav(_brief(steps_html=S.render_steps(trail),
                       advanced_html='<div class="adv">x</div>'))
-    for mode in ("simple", "steps", "advanced"):
-        assert f'data-mode="{mode}"' in nav
+    for page in ("markets", "portfolio", "screener", "why", "settings"):
+        assert f'data-page="{page}"' in nav
 
 
-def test_a_mode_with_no_content_gets_no_button(trail):
-    """A switch that leads nowhere is worse than no switch."""
+def test_a_destination_with_no_content_gets_no_rail_entry(trail):
+    """A rail entry that leads nowhere is worse than no entry."""
     nav = _nav(_brief(steps_html=S.render_steps(trail)))
-    assert 'data-mode="steps"' in nav
-    assert 'data-mode="advanced"' not in nav
+    assert 'data-page="why"' in nav
+    assert 'data-page="screener"' not in nav
 
 
 def test_no_nav_at_all_when_only_simple_exists():
     assert 'nav class="modes"' not in _brief()
 
 
-def test_each_mode_hides_the_others(trail):
-    css = _brief(steps_html=S.render_steps(trail),
-                 advanced_html='<div class="adv">x</div>').split("<style>")[1]
-    assert re.search(r'body\[data-mode="simple"\][^{}]*\.steps[^{}]*\{[^}]*display:none', css)
-    assert re.search(r'body\[data-mode="steps"\][^{}]*\.adv\s*\{[^}]*display:none', css)
-    assert re.search(r'body\[data-mode="advanced"\][^{}]*\.steps\s*\{[^}]*display:none', css)
+def test_only_one_destination_is_visible_at_a_time(trail):
+    out = _brief(steps_html=S.render_steps(trail), advanced_html='<div class="adv">x</div>')
+    css = out.split("<style>")[1].split("</style>")[0]
+    assert ".page{display:none" in css
+    assert ".page.on{display:block" in css
+    assert out.count('class="page on"') == 1
 
 
-def test_the_mode_nav_stays_put_while_scrolling(trail):
-    """It used to scroll away exactly when you needed it."""
+def test_the_rail_cannot_scroll_away(trail):
+    """It is a grid column of a full-height shell, so it is always on screen."""
     out = _brief(steps_html=S.render_steps(trail))
-    assert "position:sticky" in out
+    assert ".app{height:100%;display:grid;grid-template-columns:74px" in out
 
 
-def test_the_jump_list_is_gone_now_that_tabs_replace_it():
-    """
-    A dropdown listing the one heading the current mode leaves visible is worse
-    than nothing. Tabs do that job.
-    """
+def test_the_jump_list_is_gone_now_that_the_rail_replaces_it():
+    """A dropdown of headings is not navigation once there is a rail."""
     out = _brief(advanced_html='<div class="adv">x</div>')
     assert 'id="jump-to"' not in out
 
 
 def test_printing_drops_the_steps_too(trail):
     out = _brief(steps_html=S.render_steps(trail))
-    block = out.split("@media print")[1][:220]
-    assert ".steps" in block and "display:none" in block
+    block = out.split("@media print")[1]
+    assert ".page{display:none !important}" in block
+    assert ".pnl{display:none}" in block
 
 
 def test_the_steps_view_stays_self_contained(trail):

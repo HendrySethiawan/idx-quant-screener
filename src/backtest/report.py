@@ -19,7 +19,8 @@ import pandas as pd
 from backtest.engine import (BacktestConfig, buy_and_hold, equal_weight_universe,
                              rebalance_dates, run_backtest)
 from portfolio.fees import FeeConfig
-from report.brief import _CSS, _e, _kpi, _table, rp
+from report.brief import _e, _kpi, _table, rp
+from report.terminal import DOC_CSS, THEME_CSS
 
 CAVEAT = (
     "This tests the price factors only - momentum and realised volatility, which are "
@@ -417,8 +418,8 @@ def render_html(sections: Dict[str, dict], survivorship: Optional[dict] = None) 
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>IDX Backtest</title>
-<style>{_CSS}
-h3{{font-size:15px;margin:0 0 10px}}</style>
+<style>{THEME_CSS}{DOC_CSS}
+</style>
 <div class="wrap">
 <header><h1>Backtest</h1>
 <div class="sub">Price factors only, under real trading frictions</div></header>

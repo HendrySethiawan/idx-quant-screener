@@ -1,6 +1,6 @@
 # src/__main__.py
 import sys
-import webbrowser
+# webbrowser is reached through desktop.open_result, which handles the fallback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -167,6 +167,75 @@ def main() -> None:
     except Exception as e:
         logger.warning(f"Steps view unavailable: {e}")
 
+    # ---- the index panel ----------------------------------------------------
+    # Real OHLC from the cached frame, not decoration. The chart is daily and the
+    # panel says so -- a daily series dressed as an intraday line would imply a feed
+    # this tool has never had.
+    market = None
+    try:
+        bm_key = regime_cfg.get("benchmark", "^JKSE")
+        raw = benchmark_data.get(bm_key)
+        if raw is not None and "Close" in raw and len(raw) > 2:
+            from report import charts
+            trend_ma = int(regime_cfg.get("trend_ma", 200))
+            window = raw.tail(260)
+            closes = window["Close"].dropna()
+            ma = raw["Close"].rolling(trend_ma, min_periods=max(2, trend_ma // 4)).mean()
+            market = {
+                "name": regime_cfg.get("benchmark_label", "IHSG"),
+                "last": float(closes.iloc[-1]),
+                "prev": float(closes.iloc[-2]),
+                "open": float(window["Open"].iloc[-1]) if "Open" in window else None,
+                "high": float(window["High"].iloc[-1]) if "High" in window else None,
+                "low": float(window["Low"].iloc[-1]) if "Low" in window else None,
+                "ma_last": float(ma.dropna().iloc[-1]) if ma.notna().any() else None,
+                "trend_ma": trend_ma,
+                "chart": charts.line_chart(
+                    [("close", closes.tolist()),
+                     (f"{trend_ma}d mean", ma.tail(len(closes)).tolist())],
+                    x_labels=[d.strftime("%b %y") for d in closes.index],
+                    label=f"{bm_key} daily close against its {trend_ma}-day mean",
+                    height=190,
+                ),
+            }
+    except Exception as e:
+        logger.warning(f"Index panel unavailable: {e}")
+
+    # ---- the settings page --------------------------------------------------
+    # A read-only view of the numbers actually driving every gate, so a rule can be
+    # found and changed rather than merely obeyed.
+    def _rows(pairs):
+        return "".join(f"<tr><td>{k}</td><td class='num'>{v}</td></tr>" for k, v in pairs)
+
+    broker = settings.broker or {}
+    account = settings.account or {}
+    liq = settings.liquidity or {}
+    settings_html = (
+        '<div class="setgrp"><h3>Broker (Indopremier)</h3><table>' + _rows([
+            ("Buy fee", f"{float(broker.get('buy_fee', 0)):.2%}"),
+            ("Sell fee", f"{float(broker.get('sell_fee', 0)):.2%}"),
+            ("Stamp duty, per day with a sell", rp(float(broker.get("stamp_duty_rp", 0)))),
+            ("Lot size", broker.get("lot_size", 100)),
+        ]) + "</table></div>"
+        '<div class="setgrp"><h3>Account</h3><table>' + _rows([
+            ("Capital", rp(settings.capital_rp)),
+            ("Positions allowed", f"{account.get('min_positions', 3)}-{account.get('max_positions', 6)}"),
+            ("Smallest position", rp(float(account.get("min_position_rp", 0)))),
+            ("Max per sector", settings.max_per_sector),
+            ("Shortlist size", settings.top_picks_n),
+        ]) + "</table></div>"
+        '<div class="setgrp"><h3>Liquidity gate</h3><table>' + _rows([
+            ("Minimum traded per day", rp(float(liq.get("min_median_daily_value_rp", 0)))),
+            ("Max position vs daily volume",
+             f"{float(liq.get('max_position_pct_of_daily_value', 0)):.0%}"),
+        ]) + "</table></div>"
+        '<div class="setgrp"><h3>Factor weights</h3><table>' + _rows(
+            [(k, f"{v:+.1f}") for k, v in (settings.factor_weights or {}).items()]
+        ) + "</table></div>"
+        '<div class="note">All of these live in <code>configs/default.yaml</code>; '
+        "your capital comes from the git-ignored <code>configs/user.yaml</code>.</div>"
+    )
+
     brief_path = write_brief(
         render_brief(
             regime=regime,
@@ -187,6 +256,8 @@ def main() -> None:
             imputed_n=int((df["imputed_factors"].fillna("").str.len() > 0).sum()),
             advanced_html=advanced_html,
             steps_html=steps_html,
+            settings_html=settings_html,
+            market=market,
         ),
         settings.output_dir,
     )
@@ -229,10 +300,14 @@ def main() -> None:
     print(f"\nAnalyzed {len(df)} stocks | NaN scores: {int(df['undervaluation_score'].isna().sum())}")
     print(f"Brief: {brief_path}")
 
-    try:
-        webbrowser.open(brief_path.resolve().as_uri())
-    except Exception:
-        pass
+    # A native window by default, a browser tab if that is not possible or if
+    # --browser was asked for. `open_result` never raises: the analysis is already
+    # done and written by this point, and a window failing to open must not lose it.
+    from desktop import open_result
+    route = open_result(brief_path, prefer_desktop=not args.browser,
+                        title="IDX Terminal", logger=logger)
+    if route == "none":
+        print("  (could not open it automatically - open the file above yourself)")
 
 
 if __name__ == "__main__":

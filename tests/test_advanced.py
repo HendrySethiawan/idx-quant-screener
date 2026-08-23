@@ -89,33 +89,33 @@ def test_simple_mode_is_complete_on_its_own(universe):
         assert essential in simple_half, f"{essential!r} is only reachable in Advanced"
 
 
-def test_the_page_defaults_to_simple(universe):
+def test_the_terminal_opens_on_markets(universe):
+    """The decision is the landing page; the evidence is a click away, not the reverse."""
     out = _brief(advanced_html=A.render_advanced(df=universe))
-    assert '<body data-mode="simple">' in out
-    # Assert the rule exists, not its exact text -- it is a grouped selector now
-    # that also covers .steps, and matching the literal string made this fail on a
-    # change that altered nothing about the behaviour.
-    css = out.split("<style>")[1].split("</style>")[0]
-    assert re.search(r'body\[data-mode="simple"\][^{}]*\.adv[^{}]*\{[^}]*display:none', css)
+    assert '<body data-page="markets">' in out
+    assert '<div class="page on" id="page-markets"' in out
+    assert out.count('class="page on"') == 1
 
 
 def test_printing_drops_the_research(universe):
+    """Print gives the ticket: every panel is hidden except the one marked for it."""
     out = _brief(advanced_html=A.render_advanced(df=universe))
-    print_block = out.split("@media print")[1][:200]
-    assert ".adv" in print_block and "display:none" in print_block
+    block = out.split("@media print")[1]
+    assert ".pnl{display:none}" in block
+    assert ".pnl.print{display:block" in block
 
 
-def test_no_toggle_when_there_is_nothing_behind_it():
-    """A switch that does nothing is worse than no switch."""
+def test_no_destination_when_there_is_nothing_behind_it():
+    """A rail entry that leads nowhere is worse than no entry."""
     out = _brief()
-    assert 'nav class="modes"' not in out
+    assert 'data-page="screener"' not in out
     assert '<div class="adv">' not in out
 
 
-def test_toggle_appears_once_advanced_exists(universe):
+def test_the_screener_destination_appears_once_advanced_exists(universe):
     out = _brief(advanced_html=A.render_advanced(df=universe))
-    assert 'nav class="modes"' in out
-    assert 'data-mode="advanced"' in out
+    assert 'data-page="screener"' in out
+    assert 'id="page-screener"' in out
 
 
 # ------------------------------------------------------- restated numbers
@@ -210,7 +210,7 @@ def test_whatif_renderer_escapes_what_it_writes_back_out():
     Safe JSON is only half of it: the script writes those values into innerHTML.
     Ticker names come from a config file, and "ours" is not "trusted".
     """
-    from report.brief import _JS
+    from report.terminal import SHELL_JS as _JS
     assert "esc(p.t)" in _JS, "ticker goes into innerHTML unescaped"
     assert "esc(cell.short)" in _JS, "shortfall text goes into innerHTML unescaped"
 
