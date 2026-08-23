@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import pandas as pd
 
@@ -268,3 +268,57 @@ def render(ctx: RunContext) -> Path:
 
     ctx.plan, ctx.perf, ctx.brief_path = plan, perf, path
     return path
+
+
+def console_summary(ctx: RunContext) -> str:
+    """
+    The run summary, as text.
+
+    It lives here rather than inline in `main()` because inline is where a missing
+    import hid. The performance block is only reached when there is something in the
+    journal, so every test with an empty one skipped it, and the NameError only
+    surfaced for a reader who actually owned something. Returning a string rather
+    than printing makes that branch reachable from a test.
+    """
+    from report.brief import rp
+    from report.journal_view import console_block
+
+    settings, plan, regime = ctx.settings, ctx.plan, ctx.regime
+    alloc, fees = plan["allocation"], plan["fees"]
+    out = []
+
+    out.append(f"\n{regime.emoji}  {regime.label} - deploy {regime.deploy_pct:.0%} "
+               f"of {rp(settings.capital_rp)}")
+    out.append(f"\nDO THIS TODAY ({alloc.n_positions} positions, "
+               f"{rp(alloc.cash_left)} cash left)")
+
+    order = {"SELL": 0, "BUY": 1, "HOLD": 2}
+    for o in sorted(plan["orders"], key=lambda x: order.get(x["action"], 9)):
+        out.append(f"  {o['action']:5s} {o['ticker']:9s} {o['lots']:>3} lot  "
+                   f"{rp(o['rupiah']):>14}  {o['note']}")
+
+    out.append(f"\n  Estimated fees: {rp(fees.total)} "
+               f"({fees.pct_of(settings.capital_rp):.2f}% of capital)")
+    for note in fees.notes:
+        out.append(f"  TIP: {note}")
+
+    warned = [o for o in plan["orders"] if o.get("event_state") == "known"]
+    unknown = [o for o in plan["orders"] if o.get("event_state") == "unknown"]
+    if warned or unknown:
+        out.append("")
+        for o in warned:
+            out.append(f"  !  {o['ticker']:9s} {o['event_note']}")
+        for o in unknown:
+            out.append(f"  -  {o['ticker']:9s} {o['event_note']}")
+
+    if ctx.season_line:
+        out.append(f"\n  Seasonality: {ctx.season_line}")
+
+    # The branch that crashed: reached only once something is held or has been sold.
+    if ctx.perf is not None and (ctx.perf.n_closed or ctx.perf.position_value):
+        out.append(console_block(ctx.perf))
+
+    nan_scores = int(ctx.df["undervaluation_score"].isna().sum())
+    out.append(f"\nAnalyzed {len(ctx.df)} stocks | NaN scores: {nan_scores}")
+    out.append(f"Brief: {ctx.brief_path}")
+    return "\n".join(out)

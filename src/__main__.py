@@ -122,31 +122,11 @@ def main() -> None:
             print(f"Charts: {settings.output_dir / 'screener_analysis.png'}")
 
     # ---- console summary ----------------------------------------------------
-    alloc, fees = plan["allocation"], plan["fees"]
-    print(f"\n{regime.emoji}  {regime.label} - deploy {regime.deploy_pct:.0%} of {rp(settings.capital_rp)}")
-    print(f"\nDO THIS TODAY ({alloc.n_positions} positions, {rp(alloc.cash_left)} cash left)")
-    for o in sorted(plan["orders"], key=lambda x: {"SELL": 0, "BUY": 1, "HOLD": 2}[x["action"]]):
-        print(f"  {o['action']:5s} {o['ticker']:9s} {o['lots']:>3} lot  {rp(o['rupiah']):>14}  {o['note']}")
-    print(f"\n  Estimated fees: {rp(fees.total)} ({fees.pct_of(settings.capital_rp):.2f}% of capital)")
-    for note in fees.notes:
-        print(f"  TIP: {note}")
-
-    warned = [o for o in plan["orders"] if o.get("event_state") == "known"]
-    unknown = [o for o in plan["orders"] if o.get("event_state") == "unknown"]
-    if warned or unknown:
-        print()
-        for o in warned:
-            print(f"  !  {o['ticker']:9s} {o['event_note']}")
-        for o in unknown:
-            print(f"  -  {o['ticker']:9s} {o['event_note']}")
-    if season_line:
-        print(f"\n  Seasonality: {season_line}")
-
-    if perf.n_closed or perf.position_value:
-        print(console_block(perf))
-
-    print(f"\nAnalyzed {len(df)} stocks | NaN scores: {int(df['undervaluation_score'].isna().sum())}")
-    print(f"Brief: {brief_path}")
+    # Built in runner.console_summary, not inline here: the performance block is
+    # only reached once something is held or has been sold, so inline it was a
+    # branch no test could touch -- which is exactly where a missing import hid.
+    from runner import console_summary
+    print(console_summary(ctx))
 
     # A native window by default, a browser tab if that is not possible or if
     # --browser was asked for. `open_result` never raises: the analysis is already

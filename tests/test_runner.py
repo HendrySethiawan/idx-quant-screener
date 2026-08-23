@@ -150,3 +150,52 @@ def test_the_placeholder_banner_follows_the_setting(ctx):
     assert "placeholder capital" not in render(ctx).read_text(encoding="utf-8")
     ctx.settings.account = {**ctx.settings.account, "capital_rp": PLACEHOLDER_CAPITAL}
     assert "placeholder capital" in render(ctx).read_text(encoding="utf-8")
+
+
+# ------------------------------------------------- the branch that crashed
+def test_the_summary_survives_an_empty_journal(ctx):
+    from runner import console_summary, render
+
+    render(ctx)
+    text = console_summary(ctx)
+    assert "DO THIS TODAY" in text
+    assert "Analyzed" in text
+
+
+def test_the_summary_survives_a_journal_with_holdings(ctx):
+    """
+    The exact crash a reader hit: `console_block` was reached only once something
+    was held, so every test with an empty journal skipped it and the missing import
+    shipped. This test owns something.
+    """
+    from portfolio.fees import FeeConfig
+    from portfolio.journal import append_trade, build_trade
+    from runner import console_summary, render
+
+    for ticker in list(ctx.settings.stock_tickers)[:2]:
+        append_trade(
+            build_trade("BUY", ticker, 3, 1000, FeeConfig(), on_date="2026-08-01"),
+            ctx.settings.account["journal_path"],
+        )
+
+    render(ctx)
+    assert ctx.perf.position_value > 0, "the fixture did not actually create a holding"
+
+    text = console_summary(ctx)
+    assert "HOW YOU'RE DOING" in text, "the performance block did not render"
+    assert "Portfolio value" in text
+
+
+def test_the_summary_survives_a_closed_round_trip(ctx):
+    from portfolio.fees import FeeConfig
+    from portfolio.journal import append_trade, build_trade
+    from runner import console_summary, render
+
+    ticker = list(ctx.settings.stock_tickers)[0]
+    path = ctx.settings.account["journal_path"]
+    append_trade(build_trade("BUY", ticker, 3, 1000, FeeConfig(), on_date="2026-08-01"), path)
+    append_trade(build_trade("SELL", ticker, 3, 1200, FeeConfig(), on_date="2026-08-10"), path)
+
+    render(ctx)
+    assert ctx.perf.n_closed > 0
+    assert "Closed trades" in console_summary(ctx)

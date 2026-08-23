@@ -181,3 +181,18 @@ def test_upx_is_off(spec_text):
     """UPX is a common antivirus false-positive trigger and this build is unsigned."""
     assert "upx=False" in spec_text
     assert "upx=True" not in spec_text
+
+
+# ------------------------------------------------- the class of bug, not one bug
+def test_no_undefined_names_anywhere_in_src():
+    """
+    A NameError shipped twice: once when a `main()` rewrite dropped
+    `console_block`'s import, and once when the same rewrite dropped the `--png`
+    branch. Both sat in code paths no test reached. ruff finds them statically, so
+    the whole class is covered rather than the two instances.
+    """
+    out = subprocess.run(
+        [sys.executable, "-m", "ruff", "check", "src/", "--select", "F821,F811", "--quiet"],
+        cwd=ROOT, capture_output=True, text=True, timeout=120,
+    )
+    assert out.returncode == 0, f"undefined or redefined names:\n{out.stdout}{out.stderr}"
