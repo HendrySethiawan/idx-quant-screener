@@ -61,6 +61,7 @@ def build_candidates(
     settings,
     deploy_pct: float,
     exclude: Optional[set] = None,
+    trail=None,
 ) -> Tuple[List[dict], Dict[str, str], Dict[str, str]]:
     """
     Returns (candidates, rejected, capped).
@@ -110,27 +111,69 @@ def build_candidates(
             **_value_fields(row),
         })
 
-    # Diversification cap, applied to the ranking before sizing sees it.
+    if trail is not None:
+        liq_floor = f"Rp{liq_cfg.min_median_daily_value_rp:,.0f}"
+        trail.record(
+            "liquidity", "Can you get back out?",
+            f"A name must trade at least {liq_floor} a day, and your position must "
+            f"stay under {liq_cfg.max_position_pct_of_daily_value:.0%} of that. A "
+            f"stock you cannot sell is not a position.",
+            setting="liquidity block, configs/default.yaml",
+            kept=[c["ticker"] for c in candidates], dropped=rejected,
+            n_in=len(df) - len(exclude),
+        )
+
+    # Diversification cap, then the shortlist. These used to be one step, which
+    # made them indistinguishable: a name crowded out by its sector and a name that
+    # simply ranked 12th both just disappeared. They are different facts and the
+    # reader deserves to know which one applies, so they are now two stages.
     #
     # Capped names are NOT folded into `rejected`. Being crowded out by the sector
-    # cap is ordinary portfolio construction, not a warning, and listing all ~25 of
-    # them would bury the handful of genuine gate failures the reader needs to see.
-    # Only the highest-ranked casualties are worth surfacing.
+    # cap is ordinary portfolio construction, not a warning, and mixing it in would
+    # bury the handful of genuine gate failures.
+    shortlist_n = max(settings.top_picks_n, nominal_n)
+    ranked = [c["ticker"] for c in candidates]
     capped: Dict[str, str] = {}
-    if settings.max_per_sector:
-        keep = set(sector_capped_pick(
-            [c["ticker"] for c in candidates],
-            {c["ticker"]: c["sector"] for c in candidates},
-            top_n=len(candidates),
-            max_per_sector=settings.max_per_sector,
-        )[: max(settings.top_picks_n, nominal_n)])
-        for rank, c in enumerate(candidates):
-            if c["ticker"] not in keep and rank < settings.top_picks_n:
-                capped[c["ticker"]] = (
-                    f"already hold {settings.max_per_sector} {c['sector']} names ranked above it"
-                )
-        candidates = [c for c in candidates if c["ticker"] in keep]
 
+    if settings.max_per_sector:
+        # top_n is the shortlist size, not the full list. Asking for the full list
+        # let the backfill hand every capped name straight back, which is why
+        # `capped` was always empty and 37 names vanished unexplained. The selected
+        # set is identical either way -- only the reporting changes.
+        keep_list = sector_capped_pick(
+            ranked,
+            {c["ticker"]: c["sector"] for c in candidates},
+            top_n=shortlist_n,
+            max_per_sector=settings.max_per_sector,
+            skipped=capped,
+        )
+    else:
+        keep_list = ranked[:shortlist_n]
+
+    keep = set(keep_list)
+    outranked = {
+        t: f"ranked #{i + 1}; only the top {shortlist_n} go through"
+        for i, t in enumerate(ranked)
+        if t not in keep and t not in capped
+    }
+
+    if trail is not None:
+        trail.record(
+            "sector_cap", "Not too much of one sector",
+            f"At most {settings.max_per_sector} names per sector, so a single bad "
+            f"sector cannot take the whole book down.",
+            setting=f"max_per_sector: {settings.max_per_sector}, configs/default.yaml",
+            kept=[t for t in ranked if t not in capped], dropped=capped,
+        )
+        trail.record(
+            "shortlist", "Keep the best few",
+            f"Only the top {shortlist_n} by rank score go on to sizing. Everything "
+            f"here passed every gate -- it was simply out-ranked.",
+            setting=f"top_picks_n: {settings.top_picks_n}, configs/default.yaml",
+            kept=keep_list, dropped=outranked,
+        )
+
+    candidates = [c for c in candidates if c["ticker"] in keep]
     return candidates, rejected, capped
 
 
@@ -244,10 +287,85 @@ def assemble(settings, df: pd.DataFrame, regime, holdings: List[Holding],
         if r.get("last_close") and not pd.isna(r["last_close"])
     }
 
-    candidates, rejected, capped = build_candidates(df, settings, regime.deploy_pct)
+    # The decision trail. Every stage below is recorded from what the gate actually
+    # returned -- never re-derived here -- so the explanation cannot drift away from
+    # the decision it is explaining. See src/analysis/trace.py.
+    from analysis.trace import DecisionTrail
+
+    trail = DecisionTrail()
+    fetched = df["ticker"].tolist()
+    # The union, not just the configured list. In production `df` is built by
+    # iterating stock_tickers so it is a subset, but the funnel reconciling is this
+    # feature's one hard guarantee and it must not rest on that holding -- a name
+    # present in the frame did enter the pipeline, however it got there.
+    configured = list(getattr(settings, "stock_tickers", None) or [])
+    universe = list(dict.fromkeys(configured + fetched))
+
+    trail.record(
+        "universe", "The universe",
+        "The IDX names this tool watches. Nothing outside this list can ever be "
+        "suggested, however good it is.",
+        setting="stock_tickers, configs/default.yaml",
+        kept=universe, n_in=len(universe),
+    )
+    trail.record(
+        "data", "Prices and fundamentals",
+        "Two years of daily prices and a fundamentals snapshot from Yahoo Finance. "
+        "A name Yahoo returns nothing for cannot be ranked.",
+        setting="cache_ttl_minutes, configs/default.yaml",
+        kept=fetched,
+        dropped={t: "no data returned by Yahoo Finance"
+                 for t in universe if t not in set(fetched)},
+    )
+
+    gaps = 0
+    if "imputed_factors" in df.columns:
+        gaps = int((df["imputed_factors"].fillna("").astype(str).str.len() > 0).sum())
+    trail.record(
+        "score", "Scored on ten factors",
+        "Each factor becomes a z-score against the rest of the universe, is "
+        "multiplied by its weight and summed. A missing factor scores neutral, so "
+        "a data gap never removes a stock -- it just gives it less to stand on.",
+        setting="factor_weights, configs/default.yaml",
+        kept=fetched, dropped={},
+        note=(f"{gaps} of {len(fetched)} names were missing at least one factor and "
+              f"scored neutral on it." if gaps else ""),
+    )
+
+    candidates, rejected, capped = build_candidates(
+        df, settings, regime.deploy_pct, trail=trail
+    )
     allocation = choose_allocation(
         candidates, settings.capital_rp, regime.deploy_pct, settings=settings
     )
+
+    budget = settings.capital_rp * regime.deploy_pct
+    slot = budget / max(1, allocation.n_positions or 1)
+
+    # `allocation.rejected` only holds names the sizer actively refused (a lot that
+    # costs more than a slot). Names that simply ran out of slots are not in it, and
+    # leaving them out would make the funnel fail to add up -- 8 in, 3 out, 1
+    # dropped. They need their own reason, because "we stopped at 3" is a different
+    # fact from "you could not afford it".
+    sized = set(allocation.tickers())
+    sizing_dropped = dict(allocation.rejected)
+    for c in candidates:
+        if c["ticker"] not in sized and c["ticker"] not in sizing_dropped:
+            sizing_dropped[c["ticker"]] = (
+                f"{allocation.n_positions} positions was the best fit for the budget; "
+                f"this ranked below them"
+            )
+
+    trail.record(
+        "sizing", "What fits in whole lots",
+        f"IDX trades in {settings.lot_size}-share lots, so a name whose single lot "
+        f"costs more than its slot cannot be bought at all. Budget today is "
+        f"{regime.deploy_pct:.0%} of capital.",
+        setting="min_positions / max_positions / min_position_rp, configs/default.yaml",
+        kept=allocation.tickers(), dropped=sizing_dropped,
+        note=f"Roughly Rp{slot:,.0f} per slot at {allocation.n_positions} positions.",
+    )
+
     rejected.update(allocation.rejected)
 
     orders = build_orders(allocation, holdings, prices)
@@ -274,4 +392,5 @@ def assemble(settings, df: pd.DataFrame, regime, holdings: List[Holding],
         "capped": capped,
         "holdings_rows": holdings_rows,
         "prices": prices,
+        "trail": trail,
     }
