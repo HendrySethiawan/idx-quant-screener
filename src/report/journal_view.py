@@ -414,7 +414,7 @@ def cash_form(today: str = "") -> str:
   </div>
   <div class="tf-row">
     <label>Amount <input id="cf-amount" type="number" min="1" step="1"
-           placeholder="10000000"></label>
+           placeholder="25000000"></label>
     <label>Date <input id="cf-date" type="date" value="{_e(today)}"></label>
   </div>
   <div class="tf-row">

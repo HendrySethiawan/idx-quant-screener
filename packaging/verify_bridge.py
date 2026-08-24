@@ -89,7 +89,7 @@ DRIVER = """
     if(!document.getElementById('cash-form')){
       api.report({stage:'no-cash-form'}); return;
     }
-    fillCash('10000000');
+    fillCash('25000000');
     // Record twice. One record was the whole of the previous check, and the
     // reported symptom was that the SECOND never worked.
     fill('BBRI', '3', '4150');
@@ -102,7 +102,7 @@ DRIVER = """
           api.log_trade('BUY','TLKM','2','2600','2026-08-23','second','tool').then(function(r2){
             var cv = document.getElementById('cf-preview');
             var cashPreview = cv ? (cv.textContent || '') : '(no #cf-preview element)';
-            api.record_cash('DEPOSIT','10000000','2026-08-23','harness').then(function(r4){
+            api.record_cash('DEPOSIT','25000000','2026-08-23','harness').then(function(r4){
             api.rebuild().then(function(r3){
               api.report({
                 stage: 'done',

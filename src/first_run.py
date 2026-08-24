@@ -53,16 +53,26 @@ def should_ask(settings, user_config_path: str = "configs/user.yaml") -> bool:
 
 
 def warn_text(settings) -> str:
-    """The console warning for every path that cannot ask."""
+    """
+    The console warning for every path that has no window to say it in.
+
+    Points at the cash ledger first, because that is where capital comes from now
+    -- recording what you paid in *is* setting it. The config route still works for
+    anyone who has not recorded a deposit, so it is named second rather than
+    dropped. The example figure is deliberately not a real one: this repository is
+    public, and an example is the easiest place for somebody's actual balance to
+    end up in a commit.
+    """
     return (
         "\n"
         "  !! CAPITAL IS THE PLACEHOLDER !!\n"
         f"  This run is sized for Rp{PLACEHOLDER_CAPITAL:,.0f}, which is almost\n"
         "  certainly not your money. Every lot count below is wrong for your\n"
-        "  account until you set it:\n\n"
-        "      configs/user.yaml\n"
+        "  account until you set it.\n\n"
+        "  In the app: Portfolio -> Cash in and out -> record what you paid in.\n\n"
+        "  Or by hand, in configs/user.yaml:\n"
         "        account:\n"
-        "          capital_rp: 10000000\n"
+        "          capital_rp: 25000000\n"
     )
 
 
