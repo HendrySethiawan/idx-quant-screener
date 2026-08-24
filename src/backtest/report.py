@@ -277,6 +277,75 @@ def robustness_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
     return pd.DataFrame(rows)
 
 
+VERDICT_FILE = "backtest_verdict.json"
+
+
+def verdict_payload(factors: List[Comparison], robustness: pd.DataFrame,
+                    survivorship: Dict[str, Optional[float]], cadence: str) -> dict:
+    """
+    What the backtest concluded, small enough for the brief to read on every run.
+
+    The conclusions used to live only in `backtest.html`, which exists only if you
+    remember to pass `--backtest`. So the page that says "BUY SRTG 39 lot" carried
+    none of the evidence about what that ranking is worth, while a file three
+    directories away said it worked in one half of the window. This closes that
+    gap without making the brief re-run a five-year simulation.
+
+    JSON rather than a pickle: it is small, it is worth being able to read by eye,
+    and it must survive a version of this code that no longer exists.
+    """
+    def metrics_of(label_starts: str) -> Dict[str, Optional[float]]:
+        for c in factors or []:
+            if c.label.startswith(label_starts):
+                return dict(c.metrics or {})
+        return {}
+
+    gross = metrics_of("Strategy (gross")
+    equal = metrics_of("Equal-weight")
+    index = metrics_of("IHSG")
+
+    def gap(key: str) -> Optional[float]:
+        a, b = gross.get(key), equal.get(key)
+        return None if a is None or b is None else round(a - b, 2)
+
+    return {
+        "cadence": cadence,
+        "generated": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
+        # Gross against frictionless, which is the only fair comparison -- see
+        # `equal_weight_universe`, which says so itself.
+        "gross": gross,
+        "equal_weight": equal,
+        "index": index,
+        "cagr_gap_vs_equal_pp": gap("cagr"),
+        "sharpe_gap_vs_equal": gap("sharpe"),
+        "robustness": robustness_verdict(robustness),
+        "survivorship": dict(survivorship or {}),
+    }
+
+
+def write_verdict(payload: dict, output_dir) -> Path:
+    import json
+
+    path = Path(output_dir) / VERDICT_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return path
+
+
+def load_verdict(output_dir) -> Optional[dict]:
+    """The stored conclusion, or None if this machine has never run a backtest."""
+    import json
+
+    path = Path(output_dir) / VERDICT_FILE
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def robustness_verdict(table: pd.DataFrame) -> str:
     """Say plainly whether the result survived being stressed."""
     if table.empty or "cagr_pct" not in table:

@@ -107,6 +107,64 @@ def _pct(v: Optional[float], digits: int = 1) -> str:
     return f"{v:+.{digits}f}%"
 
 
+def evidence_note(verdict: Optional[dict]) -> str:
+    """
+    What the ranking above is actually worth, next to the ranking above.
+
+    The backtest's conclusions used to live in a separate HTML file produced only
+    by `--backtest`, so the panel headed "Do this today" stated the tool's
+    least-supported output with its most confident voice. Every other overclaim in
+    this project has been closed -- the mistyped price, the placeholder capital,
+    the stale session. This was the last one, and it was the first thing you saw.
+    """
+    if not verdict:
+        return (
+            '<div class="callout" style="border-left-color:var(--warn)">'
+            "<strong>This ranking has never been tested on this machine.</strong> "
+            "Run <code>python main.py --backtest</code> to find out whether it beat "
+            "simply holding everything. Until then the order below is a hypothesis, "
+            "not a finding.</div>"
+        )
+
+    bits = []
+    cagr_gap = verdict.get("cagr_gap_vs_equal_pp")
+    sharpe_gap = verdict.get("sharpe_gap_vs_equal")
+    if cagr_gap is not None and sharpe_gap is not None:
+        verb = "added" if cagr_gap >= 0 else "cost"
+        risk = "gave up" if sharpe_gap < 0 else "added"
+        # Both sides frictionless, which is the only fair comparison -- the net
+        # curve pays fees the benchmark never does, and comparing those two would
+        # flatter the benchmark by exactly the trading costs.
+        years = (verdict.get("gross") or {}).get("years")
+        span = f"Over {years:.0f} years, a" if years else "A"
+        cadence = str(verdict.get("cadence") or "").lower()
+        cadence_note = f" on a {cadence} rebalance" if cadence else ""
+        bits.append(
+            f"{span}gainst simply holding every name in the list, this ranking "
+            f"{verb} <strong>{abs(cagr_gap):.1f}pp a year</strong> of return and "
+            f"{risk} <strong>{abs(sharpe_gap):.2f} of Sharpe</strong>{cadence_note} "
+            f"&mdash; both measured before costs, which is the only fair comparison."
+        )
+
+    robust = verdict.get("robustness")
+    if robust:
+        bits.append(_e(robust))
+
+    surv = verdict.get("survivorship") or {}
+    if surv.get("gap_cagr") is not None:
+        bits.append(
+            f"And most of the absolute return is the ticker list, not the method: "
+            f"holding all {surv.get('n_names')} names equally returned "
+            f"{surv.get('universe_cagr'):+.1f}% a year against the index's "
+            f"{surv.get('index_cagr'):+.1f}% &mdash; a list drawn knowing who survived."
+        )
+
+    if not bits:
+        return ""
+    return ('<div class="callout" style="border-left-color:var(--warn)">'
+            "<strong>What this ranking is worth.</strong> " + " ".join(bits) + "</div>")
+
+
 def _kpi(label: str, value: str) -> str:
     return f'<div class="kpi"><div class="k">{_e(label)}</div><div class="v">{_e(value)}</div></div>'
 
@@ -457,6 +515,7 @@ def render_brief(
     perf=None,
     fetched_at=None,
     sessions: Optional[dict] = None,
+    verdict: Optional[dict] = None,
 ) -> str:
     """
     The terminal. One document, five destinations, nothing scrolls but panels.
@@ -554,7 +613,7 @@ def render_brief(
             T.panel("Do this today",
                     stale_note + placeholder_note
                     + _ticket_section(orders, fees, capital)
-                    + granularity,
+                    + granularity + evidence_note(verdict),
                     pid="panel-ticket", cls="print", grow=True),
             T.panel(f"Events, next {event_horizon} days",
                     _events_section(events or [], blind_n, universe_n, event_horizon)),

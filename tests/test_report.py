@@ -439,3 +439,83 @@ def test_the_page_still_renders_with_no_session_information():
     """Anything built before this existed, and any snapshot without it."""
     assert "IDX Terminal" in _render()
     assert "names screened" in _render()
+
+
+# ------------------------------- what the ranking is worth, next to the ranking
+# The backtest's conclusions lived only in backtest.html, produced only by
+# --backtest. So the panel headed "Do this today" stated the least-supported
+# output the tool has in its most confident voice, while a file three directories
+# away said the strategy worked in one half of the window.
+def _verdict(**over):
+    base = {
+        "cadence": "Weekly",
+        "gross": {"cagr": 34.13, "sharpe": 1.42, "years": 4.94},
+        "equal_weight": {"cagr": 29.95, "sharpe": 1.58},
+        "cagr_gap_vs_equal_pp": 4.18,
+        "sharpe_gap_vs_equal": -0.16,
+        "robustness": "It worked in only ONE half of the window - that is a warning.",
+        "survivorship": {"universe_cagr": 29.6, "index_cagr": 1.3, "gap_cagr": 28.3,
+                         "n_names": 49},
+    }
+    base.update(over)
+    return base
+
+
+def test_the_ticket_says_what_the_ranking_is_worth():
+    from report.brief import evidence_note
+
+    out = evidence_note(_verdict())
+    assert "4.2pp a year" in out
+    assert "0.16 of Sharpe" in out
+    assert "gave up" in out
+    assert "only ONE half of the window" in out
+
+
+def test_the_comparison_is_named_as_before_costs():
+    """
+    Gross against frictionless is the only fair pairing -- engine.py says so. A
+    reader who thinks this is net would be comparing a fee-paying strategy against
+    a benchmark that never trades.
+    """
+    from report.brief import evidence_note
+
+    assert "before costs" in evidence_note(_verdict())
+
+
+def test_the_survivorship_artifact_is_named():
+    """Most of the absolute return is the ticker list. That has to be said here."""
+    from report.brief import evidence_note
+
+    out = evidence_note(_verdict())
+    assert "+29.6% a year" in out
+    assert "knowing who survived" in out
+
+
+def test_a_ranking_that_beat_the_benchmark_reads_that_way():
+    from report.brief import evidence_note
+
+    out = evidence_note(_verdict(cagr_gap_vs_equal_pp=6.0, sharpe_gap_vs_equal=0.3))
+    assert "added <strong>6.0pp a year</strong>" in out
+    assert "added <strong>0.30 of Sharpe</strong>" in out
+    assert "gave up" not in out
+
+
+def test_never_backtested_says_so_rather_than_staying_silent():
+    """Silence would read as endorsement, which is the failure being fixed."""
+    from report.brief import evidence_note
+
+    out = evidence_note(None)
+    assert "never been tested on this machine" in out
+    assert "--backtest" in out
+    assert "hypothesis, not a finding" in out
+
+
+def test_the_note_reaches_the_ticket_panel():
+    out = _render(verdict=_verdict())
+    ticket = out.split('id="panel-ticket"')[-1].split("</section>")[0]
+    assert "What this ranking is worth" in ticket
+
+
+def test_the_untested_warning_reaches_the_ticket_panel_too():
+    ticket = _render().split('id="panel-ticket"')[-1].split("</section>")[0]
+    assert "never been tested on this machine" in ticket

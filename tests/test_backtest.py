@@ -379,3 +379,86 @@ def test_survivorship_gap_is_measured_and_stated():
 def test_survivorship_text_empty_without_data():
     from backtest.report import survivorship_check, survivorship_text
     assert survivorship_text(survivorship_check(pd.DataFrame(), None, [], CAPITAL)) == ""
+
+
+# ---------------------------------------- the conclusion, where the brief can read it
+# The verdict used to exist only inside backtest.html, which is written only when
+# somebody remembers `--backtest`. The page recommending the trades therefore
+# carried none of the evidence about what the ranking is worth.
+def _cmp(label, metrics):
+    from backtest.report import Comparison
+    return Comparison(label, pd.Series([1.0, 2.0]), metrics, "")
+
+
+def _factors():
+    return [
+        _cmp("Strategy (gross, frictionless)", {"cagr": 34.13, "sharpe": 1.42, "years": 4.94}),
+        _cmp("Strategy (net: real lots + fees)", {"cagr": 24.39, "sharpe": 1.06}),
+        _cmp("Equal-weight universe", {"cagr": 29.95, "sharpe": 1.58}),
+        _cmp("IHSG (buy and hold)", {"cagr": 1.57, "sharpe": 0.09}),
+    ]
+
+
+def _robustness():
+    return pd.DataFrame([
+        {"variant": "baseline", "cagr_pct": 24.39},
+        {"variant": "first half only", "cagr_pct": -6.48},
+        {"variant": "second half only", "cagr_pct": 49.53},
+    ])
+
+
+def test_the_gap_is_measured_gross_against_frictionless():
+    """
+    The net curve pays fees the benchmark never does. Comparing those two would
+    hand the benchmark the trading costs as if they were skill -- engine.py says
+    so at the definition of `equal_weight_universe`.
+    """
+    from backtest.report import verdict_payload
+
+    p = verdict_payload(_factors(), _robustness(), {}, "Weekly")
+
+    assert p["gross"]["cagr"] == 34.13          # not the 24.39 net figure
+    assert p["cagr_gap_vs_equal_pp"] == pytest.approx(4.18, abs=0.01)
+    assert p["sharpe_gap_vs_equal"] == pytest.approx(-0.16, abs=0.01)
+
+
+def test_the_payload_carries_the_half_window_warning():
+    from backtest.report import verdict_payload
+
+    p = verdict_payload(_factors(), _robustness(), {}, "Weekly")
+    assert "ONE half of the window" in p["robustness"]
+
+
+def test_the_payload_survives_missing_comparisons():
+    """A run with no benchmark must still produce a readable verdict."""
+    from backtest.report import verdict_payload
+
+    p = verdict_payload([], pd.DataFrame(), {}, "Monthly")
+    assert p["cagr_gap_vs_equal_pp"] is None
+    assert p["sharpe_gap_vs_equal"] is None
+    assert p["cadence"] == "Monthly"
+
+
+def test_the_verdict_round_trips_through_disk(tmp_path):
+    from backtest.report import load_verdict, verdict_payload, write_verdict
+
+    written = verdict_payload(_factors(), _robustness(),
+                              {"gap_cagr": 28.3, "n_names": 49}, "Weekly")
+    write_verdict(written, tmp_path)
+
+    back = load_verdict(tmp_path)
+    assert back["cagr_gap_vs_equal_pp"] == written["cagr_gap_vs_equal_pp"]
+    assert back["survivorship"]["gap_cagr"] == 28.3
+
+
+def test_no_verdict_on_a_machine_that_never_backtested(tmp_path):
+    from backtest.report import load_verdict
+    assert load_verdict(tmp_path) is None
+
+
+def test_a_corrupt_verdict_reads_as_none_rather_than_raising(tmp_path):
+    """The brief must still draw. A callout is worth less than the whole page."""
+    from backtest.report import VERDICT_FILE, load_verdict
+
+    (tmp_path / VERDICT_FILE).write_text("{not json", encoding="utf-8")
+    assert load_verdict(tmp_path) is None

@@ -327,7 +327,15 @@ def cmd_backtest(settings, logger=None) -> int:
             out / f"backtest_equity_{rule}.csv")
 
     path = R.write_html(R.render_html(sections, surv), settings.output_dir)
-    print(f"\n  Full report: {path}\n")
+
+    # The conclusions, small enough for the brief to read on every run. Without
+    # this the page recommending the trades carried none of the evidence about
+    # what the ranking is worth.
+    verdict_path = R.write_verdict(
+        R.verdict_payload(factors, robustness, surv, label), settings.output_dir)
+
+    print(f"\n  Full report: {path}")
+    print(f"  The terminal will now quote this: {verdict_path}\n")
     return 0
 
 

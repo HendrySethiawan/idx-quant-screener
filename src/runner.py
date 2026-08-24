@@ -264,6 +264,23 @@ def _market_panel_data(ctx) -> Optional[dict]:
     }
 
 
+def _backtest_verdict(settings, logger=None) -> Optional[dict]:
+    """
+    What `--backtest` last concluded, if it has ever been run here.
+
+    Imported lazily and wrapped: the backtest package pulls the whole engine, and
+    a brief that cannot be drawn because a JSON file is malformed would be a much
+    worse outcome than a brief that omits one callout.
+    """
+    try:
+        from backtest.report import load_verdict
+        return load_verdict(settings.output_dir)
+    except Exception as e:
+        if logger:
+            logger.warning(f"Could not read the stored backtest verdict: {e}")
+        return None
+
+
 def _settings_panel(settings) -> str:
     """A read-only view of the numbers driving every gate."""
     from report.brief import rp
@@ -402,6 +419,7 @@ def render(ctx: RunContext) -> Path:
             market=_market_panel_data(ctx),
             placeholder_capital=is_placeholder_capital(settings),
             perf=perf, fetched_at=ctx.fetched_at, sessions=ctx.sessions,
+            verdict=_backtest_verdict(settings, logger),
         ),
         settings.output_dir,
     )
