@@ -336,7 +336,8 @@ def cmd_backtest(settings, logger=None) -> int:
     # this the page recommending the trades carried none of the evidence about
     # what the ranking is worth.
     verdict_path = R.write_verdict(
-        R.verdict_payload(factors, robustness, surv, label), settings.output_dir)
+        R.verdict_payload(factors, robustness, surv, label, costs),
+        settings.output_dir)
 
     print(f"\n  Full report: {path}")
     print(f"  The terminal will now quote this: {verdict_path}\n")

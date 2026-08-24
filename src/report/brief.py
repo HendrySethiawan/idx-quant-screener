@@ -150,6 +150,18 @@ def evidence_note(verdict: Optional[dict]) -> str:
     if robust:
         bits.append(_e(robust))
 
+    # What trading cost over the same window, at this account size. The largest
+    # controllable effect in the whole simulation, and the ticket never said it.
+    costs = verdict.get("costs") or {}
+    if costs.get("fee_share_of_gross_pct") is not None:
+        bits.append(
+            f"Trading costs took <strong>"
+            f"{costs['fee_share_of_gross_pct']:.0f}% of the gross return</strong> "
+            f"over that window &mdash; {abs(costs['fee_effect_pp']):.0f} points of "
+            f"{costs['gross_return_pct']:.0f}. Turnover is the part of this you "
+            f"control."
+        )
+
     surv = verdict.get("survivorship") or {}
     if surv.get("gap_cagr") is not None:
         bits.append(
@@ -283,6 +295,8 @@ def _verdict_card(regime) -> str:
 
 
 def _ticket_section(orders: List[dict], fees, capital: float) -> str:
+    from portfolio.fees import FeeConfig, round_trip_cost
+
     order_by = {"SELL": 0, "BUY": 1, "HOLD": 2}
     rows = []
     for o in sorted(orders, key=lambda x: order_by.get(x["action"], 9)):
@@ -316,6 +330,22 @@ def _ticket_section(orders: List[dict], fees, capital: float) -> str:
         f'— buy {rp(fees.buy_fee)}, sell {rp(fees.sell_fee)}, stamp {rp(fees.stamp_duty)}.'
     )
     callouts = f'<div class="callout">{fee_bits}</div>'
+
+    # What these buys have to GAIN before they are worth having made. "0.06% of
+    # capital" reads as nothing; the same fees against the money actually deployed,
+    # counting the sale that has not happened yet and the stamp on it, is the
+    # number that turned a 75-point gain on one lot into a Rp3,446 loss.
+    deployed = sum(o.get("rupiah") or 0.0 for o in orders
+                   if o.get("action") == "BUY")
+    if deployed > 0:
+        round_trip = round_trip_cost(deployed, FeeConfig())
+        callouts += (
+            '<div class="callout"><strong>Break even on this book.</strong> '
+            f'Buying {rp(deployed)} and later selling it costs about '
+            f'{rp(round_trip)} in fees and stamp — so these positions have to gain '
+            f'<strong>{round_trip / deployed * 100:.2f}%</strong> together before '
+            f'you are square. Below that a winning trade still loses money.</div>'
+        )
     for note in fees.notes:
         callouts += f'<div class="callout save"><strong>Fee tip.</strong> {_e(note)}</div>'
     return table + callouts

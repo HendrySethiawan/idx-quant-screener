@@ -281,7 +281,8 @@ VERDICT_FILE = "backtest_verdict.json"
 
 
 def verdict_payload(factors: List[Comparison], robustness: pd.DataFrame,
-                    survivorship: Dict[str, Optional[float]], cadence: str) -> dict:
+                    survivorship: Dict[str, Optional[float]], cadence: str,
+                    costs: Optional[pd.DataFrame] = None) -> dict:
     """
     What the backtest concluded, small enough for the brief to read on every run.
 
@@ -320,7 +321,35 @@ def verdict_payload(factors: List[Comparison], robustness: pd.DataFrame,
         "sharpe_gap_vs_equal": gap("sharpe"),
         "robustness": robustness_verdict(robustness),
         "survivorship": dict(survivorship or {}),
+        # What trading actually cost over the window, at the account size the
+        # backtest ran on. At Rp10 juta this was the largest controllable effect in
+        # the whole simulation and the ticket never mentioned it.
+        "costs": _cost_summary(costs),
     }
+
+
+def _cost_summary(costs: Optional[pd.DataFrame]) -> dict:
+    out: Dict[str, Optional[float]] = {"fee_effect_pp": None, "gross_return_pct": None,
+                                       "fee_share_of_gross_pct": None, "detail": ""}
+    if costs is None or costs.empty or "kind" not in costs:
+        return out
+
+    fee_rows = costs[costs["kind"] == "cost"]
+    if fee_rows.empty:
+        return out
+
+    row = fee_rows.iloc[-1]
+    effect = float(row.get("effect_pp") or 0.0)
+    # The path the fees were charged against: the step immediately before them.
+    before = costs.iloc[max(0, len(costs) - len(fee_rows) - 1)]
+    gross = float(before.get("total_return_pct") or 0.0)
+
+    out["fee_effect_pp"] = round(effect, 2)
+    out["gross_return_pct"] = round(gross, 2)
+    if gross > 0:
+        out["fee_share_of_gross_pct"] = round(abs(effect) / gross * 100, 1)
+    out["detail"] = str(row.get("detail") or "")
+    return out
 
 
 def write_verdict(payload: dict, output_dir) -> Path:

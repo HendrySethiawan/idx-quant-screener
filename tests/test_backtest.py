@@ -462,3 +462,56 @@ def test_a_corrupt_verdict_reads_as_none_rather_than_raising(tmp_path):
 
     (tmp_path / VERDICT_FILE).write_text("{not json", encoding="utf-8")
     assert load_verdict(tmp_path) is None
+
+
+# ------------------------------------------------------ what trading actually cost
+# At Rp10 juta this was the largest controllable effect in the whole simulation --
+# fees took roughly a third of the gross return -- and the ticket never said so.
+def _costs():
+    return pd.DataFrame([
+        {"item": "Exact weights, no fees (reference)", "kind": "reference",
+         "total_return_pct": 200.59, "effect_pp": None, "detail": ""},
+        {"item": "Whole-lot rounding", "kind": "noise",
+         "total_return_pct": 279.04, "effect_pp": 78.45, "detail": "path luck"},
+        {"item": "Minimum position size", "kind": "noise",
+         "total_return_pct": 328.35, "effect_pp": 49.31, "detail": "fewer, larger"},
+        {"item": "Broker fees + stamp duty", "kind": "cost",
+         "total_return_pct": 208.04, "effect_pp": -120.31,
+         "detail": "Rp1,162,256 paid, of which Rp410,000 stamp"},
+    ])
+
+
+def test_the_cost_of_trading_is_measured_against_the_gross_path():
+    """
+    Against the step the fees were actually charged on, not against the reference
+    -- otherwise the rounding and minimum-position steps would be counted as if
+    fees had caused them.
+    """
+    from backtest.report import verdict_payload
+
+    c = verdict_payload(_factors(), _robustness(), {}, "Weekly", _costs())["costs"]
+
+    assert c["fee_effect_pp"] == -120.31
+    assert c["gross_return_pct"] == 328.35
+    assert c["fee_share_of_gross_pct"] == pytest.approx(36.6, abs=0.1)
+
+
+def test_no_cost_report_leaves_the_figures_unstated():
+    from backtest.report import verdict_payload
+
+    c = verdict_payload(_factors(), _robustness(), {}, "Weekly")["costs"]
+    assert c["fee_effect_pp"] is None
+    assert c["fee_share_of_gross_pct"] is None
+
+
+def test_the_ticket_quotes_what_trading_cost():
+    from report.brief import evidence_note
+
+    out = evidence_note({
+        "cadence": "Weekly", "gross": {"years": 4.94},
+        "cagr_gap_vs_equal_pp": 4.18, "sharpe_gap_vs_equal": -0.16,
+        "costs": {"fee_effect_pp": -120.31, "gross_return_pct": 328.35,
+                  "fee_share_of_gross_pct": 36.6},
+    })
+    assert "37% of the gross return" in out
+    assert "Turnover is the part of this you control" in out
