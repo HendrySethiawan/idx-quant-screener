@@ -81,6 +81,14 @@ def console_block(perf) -> str:
     return "\n".join(L)
 
 
+def _yield_note(realised: dict) -> str:
+    """What the holdings actually paid, against what the screener promised."""
+    if not realised:
+        return "income received"
+    best = sorted(realised.items(), key=lambda kv: -kv[1])[:2]
+    return ", ".join(f"{t.replace('.JK','')} {v:.1f}% on cost" for t, v in best)
+
+
 def brief_section(perf) -> str:
     """HTML block for brief.html. Sits below the ticket: it reports the past."""
     if perf.total_value <= 0 and perf.n_closed == 0:
@@ -106,7 +114,13 @@ def brief_section(perf) -> str:
              if perf.return_on_open_pct is not None else "nothing held")),
         kpi("Fees paid", rp(perf.total_fees), f"{perf.fee_drag_pct:.2f}% of capital"),
         kpi("Closed trades", str(perf.n_closed)),
-    ])
+    ] + ([
+        # Only when there is income. A permanent "Rp0 dividends" tile would read
+        # as "these names pay nothing", which is a different claim from "none has
+        # been recorded".
+        kpi("Dividends", rp(perf.dividend_income),
+            _yield_note(perf.realised_yield_pct)),
+    ] if perf.dividend_income else []))
 
     bench = ""
     if not perf.comparable:
@@ -397,6 +411,76 @@ that a later sale has already been matched against is refused, because the round
 maths would quietly come up short.</div>"""
 
 
+def dividend_form(today: str = "") -> str:
+    """
+    Income received, against the holding that paid it.
+
+    The screener quotes a forward yield from Yahoo and ranks on it heavily. This
+    is the only place the number it promised ever meets the number that arrived.
+    """
+    today = today or pd.Timestamp.today().strftime("%Y-%m-%d")
+    return f"""
+<form class="trade-form" id="dividend-form" onsubmit="return false">
+  <div class="tf-row">
+    <label>Ticker <input id="df-ticker" placeholder="BBRI" autocomplete="off"></label>
+    <label>Amount received <input id="df-amount" type="number" min="1" step="1"
+           placeholder="120000"></label>
+    <label>Date <input id="df-date" type="date" value="{_e(today)}"></label>
+  </div>
+  <div class="tf-row">
+    <label style="flex:1">Note <input id="df-note" placeholder="annual dividend"
+           autocomplete="off"></label>
+  </div>
+  <div id="df-preview" class="tf-preview"></div>
+  <div class="tf-row">
+    <button type="button" id="df-submit" class="tf-go">Record dividend</button>
+    <span id="df-msg" class="note"></span>
+  </div>
+</form>
+<div class="note">Enter what actually reached your account &mdash; net of the 10%
+final tax. Income is counted in your cash and total, but kept out of realised P&amp;L
+and out of the index comparison: a dividend is not a trading decision, and IHSG is
+a price index that pays nothing.</div>"""
+
+
+def dividend_table(dividends) -> str:
+    """Every dividend received, each row removable."""
+    from portfolio.dividends import total_received
+
+    if dividends is None or getattr(dividends, "empty", True):
+        return '<div class="empty">No dividends recorded.</div>'
+
+    df = dividends.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.sort_values("date", kind="stable").reset_index(drop=True)
+
+    body = ""
+    for i, r in df.iterrows():
+        amount = float(r["amount_rp"])
+        body += (
+            f'<tr><td class="num"><span class="note">{r["date"]:%d %b %y}</span></td>'
+            f'<td><span class="tick">{_e(r["ticker"])}</span></td>'
+            f'<td class="num">{_signed(amount)}</td>'
+            f'<td><span class="note">{_e("" if pd.isna(r["note"]) else str(r["note"]))}'
+            "</span></td>"
+            f'<td><button type="button" class="rm-div" data-index="{int(i)}" '
+            f'data-ticker="{_e(r["ticker"])}" data-amount="{amount}" '
+            f'data-date="{r["date"]:%Y-%m-%d}" '
+            f'title="Remove this dividend">remove</button></td></tr>'
+        )
+
+    return (
+        '<div class="scroll"><table><thead><tr>'
+        '<th class="num">Date</th><th>Ticker</th><th class="num">Received</th>'
+        '<th>Why</th><th></th>'
+        f"</tr></thead><tbody>{body}</tbody>"
+        f'<tfoot><tr><td colspan="2">Income to date</td>'
+        f'<td class="num"><strong>{rp(total_received(df))}</strong></td>'
+        '<td colspan="2"><span class="note">net of the 10% final tax</span>'
+        "</td></tr></tfoot></table></div>"
+    )
+
+
 def cash_form(today: str = "") -> str:
     """
     Money in and money out -- and therefore capital.
@@ -502,10 +586,12 @@ def journal_panels(settings, prices: Optional[Dict[str, float]] = None) -> str:
     from portfolio.ledger import monthly_realized, monthly_totals, open_positions
 
     from portfolio.cash import cash_path, load_cash
+    from portfolio.dividends import dividends_path, load_dividends
 
     journal_path, _, _ = _paths(settings)
     journal = J.load_journal(journal_path)
     cash = load_cash(cash_path(settings))
+    dividends = load_dividends(dividends_path(settings))
     closed = J.closed_trades(journal)
     monthly = monthly_realized(closed)
     totals = monthly_totals(monthly)
@@ -517,4 +603,6 @@ def journal_panels(settings, prices: Optional[Dict[str, float]] = None) -> str:
         f'<h2>Every completed round-trip</h2>{closed_trades_table(closed)}'
         f'<h2>Everything you recorded</h2>{trade_log_table(journal)}'
         f'<h2>Money in and out</h2><div id="cash-log">{cash_table(cash)}</div>'
+        f'<h2>Dividends received</h2>'
+        f'<div id="dividend-log">{dividend_table(dividends)}</div>'
     )

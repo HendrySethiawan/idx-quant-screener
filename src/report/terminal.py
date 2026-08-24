@@ -802,6 +802,68 @@ SHELL_JS = """
     });
   });
 
+  // ---- dividends ----------------------------------------------------------
+  // Income, against the holding that paid it. Recorded through Python like every
+  // other figure: the "you hold no X" note depends on the journal, and a copy of
+  // that rule written here would drift from the one that decides.
+  var divForm=document.getElementById("dividend-form");
+  if(divForm) withApi(function(API){
+    var ticker=$("df-ticker"), amount=$("df-amount"), date=$("df-date"),
+        note=$("df-note"), out=$("df-preview"), go=$("df-submit"), msg=$("df-msg");
+
+    function preview(){
+      if(!ticker.value||!amount.value){ out.innerHTML=""; go.disabled=true; return; }
+      var n=Number(amount.value);
+      if(!(n>0)){
+        out.innerHTML='<span class="pricewarn">A dividend must be more than zero.</span>';
+        go.disabled=true; return;
+      }
+      out.innerHTML=row("Received",rpFmt(n),"total")+
+        '<div class="note">Counted in your cash and total. Kept out of realised '+
+        "P&amp;L and out of the index comparison.</div>";
+      go.disabled=false;
+    }
+    ["df-ticker","df-amount","df-date"].forEach(function(id){
+      $(id).addEventListener("input",preview);
+    });
+
+    go.addEventListener("click",function(){
+      go.disabled=true; msg.textContent="Recording...";
+      API.record_dividend(ticker.value,amount.value,date.value,note.value)
+        .then(function(r){
+          if(r.ok && r.data && goTo(r.data.url, r.message)) return;
+          msg.textContent=r.message;
+          msg.style.color=r.ok?"var(--good)":"var(--bad)";
+          if(r.ok){ ticker.value=""; amount.value=""; note.value=""; out.innerHTML=""; }
+          go.disabled=false;
+        });
+    });
+  });
+
+  // ---- remove one dividend -------------------------------------------------
+  document.addEventListener("click",function(ev){
+    var btn=ev.target.closest?ev.target.closest(".rm-div"):null;
+    if(!btn) return;
+    ev.preventDefault();
+    var what=btn.dataset.ticker+" dividend of "+rpFmt(Number(btn.dataset.amount))+
+             " on "+btn.dataset.date;
+    if(!window.confirm("Remove this dividend?\\n\\n"+what)) return;
+    btn.disabled=true; btn.textContent="...";
+    withApi(function(API){
+      API.remove_dividend(Number(btn.dataset.index),btn.dataset.ticker,
+                          Number(btn.dataset.amount),btn.dataset.date)
+        .then(function(r){
+          if(r.ok && r.data && goTo(r.data.url, r.message)) return;
+          btn.disabled=false; btn.textContent="remove";
+          var say=btn.parentNode.querySelector(".rm-why");
+          if(!say){ say=document.createElement("div"); say.className="note rm-why";
+                    btn.parentNode.appendChild(say); }
+          say.textContent=r.message;
+          say.style.color=r.ok?"var(--muted)":"var(--bad)";
+        });
+    },function(){ btn.disabled=false; btn.textContent="remove"; });
+  });
+
   // ---- remove one cash entry ----------------------------------------------
   document.addEventListener("click",function(ev){
     var btn=ev.target.closest?ev.target.closest(".rm-cash"):null;

@@ -385,16 +385,17 @@ def render(ctx: RunContext) -> Path:
         if logger:
             logger.warning(f"Why view unavailable: {e}")
 
-    cash_form_html = ""
+    cash_form_html = dividend_form_html = ""
     try:
         from desktop import available as _desktop_available
-        from report.journal_view import (cash_form, cli_fallback, journal_panels,
-                                         trade_form)
+        from report.journal_view import (cash_form, cli_fallback, dividend_form,
+                                         journal_panels, trade_form)
 
         ledger_html = journal_panels(settings, prices=plan["prices"])
         live = _desktop_available() and not getattr(args, "browser", False)
         trade_form_html = trade_form() if live else cli_fallback()
         cash_form_html = cash_form() if live else ""
+        dividend_form_html = dividend_form() if live else ""
     except Exception as e:
         if logger:
             logger.warning(f"Ledger unavailable: {e}")
@@ -416,6 +417,7 @@ def render(ctx: RunContext) -> Path:
             settings_html=_settings_panel(settings),
             ledger_html=ledger_html, trade_form_html=trade_form_html,
             cash_form_html=cash_form_html,
+            dividend_form_html=dividend_form_html,
             market=_market_panel_data(ctx),
             placeholder_capital=is_placeholder_capital(settings),
             perf=perf, fetched_at=ctx.fetched_at, sessions=ctx.sessions,

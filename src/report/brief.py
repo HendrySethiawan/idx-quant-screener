@@ -509,6 +509,7 @@ def render_brief(
     ledger_html: str = "",
     trade_form_html: str = "",
     cash_form_html: str = "",
+    dividend_form_html: str = "",
     placeholder_capital: bool = False,
     market: Optional[dict] = None,
     generated: Optional[datetime] = None,
@@ -637,6 +638,7 @@ def render_brief(
         T.column([
             T.panel("Record a trade", trade_form_html, pid="panel-trade"),
             T.panel("Cash in and out", cash_form_html, pid="panel-cash"),
+            T.panel("Dividend received", dividend_form_html, pid="panel-dividend"),
             T.panel("How you are doing",
                     journal_html or '<div class="empty">Nothing logged yet.</div>',
                     grow=True),

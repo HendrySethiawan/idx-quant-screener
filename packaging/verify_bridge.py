@@ -168,6 +168,7 @@ def main() -> int:
                         "marks_path": str(tmp / "marks.csv"),
                         "holdings_path": str(tmp / "holdings.yaml"),
                         "cash_path": str(tmp / "cash.csv"),
+                        "dividends_path": str(tmp / "dividends.csv"),
                         "snapshot_path": str(tmp / "run.joblib")}
 
     # `--browser` renders the CLI fallback instead of the form, so a page generated

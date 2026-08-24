@@ -220,12 +220,15 @@ def build_performance(settings, prices=None, ihsg=None):
     if ihsg is None and not journal.empty:
         ihsg = _ihsg_series(settings)
 
+    from portfolio.dividends import dividends_path, load_dividends
+
     account = getattr(settings, "account", None) or {}
     return evaluate(
         journal=journal, closed=closed, positions=positions, prices=prices,
         open_cost=open_cost, starting_capital=settings.capital_rp, cfg=cfg,
         ihsg_close=ihsg,
         min_trades_for_verdict=int(account.get("min_trades_for_verdict", 30)),
+        dividends=load_dividends(dividends_path(settings)),
     )
 
 

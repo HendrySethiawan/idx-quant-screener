@@ -87,6 +87,18 @@ class Performance:
     return_on_closed_pct: Optional[float] = None
     return_on_open_pct: Optional[float] = None
 
+    # Income. Held apart from realised P&L on purpose: a dividend is not a trading
+    # decision, and folding it into the round-trip figures would make a bad entry
+    # look like a good one because the company happened to pay out. It IS counted
+    # in cash and total, because the money is genuinely there.
+    #
+    # Deliberately excluded from the index comparison: `^JKSE` is a price index and
+    # pays nothing, so counting income on our side alone would flatter us by
+    # exactly the dividend.
+    dividend_income: float = 0.0
+    dividend_by_ticker: Dict[str, float] = field(default_factory=dict)
+    realised_yield_pct: Dict[str, float] = field(default_factory=dict)
+
     # benchmark
     comparable: bool = True           # False when there is nothing to compare yet
     shadow: ShadowResult = field(default_factory=ShadowResult)
@@ -161,6 +173,26 @@ def ihsg_shadow(journal: pd.DataFrame, ihsg_close: Optional[pd.Series]) -> Shado
     return out
 
 
+def _apply_dividends(perf: "Performance", dividends, open_cost, positions) -> "Performance":
+    """
+    Attach income, and the realised yield it implies per holding.
+
+    Realised yield is measured against what the position actually cost, which is
+    the only figure that can be set beside the forward yield the screener quoted
+    from Yahoo. Those two are allowed to differ; the point of recording any of
+    this is that the difference becomes visible instead of assumed.
+    """
+    from portfolio.dividends import by_ticker, realised_yield, total_received
+
+    perf.dividend_income = total_received(dividends)
+    perf.dividend_by_ticker = by_ticker(dividends)
+
+    cost_basis = {t: float(open_cost.get(t, 0.0)) * int(shares)
+                  for t, shares in (positions or {}).items()}
+    perf.realised_yield_pct = realised_yield(dividends, cost_basis)
+    return perf
+
+
 def stamp_analysis(journal: pd.DataFrame, cfg: FeeConfig) -> Dict[str, float]:
     """
     What batching has already saved, and what further consolidation could save.
@@ -224,20 +256,25 @@ def evaluate(
     cfg: FeeConfig,
     ihsg_close: Optional[pd.Series] = None,
     min_trades_for_verdict: int = DEFAULT_MIN_TRADES,
+    dividends: Optional[pd.DataFrame] = None,
 ) -> Performance:
     perf = Performance(
         starting_capital=starting_capital,
         min_trades_for_verdict=min_trades_for_verdict,
     )
 
+    perf = _apply_dividends(perf, dividends, open_cost, positions)
+
     if journal is None or journal.empty:
-        perf.cash = starting_capital
-        perf.total_value = starting_capital
+        perf.cash = starting_capital + perf.dividend_income
+        perf.total_value = perf.cash
         perf.verdict = "No trades logged yet."
         return perf
 
     # Cash: starting capital plus the signed net effect of every trade.
-    perf.cash = starting_capital + float(journal["net_rp"].fillna(0).sum())
+    # Income is real cash. It is not realised P&L -- see the field comment.
+    perf.cash = (starting_capital + float(journal["net_rp"].fillna(0).sum())
+                 + perf.dividend_income)
     perf.position_value = sum(shares * prices.get(t, 0.0) for t, shares in positions.items())
     perf.total_value = perf.cash + perf.position_value
 
@@ -247,7 +284,10 @@ def evaluate(
         for t, shares in positions.items()
         if t in prices and t in open_cost
     )
-    perf.total_pnl = perf.realized_pnl + perf.unrealized_pnl
+    # Income counts toward what you made, but not toward what your TRADING made.
+    # Keeping it out of realised_pnl is what stops a bad entry reading as a good
+    # one because the company paid out while you held it.
+    perf.total_pnl = perf.realized_pnl + perf.unrealized_pnl + perf.dividend_income
     perf.return_pct = (perf.total_pnl / starting_capital * 100) if starting_capital else 0.0
 
     perf.total_fees = float(journal["fee_rp"].fillna(0).sum() + journal["stamp_rp"].fillna(0).sum())

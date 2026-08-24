@@ -32,6 +32,7 @@ def api(settings_mock, tmp_path):
         # its default sent these tests at the repo's own data/cash.csv, where they
         # accumulated across the whole run and across each other.
         "cash_path": str(tmp_path / "cash.csv"),
+        "dividends_path": str(tmp_path / "dividends.csv"),
         "snapshot_path": str(tmp_path / "run.joblib"),
         "capital_rp": 10_000_000,
     }
@@ -344,6 +345,7 @@ def ctx_api(settings_mock, tmp_path):
         # its default sent these tests at the repo's own data/cash.csv, where they
         # accumulated across the whole run and across each other.
         "cash_path": str(tmp_path / "cash.csv"),
+        "dividends_path": str(tmp_path / "dividends.csv"),
         "snapshot_path": str(tmp_path / "run.joblib"),
         "capital_rp": 10_000_000,
     }
@@ -651,3 +653,68 @@ def test_once_there_is_a_ledger_the_settings_field_refuses(api):
     assert not r["ok"]
     assert "cash ledger" in r["message"]
     assert api._settings.capital_rp == 10_000_000
+
+
+# ------------------------------------------------------------------ dividends
+# The model ranks on dividend yield at +1.0 weight and could not see a rupiah of
+# it arrive. These go through the bridge, since that is the only route the app has.
+def test_a_dividend_is_recorded_and_totalled(api):
+    r = api.record_dividend("BBRI", 120_000, "2026-04-15", "annual")
+    assert r["ok"], r["message"]
+    assert r["data"]["total"] == 120_000
+    assert "120,000" in r["message"]
+
+
+def test_income_accumulates_across_holdings(api):
+    api.record_dividend("BBRI", 120_000, "2026-04-15")
+    api.record_dividend("TLKM", 80_000, "2026-05-20")
+
+    listed = api.list_dividends()["data"]
+    assert listed["total"] == 200_000
+    assert listed["by_ticker"] == {"BBRI.JK": 120_000, "TLKM.JK": 80_000}
+
+
+def test_a_dividend_on_a_name_you_no_longer_hold_is_allowed_but_noted(api):
+    """It routinely lands after the position is closed. Warn, never refuse."""
+    r = api.record_dividend("BBRI", 120_000, "2026-04-15")
+    assert r["ok"]
+    assert "hold no BBRI.JK" in r["message"]
+
+
+def test_holding_the_name_raises_no_note(api):
+    api.log_trade("BUY", "BBRI", 2, 4000, "2026-04-01")
+    assert "hold no" not in api.record_dividend("BBRI", 120_000, "2026-04-15")["message"]
+
+
+def test_removing_a_dividend_re_totals_the_income(api):
+    api.record_dividend("BBRI", 120_000, "2026-04-15")
+    api.record_dividend("TLKM", 80_000, "2026-05-20")
+
+    r = api.remove_dividend(1, "TLKM.JK", 80_000, "2026-05-20")
+    assert r["ok"], r["message"]
+    assert r["data"]["total"] == 120_000
+
+
+def test_the_bridge_refuses_a_dividend_row_that_has_moved(api):
+    api.record_dividend("BBRI", 120_000, "2026-04-15")
+    api.record_dividend("TLKM", 80_000, "2026-05-20")
+
+    assert not api.remove_dividend(1, "BBRI.JK", 120_000, "2026-04-15")["ok"]
+    assert len(api.list_dividends()["data"]["entries"]) == 2
+
+
+def test_nothing_in_the_dividend_bridge_raises(api):
+    for bad in [("", 0, "", ""), ("BBRI", "abc", "", ""), ("BBRI", -1, "", "")]:
+        assert api.record_dividend(*bad)["ok"] is False
+    assert api.remove_dividend("x")["ok"] is False
+    assert api.list_dividends()["ok"] is True
+
+
+def test_a_dividend_never_enters_the_trade_journal(api):
+    """The separation, asserted from the outside."""
+    api.log_trade("BUY", "BBRI", 2, 4000, "2026-04-01")
+    api.record_dividend("BBRI", 120_000, "2026-04-15")
+
+    trades = api.list_trades()["data"]["trades"]
+    assert len(trades) == 1
+    assert trades[0]["action"] == "BUY"

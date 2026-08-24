@@ -132,6 +132,9 @@ class Settings(BaseSettings):
         # Deposits and withdrawals. Once this file has a row, `capital_rp` above
         # is derived from it rather than read -- see portfolio/cash.sync_capital.
         "cash_path": "data/cash.csv",
+        # Dividends received. Kept out of the journal so they can never reach FIFO
+        # matching -- see portfolio/dividends.py.
+        "dividends_path": "data/dividends.csv",
         # The last fetched screen, so launching does not mean fetching.
         "snapshot_path": "data/snapshot/run.joblib",
         # Closed round-trips required before the report will name a winner

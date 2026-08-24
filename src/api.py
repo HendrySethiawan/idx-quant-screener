@@ -562,6 +562,88 @@ class TerminalAPI:
             return _ok(message, url=rebuilt["data"]["url"], capital=capital)
         return _ok(message, capital=capital)
 
+    # --------------------------------------------------------------- dividends
+    #
+    # The model ranks on dividend yield at +1.0 weight and, until this existed,
+    # could not see a single rupiah of it arrive. Kept in its own file so it can
+    # never reach FIFO matching -- see portfolio/dividends.py.
+    def _dividends_path(self):
+        from portfolio.dividends import dividends_path
+        return dividends_path(self._settings)
+
+    def _dividends(self):
+        from portfolio.dividends import load_dividends
+        return load_dividends(self._dividends_path())
+
+    @guarded
+    def record_dividend(self, ticker: str, amount: Any, on_date: str = "",
+                        note: str = "") -> Dict[str, Any]:
+        """Record income received, net of the 10% final tax."""
+        from portfolio.dividends import append_entry, build_entry, total_received
+
+        entry = build_entry(ticker, self._as_float(amount, "Amount"),
+                            on_date or None, note)
+        append_entry(entry, self._dividends_path())
+
+        total = total_received(self._dividends())
+        held = self._held(entry["ticker"])
+        warn = ("" if held else
+                f" You hold no {entry['ticker']} - recording it anyway, since a "
+                f"dividend often lands after the position is closed.")
+        message = (f"Recorded {entry['ticker']} dividend of "
+                   f"Rp{entry['amount_rp']:,.0f}. Income to date "
+                   f"Rp{total:,.0f}.{warn}")
+
+        rebuilt = self.rebuild()
+        if rebuilt["ok"]:
+            return _ok(message, url=rebuilt["data"]["url"], total=total)
+        return _ok(message, total=total)
+
+    @guarded
+    def list_dividends(self, limit: int = 40) -> Dict[str, Any]:
+        """Every entry with the index `remove_dividend` takes, oldest first."""
+        from portfolio.dividends import by_ticker, recent, total_received
+
+        ledger = self._dividends()
+        if ledger.empty:
+            return _ok("Nothing recorded yet.", entries=[], total=0.0, by_ticker={})
+
+        rows = []
+        for i, row in recent(ledger, limit).iterrows():
+            rows.append({
+                "index": int(i),
+                "date": pd.to_datetime(row["date"]).strftime("%Y-%m-%d"),
+                "ticker": str(row["ticker"]),
+                "amount_rp": float(row["amount_rp"]),
+                "note": "" if pd.isna(row["note"]) else str(row["note"]),
+                "label": (f"{row['ticker']} dividend of "
+                          f"Rp{float(row['amount_rp']):,.0f} on "
+                          f"{pd.to_datetime(row['date']):%d %b %Y}"),
+            })
+        return _ok("", entries=rows, total=total_received(ledger),
+                   by_ticker=by_ticker(ledger))
+
+    @guarded
+    def remove_dividend(self, index: Any, ticker: str = "", amount: Any = None,
+                        on_date: str = "") -> Dict[str, Any]:
+        """Remove one entry, then re-total the income."""
+        from portfolio.dividends import remove_entry_at, total_received
+
+        expect = {"ticker": ticker or None, "date": on_date or None,
+                  "amount_rp": None if amount in (None, "") else self._as_float(
+                      amount, "Amount")}
+        result = remove_entry_at(self._dividends_path(), index, expect)
+        if not result["ok"]:
+            return _fail(result["message"])
+
+        total = total_received(self._dividends())
+        message = f"{result['message']} Income to date Rp{total:,.0f}."
+
+        rebuilt = self.rebuild()
+        if rebuilt["ok"]:
+            return _ok(message, url=rebuilt["data"]["url"], total=total)
+        return _ok(message, total=total)
+
     # ------------------------------------------------------------------- other
     @guarded
     def snapshot(self) -> Dict[str, Any]:

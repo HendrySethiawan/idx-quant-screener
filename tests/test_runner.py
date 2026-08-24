@@ -52,6 +52,7 @@ def ctx(settings_mock, tmp_path):
         # its default sent these tests at the repo's own data/cash.csv, where they
         # accumulated across the whole run and across each other.
         "cash_path": str(tmp_path / "cash.csv"),
+        "dividends_path": str(tmp_path / "dividends.csv"),
         "snapshot_path": str(tmp_path / "run.joblib"),
         "capital_rp": 10_000_000,
     }
