@@ -15,7 +15,8 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
-from analysis.selection import sector_capped_pick
+from analysis.selection import (DEFAULT_MAX_CORRELATION, average_correlation,
+                                decorrelated_pick, sector_capped_pick)
 from market.liquidity import LiquidityConfig, assess
 from portfolio.fees import FeeConfig, estimate_fees
 from portfolio.holdings import Holding
@@ -62,6 +63,7 @@ def build_candidates(
     deploy_pct: float,
     exclude: Optional[set] = None,
     trail=None,
+    correlations=None,
 ) -> Tuple[List[dict], Dict[str, str], Dict[str, str]]:
     """
     Returns (candidates, rejected, capped).
@@ -149,6 +151,22 @@ def build_candidates(
         )
     else:
         keep_list = ranked[:shortlist_n]
+
+    # Then by behaviour, which a label cannot capture in either direction: BRPT and
+    # PTRO are different sectors and correlate 0.87, while tin, palm oil and coal
+    # sit around 0.30. Applied after the sector cap so the two explanations compose
+    # rather than compete -- a name skipped here was already through the label gate.
+    selection_cfg = getattr(settings, "selection", None) or {}
+    max_corr = selection_cfg.get("max_correlation", DEFAULT_MAX_CORRELATION)
+    if correlations is not None and max_corr:
+        # Its own dict: `decorrelated_pick` clears what it is handed, and sharing
+        # `capped` would erase every sector-cap explanation already recorded.
+        correlated: Dict[str, str] = {}
+        keep_list = decorrelated_pick(
+            keep_list, correlations, top_n=shortlist_n,
+            max_correlation=float(max_corr), skipped=correlated,
+        )
+        capped.update(correlated)
 
     keep = set(keep_list)
     outranked = {
@@ -279,6 +297,7 @@ def attach_events(items: List[dict], events, blind, horizon_days: int) -> None:
 
 
 def assemble(settings, df: pd.DataFrame, regime, holdings: List[Holding],
+             correlations=None,
              events=None, blind=None):
     """Everything the brief needs, in one pass."""
     prices = {
@@ -333,7 +352,7 @@ def assemble(settings, df: pd.DataFrame, regime, holdings: List[Holding],
     )
 
     candidates, rejected, capped = build_candidates(
-        df, settings, regime.deploy_pct, trail=trail
+        df, settings, regime.deploy_pct, trail=trail, correlations=correlations
     )
     allocation = choose_allocation(
         candidates, settings.capital_rp, regime.deploy_pct, settings=settings
@@ -372,6 +391,8 @@ def assemble(settings, df: pd.DataFrame, regime, holdings: List[Holding],
     fee_cfg = FeeConfig.from_settings(settings)
     fees = estimate_fees(orders, fee_cfg, settings.capital_rp, sell_days=1)
 
+    book_correlation = average_correlation(allocation.tickers(), correlations)
+
     holdings_rows = build_holdings_rows(holdings, prices, df, settings.top_picks_n)
 
     if events is not None:
@@ -393,4 +414,7 @@ def assemble(settings, df: pd.DataFrame, regime, holdings: List[Holding],
         "holdings_rows": holdings_rows,
         "prices": prices,
         "trail": trail,
+        # Mean pairwise correlation of the book. None when it cannot be measured,
+        # never 0.0 -- which would read as "perfectly diversified".
+        "book_correlation": book_correlation,
     }

@@ -3,6 +3,29 @@ import pandas as pd
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _never_touch_the_real_user_config(tmp_path, monkeypatch):
+    """
+    No test may write to the reader's own configs/user.yaml.
+
+    `save_setting` goes through `core.config.save_user_overrides`, whose default
+    path is the real file. A test asserting that capital is editable therefore
+    wrote its fixture value -- Rp7,500,000 -- into an actual person's capital, and
+    the next run sized every lot count against it. Autouse, because the next
+    function to write there will not think to opt in.
+
+    Kept at `configs/user.yaml` under tmp_path rather than a bare filename: tests
+    that chdir into tmp_path and then read the relative path must still find what
+    was written.
+    """
+    from core import config
+
+    # Not created here: `save_user_overrides` makes the directory itself, and
+    # several tests create it too -- without `exist_ok`.
+    monkeypatch.setattr(config, "USER_CONFIG_PATH",
+                        str(tmp_path / "configs" / "user.yaml"), raising=False)
+
+
 @pytest.fixture
 def settings_mock():
     from core.config import Settings

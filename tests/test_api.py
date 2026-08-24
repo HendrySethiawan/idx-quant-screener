@@ -13,6 +13,7 @@ Two properties carry it:
     rejected promise with no message, which on screen is a button that does nothing.
 """
 import json
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -718,3 +719,36 @@ def test_a_dividend_never_enters_the_trade_journal(api):
     trades = api.list_trades()["data"]["trades"]
     assert len(trades) == 1
     assert trades[0]["action"] == "BUY"
+
+
+def test_no_test_can_reach_the_real_user_config():
+    """
+    The guard, asserted rather than assumed.
+
+    `save_setting` writes through `core.config.save_user_overrides`, whose default
+    path is the reader's own file. A test asserting capital is editable wrote its
+    fixture value into an actual person's capital, and the next run sized every lot
+    count against Rp7,500,000 that nobody had chosen. conftest redirects it; this
+    fails if that redirect ever stops working.
+    """
+    from core import config
+
+    assert "configs" in config.USER_CONFIG_PATH
+    assert Path(config.USER_CONFIG_PATH).is_absolute(), (
+        "USER_CONFIG_PATH is still relative - a chdir would put it back in the repo")
+    assert "Temp" in config.USER_CONFIG_PATH or "tmp" in config.USER_CONFIG_PATH
+
+
+def test_the_override_path_is_resolved_at_call_time(tmp_path, monkeypatch):
+    """
+    Bound as a default argument, redirecting the constant would not redirect the
+    write -- which is exactly why the leak survived a guard the first time.
+    """
+    from core import config
+
+    target = tmp_path / "elsewhere" / "user.yaml"
+    monkeypatch.setattr(config, "USER_CONFIG_PATH", str(target))
+    config.save_user_overrides({"account": {"capital_rp": 123}})
+
+    assert target.exists()
+    assert "123" in target.read_text(encoding="utf-8")

@@ -517,6 +517,7 @@ def render_brief(
     fetched_at=None,
     sessions: Optional[dict] = None,
     verdict: Optional[dict] = None,
+    book_correlation: Optional[float] = None,
 ) -> str:
     """
     The terminal. One document, five destinations, nothing scrolls but panels.
@@ -590,6 +591,24 @@ def render_brief(
             f"{html.escape(shown)}{more}.</div>"
         )
 
+    # How much of a single bet this book really is, measured rather than assumed
+    # from sector names. Three tickers in three sectors can still be one trade
+    # (BRPT/PTRO correlate 0.87), and three commodity names often are not.
+    concentration = ""
+    if book_correlation is not None and allocation and len(allocation.positions) > 1:
+        tight = book_correlation >= 0.60
+        concentration = (
+            f'<div class="callout"'
+            f'{" style=border-left-color:var(--warn)" if tight else ""}>'
+            f"<strong>These {len(allocation.positions)} names move together "
+            f"{book_correlation:.2f}.</strong> "
+            + ("Close to one bet in several tickers &mdash; they will rise and fall "
+               "as a group, so the diversification here is smaller than the count "
+               "suggests." if tight else
+               "Low enough that they are genuinely separate positions.")
+            + "</div>"
+        )
+
     granularity = ""
     if allocation and allocation.positions:
         granularity = (
@@ -614,7 +633,7 @@ def render_brief(
             T.panel("Do this today",
                     stale_note + placeholder_note
                     + _ticket_section(orders, fees, capital)
-                    + granularity + evidence_note(verdict),
+                    + granularity + concentration + evidence_note(verdict),
                     pid="panel-ticket", cls="print", grow=True),
             T.panel(f"Events, next {event_horizon} days",
                     _events_section(events or [], blind_n, universe_n, event_horizon)),

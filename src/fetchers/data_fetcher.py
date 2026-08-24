@@ -168,6 +168,46 @@ def equal_weight_level(price_data: dict, base: float = 1000.0) -> Optional[pd.Se
     return (1.0 + daily).cumprod() * float(base)
 
 
+def return_correlations(price_data: dict, window: int = 120) -> Optional[pd.DataFrame]:
+    """
+    Pairwise correlation of daily returns, over the recent window.
+
+    `max_per_sector` caps names by label, which is not the same as capping the bet.
+    The two tightest pairs in this universe are BRPT/PTRO at 0.87 -- one
+    conglomerate, and in different sectors, so the label cap never sees them -- and
+    BBRI/BMRI at 0.80, where the cap allows both because Financials permits two.
+
+    Sector labels are a poor proxy in the other direction too: tin, palm oil and
+    coal correlate about 0.30 here, so "they are all commodities" is not a reason to
+    treat them as one position.
+
+    Returns, not prices: two stocks can both drift upward for years and share no
+    day-to-day behaviour at all, and it is the day-to-day that decides whether a
+    book of six names is really a book of two.
+    """
+    closes = {}
+    for ticker, frame in (price_data or {}).items():
+        if frame is None or getattr(frame, "empty", True) or "Close" not in frame:
+            continue
+        series = frame["Close"].dropna()
+        if len(series) < 30:
+            # Too short to say anything about how it moves with anything else.
+            continue
+        idx = pd.DatetimeIndex(series.index)
+        closes[ticker] = pd.Series(
+            series.values,
+            index=idx.tz_localize(None) if idx.tz is not None else idx)
+
+    if len(closes) < 2:
+        return None
+
+    panel = pd.DataFrame(closes).sort_index().tail(int(window) + 1)
+    returns = panel.pct_change().dropna(how="all")
+    if len(returns) < 20:
+        return None
+    return returns.corr(min_periods=20)
+
+
 class DataFetcher:
     def __init__(self, settings: Settings):
         self.settings = settings

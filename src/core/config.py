@@ -183,6 +183,16 @@ class Settings(BaseSettings):
         "min_names": 10,
     })
 
+    # ---- Selection ---------------------------------------------------------
+    # `max_per_sector` caps by label; this caps by behaviour. 0.70 sits above all
+    # but 21 of 2,401 measured pairs, so it is a safety net rather than a filter:
+    # it catches BRPT/PTRO (0.87, one conglomerate across two sectors) and the big
+    # banks (0.80), and leaves ordinary picks alone.
+    selection: Dict[str, Any] = Field(default_factory=lambda: {
+        "max_correlation": 0.70,
+        "correlation_window": 120,
+    })
+
     events_path: str = "configs/events.yaml"
     event_horizon_days: int = Field(default=14, ge=1)
 
@@ -301,9 +311,16 @@ def _deep_merge(base: dict, updates: dict) -> dict:
     return out
 
 
-def save_user_overrides(updates: dict, path: str = USER_CONFIG_PATH) -> Path:
-    """Write app-managed overrides to configs/user.yaml. default.yaml is never rewritten."""
-    target = Path(path)
+def save_user_overrides(updates: dict, path: Optional[str] = None) -> Path:
+    """
+    Write app-managed overrides to configs/user.yaml. default.yaml is never rewritten.
+
+    The default is resolved HERE rather than bound at definition, so redirecting
+    `USER_CONFIG_PATH` actually redirects the write. Bound as a default argument it
+    could not be, and the test suite wrote a fixture value straight into the
+    reader's real capital -- twice, before anyone noticed the figure had changed.
+    """
+    target = Path(path or USER_CONFIG_PATH)
     target.parent.mkdir(parents=True, exist_ok=True)
 
     existing: dict = {}
@@ -317,15 +334,17 @@ def save_user_overrides(updates: dict, path: str = USER_CONFIG_PATH) -> Path:
     return target
 
 
-def drop_user_override(dotted: str, path: str = USER_CONFIG_PATH) -> Path:
+def drop_user_override(dotted: str, path: Optional[str] = None) -> Path:
     """
     Remove one override so the value falls back to `default.yaml`.
 
     Resetting a field has to mean "delete the override", not "write the default in
     again": writing it back would freeze today's default into the user's file, and a
     later change to the shipped default would silently not reach them.
+
+    Path resolved at call time, for the reason `save_user_overrides` gives.
     """
-    target = Path(path)
+    target = Path(path or USER_CONFIG_PATH)
     if not target.exists():
         return target
 

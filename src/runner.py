@@ -65,13 +65,16 @@ class RunContext:
     # The watchlist, equally weighted, as an index level. Persisted because
     # `price_data` is not, and the benchmark has to survive a snapshot launch.
     watchlist_level: Optional[pd.Series] = None
+    # Pairwise return correlations, so selection can cap the bet rather than the
+    # label. Persisted for the same reason as the watchlist: `price_data` is not.
+    correlations: Optional[pd.DataFrame] = None
 
 
 # --------------------------------------------------------------- needs network
 def full_run(settings, args, logger=None) -> RunContext:
     """Fetch, score and rank. The slow half."""
     from fetchers.data_fetcher import (DataFetcher, equal_weight_level,
-                                       session_report)
+                                       return_correlations, session_report)
     from market import seasonality as S
 
     # One fetcher for the whole run. `run_screener` used to build its own, so the
@@ -90,6 +93,8 @@ def full_run(settings, args, logger=None) -> RunContext:
                 f"{', '.join(t for t, _ in sessions['laggards'][:6])}")
 
     watchlist_level = equal_weight_level(price_data)
+    correlations = return_correlations(
+        price_data, int((settings.selection or {}).get("correlation_window", 120)))
 
     regime_cfg = settings.regime or {}
     fx_data = fetcher.fetch_technical_data([regime_cfg.get("fx_ticker", "IDR=X")])
@@ -122,6 +127,7 @@ def full_run(settings, args, logger=None) -> RunContext:
         regime=regime, season_table=season_table, season_line=season_line,
         fetched_at=pd.Timestamp.now(), universe_key=universe_key(settings),
         sessions=sessions, watchlist_level=watchlist_level,
+        correlations=correlations,
     )
 
 
@@ -179,6 +185,7 @@ def save_snapshot(ctx: RunContext) -> Optional[Path]:
             "universe_key": ctx.universe_key or universe_key(ctx.settings),
             "sessions": ctx.sessions or {},
             "watchlist_level": ctx.watchlist_level,
+            "correlations": ctx.correlations,
         }, path)
         return path
     except Exception as e:
@@ -236,6 +243,7 @@ def load_snapshot(settings, args, logger=None) -> Optional[RunContext]:
         fetched_at=blob.get("fetched_at"), universe_key=want,
         sessions=blob.get("sessions") or {},
         watchlist_level=blob.get("watchlist_level"),
+        correlations=blob.get("correlations"),
     )
 
 
@@ -348,6 +356,7 @@ def render(ctx: RunContext) -> Path:
     horizon = int(getattr(settings, "event_horizon_days", 14))
 
     plan = assemble(settings, ctx.df, ctx.regime, holdings,
+                    correlations=ctx.correlations,
                     events=all_events, blind=blind)
     pd.DataFrame(plan["orders"]).to_csv(settings.output_dir / "ticket.csv", index=False)
 
@@ -431,6 +440,7 @@ def render(ctx: RunContext) -> Path:
             placeholder_capital=is_placeholder_capital(settings),
             perf=perf, fetched_at=ctx.fetched_at, sessions=ctx.sessions,
             verdict=_backtest_verdict(settings, logger),
+            book_correlation=plan.get("book_correlation"),
         ),
         settings.output_dir,
     )
