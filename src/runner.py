@@ -52,6 +52,12 @@ class RunContext:
     plan: Optional[dict] = None
     perf: Any = None
     brief_path: Optional[Path] = None
+    # When the market data in here was fetched, and what universe it was fetched
+    # for. Both are written to the snapshot: the first so the page can say how old
+    # what you are reading is, the second so a changed ticker list is not silently
+    # rendered against scores computed for a different one.
+    fetched_at: Optional[pd.Timestamp] = None
+    universe_key: str = ""
 
 
 # --------------------------------------------------------------- needs network
@@ -93,6 +99,117 @@ def full_run(settings, args, logger=None) -> RunContext:
         settings=settings, args=args, logger=logger,
         df=df, price_data=price_data, benchmark_data=benchmark_data,
         regime=regime, season_table=season_table, season_line=season_line,
+        fetched_at=pd.Timestamp.now(), universe_key=universe_key(settings),
+    )
+
+
+# ------------------------------------------------------------- the last screen
+#
+# Fetching 49 tickers on every launch made opening the app a forty-second wait for
+# data that had not moved -- and `fetch_fundamentals` was uncached, so it was forty
+# seconds every single time, not merely the first. The screen is saved instead and
+# reopened instantly; fetching is what the Update button is for.
+SNAPSHOT_REL = Path("data/snapshot/run.joblib")
+
+# Bumped when the shape below changes, so an old file is ignored rather than
+# unpacked into fields that no longer mean the same thing.
+SNAPSHOT_VERSION = 1
+
+
+def universe_key(settings) -> str:
+    """Identifies the data a snapshot was built for."""
+    import hashlib
+
+    tickers = ",".join(sorted(settings.stock_tickers or {}))
+    raw = f"{tickers}|{getattr(settings, 'history_period', '')}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _snapshot_path(settings) -> Path:
+    account = getattr(settings, "account", None) or {}
+    return Path(account.get("snapshot_path", SNAPSHOT_REL))
+
+
+def save_snapshot(ctx: RunContext) -> Optional[Path]:
+    """
+    Persist what a render needs. Returns the path, or None if it could not be saved.
+
+    `price_data` is deliberately left out: `full_run` fills it and nothing reads it
+    -- not `render`, not the console summary, not the API. Writing 49 frames nobody
+    opens would be the largest thing in the file.
+
+    Never raises. A snapshot that cannot be written costs the next launch forty
+    seconds; an exception here would cost this one everything after it.
+    """
+    import joblib
+
+    try:
+        path = _snapshot_path(ctx.settings)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        joblib.dump({
+            "version": SNAPSHOT_VERSION,
+            "df": ctx.df,
+            "benchmark_data": ctx.benchmark_data,
+            "regime": ctx.regime,
+            "season_table": ctx.season_table,
+            "season_line": ctx.season_line,
+            "fetched_at": ctx.fetched_at or pd.Timestamp.now(),
+            "universe_key": ctx.universe_key or universe_key(ctx.settings),
+        }, path)
+        return path
+    except Exception as e:
+        if ctx.logger:
+            ctx.logger.warning(f"Could not save the screen for next time: {e}")
+        return None
+
+
+def load_snapshot(settings, args, logger=None) -> Optional[RunContext]:
+    """
+    Rebuild a RunContext from the last fetch, or None if there is nothing usable.
+
+    None on every failure -- missing, corrupt, written by an older version, or built
+    for a different universe. The caller's answer to None is always the same: fetch.
+    So there is nothing to gain by distinguishing them beyond a line in the log, and
+    an exception here would strand the launch it was meant to speed up.
+    """
+    import joblib
+
+    path = _snapshot_path(settings)
+    if not path.exists():
+        return None
+
+    try:
+        blob = joblib.load(path)
+    except Exception as e:
+        if logger:
+            logger.info(f"Ignoring an unreadable saved screen: {e}")
+        return None
+
+    if not isinstance(blob, dict) or blob.get("version") != SNAPSHOT_VERSION:
+        return None
+
+    df = blob.get("df")
+    if df is None or getattr(df, "empty", True):
+        return None
+
+    # `render` reads regime.deploy_pct unconditionally, so a snapshot without one
+    # would fail later and further from the cause than here.
+    if blob.get("regime") is None:
+        return None
+
+    want = universe_key(settings)
+    if blob.get("universe_key") != want:
+        if logger:
+            logger.info("The ticker universe changed; the saved screen no longer "
+                        "applies and a fresh run is needed.")
+        return None
+
+    return RunContext(
+        settings=settings, args=args, logger=logger,
+        df=df, price_data={}, benchmark_data=blob.get("benchmark_data") or {},
+        regime=blob.get("regime"), season_table=blob.get("season_table"),
+        season_line=blob.get("season_line") or "",
+        fetched_at=blob.get("fetched_at"), universe_key=want,
     )
 
 
@@ -233,13 +350,16 @@ def render(ctx: RunContext) -> Path:
         if logger:
             logger.warning(f"Why view unavailable: {e}")
 
+    cash_form_html = ""
     try:
         from desktop import available as _desktop_available
-        from report.journal_view import cli_fallback, journal_panels, trade_form
+        from report.journal_view import (cash_form, cli_fallback, journal_panels,
+                                         trade_form)
 
         ledger_html = journal_panels(settings, prices=plan["prices"])
         live = _desktop_available() and not getattr(args, "browser", False)
         trade_form_html = trade_form() if live else cli_fallback()
+        cash_form_html = cash_form() if live else ""
     except Exception as e:
         if logger:
             logger.warning(f"Ledger unavailable: {e}")
@@ -260,8 +380,10 @@ def render(ctx: RunContext) -> Path:
             advanced_html=advanced_html, steps_html=steps_html,
             settings_html=_settings_panel(settings),
             ledger_html=ledger_html, trade_form_html=trade_form_html,
+            cash_form_html=cash_form_html,
             market=_market_panel_data(ctx),
             placeholder_capital=is_placeholder_capital(settings),
+            perf=perf, fetched_at=ctx.fetched_at,
         ),
         settings.output_dir,
     )

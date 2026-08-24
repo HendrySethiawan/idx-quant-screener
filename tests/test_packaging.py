@@ -196,3 +196,74 @@ def test_no_undefined_names_anywhere_in_src():
         cwd=ROOT, capture_output=True, text=True, timeout=120,
     )
     assert out.returncode == 0, f"undefined or redefined names:\n{out.stdout}{out.stderr}"
+
+
+def _build_module():
+    """`packaging/` is not a package, and the name would collide with the PyPI one."""
+    spec = importlib.util.spec_from_file_location("buildmod", BUILD)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# ------------------------------------------------- the build must not eat data
+# `dist/` is deleted before every build. The app used to keep configs/user.yaml and
+# data/journal.csv beside the exe, so anyone running it straight out of dist/ had
+# their capital and trade log destroyed by the next rebuild -- silently, repeatedly,
+# and it took a user asking "could this project have a memory?" to notice.
+def test_a_journal_in_the_build_folder_stops_the_build(tmp_path, monkeypatch):
+    B = _build_module()
+
+    dist = tmp_path / "dist"
+    (dist / B.APP / "data").mkdir(parents=True)
+    (dist / B.APP / "data" / "journal.csv").write_text(
+        "date,ticker,action\n2026-08-20,BBRI.JK,BUY\n", encoding="utf-8")
+
+    monkeypatch.setattr(B, "ROOT", tmp_path)
+    with pytest.raises(SystemExit) as caught:
+        B.build()
+
+    assert "journal.csv" in str(caught.value)
+    assert (dist / B.APP / "data" / "journal.csv").exists(), "it deleted it anyway"
+
+
+def test_a_capital_file_in_the_build_folder_stops_the_build(tmp_path, monkeypatch):
+    B = _build_module()
+
+    dist = tmp_path / "dist"
+    (dist / B.APP / "configs").mkdir(parents=True)
+    (dist / B.APP / "configs" / "user.yaml").write_text(
+        "account:\n  capital_rp: 10000000\n", encoding="utf-8")
+
+    monkeypatch.setattr(B, "ROOT", tmp_path)
+    with pytest.raises(SystemExit):
+        B.build()
+
+
+def test_a_freshly_built_folder_is_still_deletable(tmp_path):
+    """
+    A journal with only its header is what a clean run leaves behind, and refusing
+    to build over that would make the guard useless.
+    """
+    B = _build_module()
+
+    dist = tmp_path / "dist"
+    (dist / B.APP / "data").mkdir(parents=True)
+    (dist / B.APP / "data" / "journal.csv").write_text(
+        "date,ticker,action\n", encoding="utf-8")
+    (dist / B.APP / "configs").mkdir(parents=True)
+    (dist / B.APP / "configs" / "default.yaml").write_text("account:\n", encoding="utf-8")
+
+    assert B.user_data_in(dist / B.APP) == []
+
+
+def test_an_empty_dist_is_deletable(tmp_path):
+    B = _build_module()
+    assert B.user_data_in(tmp_path) == []
+
+
+def test_the_readme_points_at_the_folder_that_survives_a_rebuild():
+    """It used to tell people to edit a file the next build would delete."""
+    source = BUILD.read_text(encoding="utf-8")
+    assert "LOCALAPPDATA" in source
+    assert "capital_rp: 25000000" not in source, "still telling people to type it"

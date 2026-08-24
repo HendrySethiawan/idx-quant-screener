@@ -5,6 +5,19 @@ from unittest.mock import MagicMock
 from fetchers.data_fetcher import DataFetcher, is_index
 
 
+@pytest.fixture(autouse=True)
+def _own_cache(tmp_path, monkeypatch):
+    """
+    Every test here gets an empty cache directory.
+
+    `DataFetcher` resolves `data/cache` against the working directory, so without
+    this these tests read the repository's real cache -- and a mocked yfinance
+    reply would be quietly ignored in favour of whatever was last fetched for that
+    ticker. It went unnoticed only because a timezone bug meant the cache never hit.
+    """
+    monkeypatch.chdir(tmp_path)
+
+
 @pytest.fixture
 def frame():
     idx = pd.date_range("2024-01-01", periods=5, freq="B")
@@ -100,3 +113,59 @@ def test_failed_ticker_is_skipped_not_fatal(settings_mock, tmp_path, mocker):
 ])
 def test_is_index(ticker, expected):
     assert is_index(ticker) is expected
+
+
+# ------------------------------------------------------------- the cache clock
+# The cache silently never hit. `pd.Timestamp.now().timestamp()` converts a naive
+# timestamp as if it were UTC, while `st_mtime` is a true epoch value -- so on a
+# UTC+7 machine every file read as seven hours old and all 49 tickers were refetched
+# on every single run, which is most of what made launching the app slow.
+def test_a_file_just_written_is_fresh(settings_mock, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    fetcher = DataFetcher(settings_mock)
+
+    path = fetcher._cache_path("BBRI.JK", "2y")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"x")
+
+    assert fetcher._fresh(path), (
+        "a file written a moment ago read as stale - the cache clock is wrong")
+
+
+def test_a_file_older_than_the_ttl_is_stale(settings_mock, tmp_path, monkeypatch):
+    import os
+    import time as _time
+
+    monkeypatch.chdir(tmp_path)
+    settings_mock.cache_ttl_minutes = 60
+    fetcher = DataFetcher(settings_mock)
+
+    path = fetcher._cache_path("BBRI.JK", "2y")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"x")
+    old = _time.time() - 2 * 3600
+    os.utime(path, (old, old))
+
+    assert not fetcher._fresh(path)
+
+
+def test_freshness_does_not_depend_on_the_local_timezone(settings_mock, tmp_path,
+                                                         monkeypatch):
+    """The bug in one line: the answer must not change with TZ."""
+    monkeypatch.chdir(tmp_path)
+    fetcher = DataFetcher(settings_mock)
+    path = fetcher._cache_path("BBRI.JK", "2y")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"x")
+
+    answers = set()
+    for tz in ("UTC", "Asia/Jakarta", "America/New_York"):
+        monkeypatch.setenv("TZ", tz)
+        answers.add(fetcher._fresh(path))
+    assert answers == {True}
+
+
+def test_a_missing_file_is_never_fresh(settings_mock, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    fetcher = DataFetcher(settings_mock)
+    assert not fetcher._fresh(tmp_path / "nothing.pkl")

@@ -450,9 +450,12 @@ def render_brief(
     settings_html: str = "",
     ledger_html: str = "",
     trade_form_html: str = "",
+    cash_form_html: str = "",
     placeholder_capital: bool = False,
     market: Optional[dict] = None,
     generated: Optional[datetime] = None,
+    perf=None,
+    fetched_at=None,
 ) -> str:
     """
     The terminal. One document, five destinations, nothing scrolls but panels.
@@ -464,12 +467,16 @@ def render_brief(
     """
     when = (generated or datetime.now()).strftime("%a %d %b %Y, %H:%M")
 
+    # Every one of these describes the PROPOSED ticket, not the account. "Cash left"
+    # read as money you have; it is what would remain if you executed the buys below.
+    # Labelled so the two cannot be confused -- the account's own figures are in the
+    # top bar and on the Portfolio page.
     kpis = "".join([
-        _kpi("Capital", rp(capital)),
+        _kpi("Paid in", rp(capital)),
         _kpi("Deploy", f"{regime.deploy_pct:.0%}"),
         _kpi("Positions", str(allocation.n_positions if allocation else 0)),
-        _kpi("Cash left", rp(allocation.cash_left if allocation else capital)),
-        _kpi("Est. fees", rp(fees.total)),
+        _kpi("After these buys", rp(allocation.cash_left if allocation else capital)),
+        _kpi("Fees on these buys", rp(fees.total)),
     ])
 
     # The failure this exists for: a run on the shipped placeholder produced a
@@ -531,6 +538,7 @@ def render_brief(
     portfolio = T.grid([
         T.column([
             T.panel("Record a trade", trade_form_html, pid="panel-trade"),
+            T.panel("Cash in and out", cash_form_html, pid="panel-cash"),
             T.panel("How you are doing",
                     journal_html or '<div class="empty">Nothing logged yet.</div>',
                     grow=True),
@@ -576,15 +584,33 @@ def render_brief(
         "The numbers behind every gate"))
 
     regime_kind = {"RISK-ON": "good", "RISK-OFF": "bad"}.get(regime.label, "warn")
+
+    # The top bar states facts about YOUR account. It used to show the ticket's
+    # leftover cash and the ticket's fees, which are properties of a suggestion you
+    # have not taken -- sitting under headings that read as your balance.
+    stats = [(regime.label, f"deploy {regime.deploy_pct:.0%}", regime_kind)]
+    if perf is not None:
+        stats.append(("Cash", rp(perf.cash), ""))
+        stats.append(("Holdings", rp(perf.position_value), ""))
+    else:
+        stats.append(("Paid in", rp(capital), ""))
+
+    # What the data is, not when the page was drawn. The page redraws in two seconds
+    # for reasons that have nothing to do with the market; the fetch behind it is
+    # what decides whether these prices are worth acting on.
+    subtitle = f"as of {when} · {universe_n} names screened"
+    if fetched_at is not None:
+        stamp = pd.Timestamp(fetched_at)
+        age_h = (pd.Timestamp.now() - stamp).total_seconds() / 3600
+        freshness = "" if age_h < 24 else f" · {int(age_h // 24)}d old, press Update data"
+        subtitle = (f"data as of {stamp:%a %d %b, %H:%M} · {universe_n} names"
+                    f"{freshness} · redrawn {when.split(', ')[-1]}")
+
     top = T.topbar(
-        "IDX Terminal",
-        f"as of {when} · {universe_n} names screened",
-        [
-            (regime.label, f"deploy {regime.deploy_pct:.0%}", regime_kind),
-            ("Cash", rp(allocation.cash_left if allocation else capital), ""),
-            ("Est. fees", rp(fees.total), ""),
-        ],
+        "IDX Terminal", subtitle, stats,
         placeholder_capital=placeholder_capital,
+        stale=fetched_at is not None and (
+            pd.Timestamp.now() - pd.Timestamp(fetched_at)).total_seconds() > 86400,
     )
 
     ticks = []

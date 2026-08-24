@@ -118,7 +118,7 @@ def rail(pages: Sequence[Page], active: str = "") -> str:
 
 
 def topbar(title: str, subtitle: str, stats: Sequence[Tuple[str, str, str]] = (),
-           placeholder_capital: bool = False) -> str:
+           placeholder_capital: bool = False, stale: bool = False) -> str:
     """
     Identity on the left, state on the right.
 
@@ -136,14 +136,15 @@ def topbar(title: str, subtitle: str, stats: Sequence[Tuple[str, str, str]] = ()
         for k, v, kind in stats
     )
     # Both refresh buttons carry their real cost. "Rebuild" reads the journal and
-    # redraws; "Re-run" fetches 49 tickers. Hiding that difference behind one button
-    # would make every trade you record cost forty seconds.
+    # redraws; "Update data" fetches 49 tickers. Hiding that difference behind one
+    # button would make every trade you record cost forty seconds.
     refresh = (
         '<div class="refresh" id="refresh-controls" hidden>'
         '<button type="button" id="btn-rebuild" title="Redraw from what is already '
         'loaded. No network.">Rebuild <span class="cost">~2s</span></button>'
-        '<button type="button" id="btn-rerun" title="Fetch fresh prices and rank '
-        'again.">Re-run screen <span class="cost">~40s</span></button>'
+        f'<button type="button" id="btn-rerun"{" class=due" if stale else ""} '
+        'title="Fetch fresh prices and rank again.">Update data '
+        '<span class="cost">~40s</span></button>'
         '<span id="refresh-msg" class="note"></span></div>'
     )
     # The banner used to sit only on the Markets ticket, which is not the page
@@ -587,6 +588,16 @@ SHELL_JS = """
   }
   var rpFmt=function(v){return "Rp"+Math.round(v).toLocaleString("en-US");};
 
+  // Shared scope on purpose. The trade form and the cash form both look elements up
+  // and both build previews, and a helper declared inside one of them is a
+  // ReferenceError in the other -- which a syntax check cannot see and which shows
+  // up only as a preview that silently never fills in.
+  var $=function(id){return document.getElementById(id);};
+
+  function row(k,v,cls){
+    return '<div class="row'+(cls?" "+cls:"")+'"><span>'+k+"</span><span>"+v+"</span></div>";
+  }
+
   // Navigation happens HERE, never in Python. pywebview delivers a call's reply with
   // evaluate_js placed outside its own try/except, and that waits for the page to be
   // "loaded" -- so navigating from inside a call pulls the page out from under its
@@ -654,7 +665,6 @@ SHELL_JS = """
   var form=document.getElementById("trade-form");
   if(form) withApi(function(API){
     var api=function(){return API;};
-    var $=function(id){return document.getElementById(id);};
     var out=$("tf-preview"), msg=$("tf-msg"), go=$("tf-submit");
     function fields(){
       return {
@@ -664,9 +674,6 @@ SHELL_JS = """
         on_date:$("tf-date").value, note:$("tf-note").value,
         source:$("tf-source").value
       };
-    }
-    function row(k,v,cls){
-      return '<div class="row'+(cls?" "+cls:"")+'"><span>'+k+"</span><span>"+v+"</span></div>";
     }
     function preview(){
       var f=fields();
@@ -746,6 +753,78 @@ SHELL_JS = """
         label.textContent=r.message; undo.disabled=false;
       });
     });
+  });
+
+  // ---- cash in and out ----------------------------------------------------
+  // Capital comes from this ledger, so recording a deposit re-sizes every lot count
+  // on the page. Costed by Python for the same reason the trade preview is: the
+  // "you have paid in X in total" refusal has to agree with what actually records.
+  var cashForm=document.getElementById("cash-form");
+  if(cashForm) withApi(function(API){
+    var amount=$("cf-amount"), date=$("cf-date"), note=$("cf-note"),
+        out=$("cf-preview"), go=$("cf-submit"), msg=$("cf-msg");
+
+    function kind(){
+      var el=document.querySelector("input[name=cf-kind]:checked");
+      return el?el.value:"DEPOSIT";
+    }
+    function preview(){
+      if(!amount.value){ out.innerHTML=""; go.disabled=true; return; }
+      API.preview_cash(kind(),amount.value,date.value).then(function(r){
+        if(!r.ok){
+          out.innerHTML='<span class="pricewarn">'+esc(r.message)+"</span>";
+          go.disabled=true; return;
+        }
+        var d=r.data;
+        var html=row("Capital now",rpFmt(d.capital_now))+
+                 row("Capital after",rpFmt(d.capital_after),"total")+
+                 row("Cash free after",rpFmt(d.free_after));
+        if(r.message){ html+='<div class="pricewarn">'+esc(r.message)+"</div>"; }
+        out.innerHTML=html; go.disabled=false;
+      });
+    }
+    ["cf-amount","cf-date"].forEach(function(id){
+      $(id).addEventListener("input",preview);
+    });
+    [].forEach.call(document.querySelectorAll("input[name=cf-kind]"),function(el){
+      el.addEventListener("change",preview);
+    });
+
+    go.addEventListener("click",function(){
+      go.disabled=true; msg.textContent="Recording...";
+      API.record_cash(kind(),amount.value,date.value,note.value).then(function(r){
+        if(r.ok && r.data && goTo(r.data.url, r.message)) return;
+        msg.textContent=r.message;
+        msg.style.color=r.ok?"var(--good)":"var(--bad)";
+        if(r.ok){ amount.value=""; note.value=""; out.innerHTML=""; }
+        go.disabled=false;
+      });
+    });
+  });
+
+  // ---- remove one cash entry ----------------------------------------------
+  document.addEventListener("click",function(ev){
+    var btn=ev.target.closest?ev.target.closest(".rm-cash"):null;
+    if(!btn) return;
+    ev.preventDefault();
+    var what=(btn.dataset.kind==="DEPOSIT"?"Paid in ":"Took out ")+
+             rpFmt(Number(btn.dataset.amount))+" on "+btn.dataset.date;
+    if(!window.confirm("Remove this entry?\\n\\n"+what+
+                       "\\n\\nThis changes your capital.")) return;
+    btn.disabled=true; btn.textContent="...";
+    withApi(function(API){
+      API.remove_cash(Number(btn.dataset.index),btn.dataset.kind,
+                      Number(btn.dataset.amount),btn.dataset.date)
+        .then(function(r){
+          if(r.ok && r.data && goTo(r.data.url, r.message)) return;
+          btn.disabled=false; btn.textContent="remove";
+          var say=btn.parentNode.querySelector(".rm-why");
+          if(!say){ say=document.createElement("div"); say.className="note rm-why";
+                    btn.parentNode.appendChild(say); }
+          say.textContent=r.message;
+          say.style.color=r.ok?"var(--muted)":"var(--bad)";
+        });
+    },function(){ btn.disabled=false; btn.textContent="remove"; });
   });
 
   // ---- remove any one trade, not only the newest --------------------------

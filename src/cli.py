@@ -55,6 +55,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "anything valued on a stale session")
     p.add_argument("--browser", action="store_true",
                    help="Open the brief in your browser instead of a native window")
+    p.add_argument("--refresh", action="store_true",
+                   help="Fetch fresh data instead of reopening the last screen. "
+                        "The app normally opens from what it already has; this is "
+                        "the same thing the Update data button does.")
     return p
 
 

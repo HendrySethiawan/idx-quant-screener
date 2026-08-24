@@ -39,15 +39,6 @@ def _use_utf8_console() -> None:
             pass
 
 
-def _can_prompt() -> bool:
-    """A prompt needs a window. Without pywebview there is nothing to ask with."""
-    try:
-        from desktop import available
-        return available()
-    except Exception:
-        return False
-
-
 def main() -> None:
     _use_utf8_console()
 
@@ -58,6 +49,11 @@ def main() -> None:
     bootstrap()
 
     settings = load_settings("configs/default.yaml")
+
+    # Capital comes from the cash ledger when there is one. Done here, before any
+    # subcommand, because every one of them sizes something against it.
+    from portfolio.cash import sync_capital
+    sync_capital(settings)
 
     # Journal subcommands run without touching the screener, so recording a trade
     # at lunch does not wait on 49 tickers of network fetch.
@@ -83,23 +79,28 @@ def main() -> None:
     logger = setup_logger(settings.log_dir, settings.log_level)
     logger.info("Starting idx_quant_screener")
 
-    # ---- capital, before anything is fetched --------------------------------
-    # A run on the shipped placeholder produces a ticket sized to money that is not
-    # yours. Ask once, up front, so nobody waits forty seconds for that.
-    from first_run import (apply_capital, ask_capital, should_ask, warn_text)
-
-    wants_window = not args.browser
+    # ---- capital ------------------------------------------------------------
+    # No prompt any more. It was a second pywebview window opened in the same
+    # process that later opens the main one, it was one click to dismiss, and
+    # dismissing it left the run sized for Rp100,000,000 of somebody else's money.
+    # The banner on the page now carries this, next to the form that fixes it.
+    from first_run import should_ask, warn_text
     if should_ask(settings):
-        chosen = ask_capital(logger) if (wants_window and _can_prompt()) else None
-        if chosen:
-            apply_capital(chosen, settings)
-            logger.info(f"Capital set to Rp{chosen:,.0f} (configs/user.yaml)")
-        else:
-            # Declined, or a path that must never block: warn loudly and continue.
-            print(warn_text(settings))
+        print(warn_text(settings))
 
-    from runner import full_run, render
-    ctx = full_run(settings, args, logger)
+    # ---- the screen ---------------------------------------------------------
+    # Reopened from the last fetch, not fetched again. Opening the app is not a
+    # request for fresh data -- pressing Update data is.
+    from runner import full_run, load_snapshot, render, save_snapshot
+
+    ctx = None if getattr(args, "refresh", False) else load_snapshot(settings, args, logger)
+    if ctx is None:
+        ctx = full_run(settings, args, logger)
+        save_snapshot(ctx)
+    elif logger:
+        logger.info(f"Opened the screen saved at {ctx.fetched_at:%d %b %Y %H:%M} "
+                    f"- press Update data to fetch again")
+
     plan_holder = render(ctx)
     plan, perf, brief_path = ctx.plan, ctx.perf, plan_holder
     df = ctx.df
@@ -146,7 +147,7 @@ def main() -> None:
         print("\nOpening it in your browser...", flush=True)
     else:
         print("\nOpening the terminal window - close it to exit.", flush=True)
-        print("  Rebuild redraws in ~2s; Re-run screen fetches fresh prices.", flush=True)
+        print("  Rebuild redraws in ~2s; Update data fetches fresh prices.", flush=True)
 
     route = open_result(
         brief_path, prefer_desktop=not args.browser, title="IDX Terminal",

@@ -8,6 +8,7 @@ money. Both halves of that -- no way to set it, no warning that it was unset -- 
 what these guard.
 """
 import builtins
+from pathlib import Path
 
 import pytest
 import yaml
@@ -102,12 +103,29 @@ def test_nothing_here_reads_stdin(monkeypatch, settings_mock):
     warn_text(settings_mock)
 
 
-def test_the_prompt_returns_none_when_there_is_no_window(monkeypatch):
-    """No pywebview, no prompt -- and no exception either."""
-    import sys
-    monkeypatch.setitem(sys.modules, "webview", None)
-    from first_run import ask_capital
-    assert ask_capital() is None
+def test_there_is_no_prompt_window_left_to_open():
+    """
+    The pre-flight capital window is gone and must not come back.
+
+    It opened a second pywebview window in the same process that goes on to open
+    the main one, and it was one click to dismiss -- after which the run was sized
+    for Rp100,000,000 of somebody else's money. Recording a deposit sets capital
+    now. A test, because deleting it is only half the decision.
+    """
+    import first_run
+
+    assert not hasattr(first_run, "ask_capital")
+    # The docstring explains why it went, so look for the code rather than the word.
+    source = Path(first_run.__file__).read_text(encoding="utf-8")
+    assert "import webview" not in source
+    assert "create_window" not in source
+
+
+def test_main_does_not_open_a_window_before_the_screen():
+    """The other half: __main__ must not have kept a call to it."""
+    source = Path(__file__).resolve().parents[1] / "src" / "__main__.py"
+    text = source.read_text(encoding="utf-8")
+    assert "ask_capital" not in text
 
 
 def test_the_warning_names_the_number_and_the_file(settings_mock):

@@ -129,6 +129,11 @@ class Settings(BaseSettings):
         "holdings_path": "current_holdings.yaml",
         "journal_path": "data/journal.csv",
         "marks_path": "data/journal_marks.csv",
+        # Deposits and withdrawals. Once this file has a row, `capital_rp` above
+        # is derived from it rather than read -- see portfolio/cash.sync_capital.
+        "cash_path": "data/cash.csv",
+        # The last fetched screen, so launching does not mean fetching.
+        "snapshot_path": "data/snapshot/run.joblib",
         # Closed round-trips required before the report will name a winner
         # between the screener's picks and the user's own. At 4-8 trades a month
         # anything less is noise.

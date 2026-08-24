@@ -392,9 +392,86 @@ def trade_form(today: str = "") -> str:
   <button type="button" id="undo-last" disabled>Remove last trade</button>
   <span id="undo-what" class="note">checking&hellip;</span>
 </div>
-<div class="note">Only the most recent entry can be removed. An older one may already
-have been matched against a sale, and undoing it would leave the round-trip maths
-pointing at a purchase that no longer exists.</div>"""
+<div class="note">Any row in the log below can be removed, not only this one. A buy
+that a later sale has already been matched against is refused, because the round-trip
+maths would quietly come up short.</div>"""
+
+
+def cash_form(today: str = "") -> str:
+    """
+    Money in and money out -- and therefore capital.
+
+    Capital used to be a number typed into a config file, which put the figure that
+    sizes every recommendation somewhere other than the money it describes. Here it
+    has a date and a reason, and it is the ledger that defines it.
+    """
+    today = today or pd.Timestamp.today().strftime("%Y-%m-%d")
+    return f"""
+<form class="trade-form" id="cash-form" onsubmit="return false">
+  <div class="tf-row">
+    <label><input type="radio" name="cf-kind" value="DEPOSIT" checked> Paid in</label>
+    <label><input type="radio" name="cf-kind" value="WITHDRAW"> Took out</label>
+  </div>
+  <div class="tf-row">
+    <label>Amount <input id="cf-amount" type="number" min="1" step="1"
+           placeholder="10000000"></label>
+    <label>Date <input id="cf-date" type="date" value="{_e(today)}"></label>
+  </div>
+  <div class="tf-row">
+    <label style="flex:1">Note <input id="cf-note" placeholder="opening balance"
+           autocomplete="off"></label>
+  </div>
+  <div id="cf-preview" class="tf-preview"></div>
+  <div class="tf-row">
+    <button type="button" id="cf-submit" class="tf-go">Record</button>
+    <span id="cf-msg" class="note"></span>
+  </div>
+</form>
+<div class="note">What you have paid in is what every lot count is sized against.
+Record your opening balance here and the placeholder figure goes away. Every entry
+is listed under <strong>Money in and out</strong> in your ledger, and any of them
+can be removed.</div>"""
+
+
+def cash_table(cash) -> str:
+    """The ledger, oldest first, each row removable."""
+    from portfolio.cash import totals as _totals
+
+    if cash is None or getattr(cash, "empty", True):
+        return '<div class="empty">No deposits or withdrawals recorded.</div>'
+
+    df = cash.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.sort_values("date", kind="stable").reset_index(drop=True)
+
+    body = ""
+    for i, r in df.iterrows():
+        deposit = str(r["kind"]).upper() == "DEPOSIT"
+        amount = float(r["amount_rp"])
+        body += (
+            f'<tr><td class="num"><span class="note">{r["date"]:%d %b %y}</span></td>'
+            f'<td><span class="act {"buy" if deposit else "sell"}">'
+            f'{"IN" if deposit else "OUT"}</span></td>'
+            f'<td class="num">{_signed(amount if deposit else -amount)}</td>'
+            f'<td><span class="note">{_e("" if pd.isna(r["note"]) else str(r["note"]))}'
+            "</span></td>"
+            f'<td><button type="button" class="rm-cash" data-index="{int(i)}" '
+            f'data-kind="{"DEPOSIT" if deposit else "WITHDRAW"}" '
+            f'data-amount="{amount}" data-date="{r["date"]:%Y-%m-%d}" '
+            f'title="Remove this entry">remove</button></td></tr>'
+        )
+
+    t = _totals(df)
+    return (
+        '<div class="scroll"><table><thead><tr>'
+        '<th class="num">Date</th><th>Way</th><th class="num">Amount</th>'
+        '<th>Why</th><th></th>'
+        f"</tr></thead><tbody>{body}</tbody>"
+        f'<tfoot><tr><td colspan="2">Paid in, net</td>'
+        f'<td class="num"><strong>{rp(t["net"])}</strong></td>'
+        f'<td colspan="2"><span class="note">{rp(t["deposits"])} in, '
+        f'{rp(t["withdrawals"])} out</span></td></tr></tfoot></table></div>'
+    )
 
 
 def cli_fallback() -> str:
@@ -424,8 +501,11 @@ def journal_panels(settings, prices: Optional[Dict[str, float]] = None) -> str:
     from portfolio import journal as J
     from portfolio.ledger import monthly_realized, monthly_totals, open_positions
 
+    from portfolio.cash import cash_path, load_cash
+
     journal_path, _, _ = _paths(settings)
     journal = J.load_journal(journal_path)
+    cash = load_cash(cash_path(settings))
     closed = J.closed_trades(journal)
     monthly = monthly_realized(closed)
     totals = monthly_totals(monthly)
@@ -436,4 +516,5 @@ def journal_panels(settings, prices: Optional[Dict[str, float]] = None) -> str:
         f'<h2>Still open</h2>{open_positions_table(positions)}'
         f'<h2>Every completed round-trip</h2>{closed_trades_table(closed)}'
         f'<h2>Everything you recorded</h2>{trade_log_table(journal)}'
+        f'<h2>Money in and out</h2><div id="cash-log">{cash_table(cash)}</div>'
     )

@@ -6,7 +6,10 @@ guarding is structural: that a destination cannot become unreachable, that an em
 panel does not leave a frame around nothing, and that the one CSS rule the whole
 layout rests on -- the page cannot scroll, panels can -- is actually present.
 """
+import json
 import re
+import shutil
+import subprocess
 
 import pytest
 
@@ -282,3 +285,102 @@ def test_every_bridge_method_the_script_calls_actually_exists():
     exposed = {n for n in dir(TerminalAPI) if not n.startswith("_")
                and callable(getattr(TerminalAPI, n))}
     assert called <= exposed, f"called but not exposed: {sorted(called - exposed)}"
+
+
+# --------------------------------------------------- the script actually runs
+# `node --check` proves SHELL_JS parses. It cannot see a name used outside the
+# block it was declared in: `row` and `$` were both declared inside the trade
+# form's handler and then used by the cash form, which parses perfectly and dies
+# with a ReferenceError the moment somebody types in the box. Nothing on screen
+# says so -- the preview simply never fills in.
+#
+# So the script is loaded against a stub DOM and every handler it registers is
+# fired, which is the only way a scope error shows itself.
+_DRIVER = r"""
+const fs = require('fs');
+const src = fs.readFileSync(process.argv[2], 'utf8');
+
+const errors = [];
+const handlers = [];
+
+// Elements carrying a JSON payload only exist on pages that have that data, and
+// the shell guards each with `if (raw)`. Returning a stub for them would hand
+// JSON.parse an empty string, which is a fault in this harness rather than in the
+// shell -- so they are absent, as they are on the Portfolio page.
+const PAYLOAD_IDS = new Set(['trace-data', 'wi-data']);
+
+function el(id){
+  if (PAYLOAD_IDS.has(id)) return null;
+  return {
+    id: id, value: '', textContent: '', innerHTML: '', disabled: false,
+    hidden: false, checked: true, dataset: {index:'0', ticker:'BBRI.JK',
+      price:'4150', date:'2026-08-20', kind:'DEPOSIT', amount:'1000000'},
+    style: {}, parentNode: null,
+    addEventListener: (kind, fn) => handlers.push([id, kind, fn]),
+    querySelector: () => null, querySelectorAll: () => [],
+    appendChild: () => {}, closest: () => null, outerHTML: '',
+  };
+}
+
+const reply = () => Promise.resolve({ok:true, message:'', data:{
+  gross_rp:1, fee_rp:1, stamp_rp:0, net_rp:-1, action:'BUY', shares:100,
+  price:4150, break_even:4203, break_even_move_pct:1.3,
+  capital_now:0, capital_after:1000000, free_now:0, free_after:1000000,
+  trades:[], entries:[], totals:{}, url:'', fields:[],
+}});
+
+const api = new Proxy({}, { get: () => reply });
+
+global.window = {
+  pywebview: {api: api}, addEventListener: (k, fn) => handlers.push(['window', k, fn]),
+  confirm: () => false, sessionStorage: {getItem:()=>null, setItem:()=>{}},
+  location: {replace: () => {}}, __idxShellRan: false,
+};
+global.sessionStorage = window.sessionStorage;
+global.location = window.location;
+global.document = {
+  getElementById: el, querySelector: () => el('q'), querySelectorAll: () => [],
+  createElement: el, addEventListener: (k, fn) => handlers.push(['document', k, fn]),
+  body: el('body'), documentElement: el('html'),
+};
+
+try { eval(src); } catch (e) { errors.push('load: ' + e.message); }
+
+// SHELL_JS wraps itself in try/catch and files the failure here rather than
+// letting it escape, which is why a scope error is invisible from outside.
+if (window.__idxError) { errors.push('shell: ' + window.__idxError); }
+if (!window.__idxShellRan) { errors.push('the shell did not reach its last line'); }
+
+// Fire everything the script registered. A handler that references a name from
+// another scope throws here and nowhere else.
+for (const [id, kind, fn] of handlers) {
+  try {
+    fn({target: el(id), preventDefault(){}, currentTarget: el(id)});
+  } catch (e) {
+    if (e instanceof ReferenceError || e instanceof TypeError) {
+      errors.push(id + ' ' + kind + ': ' + e.message);
+    }
+  }
+}
+
+console.log(JSON.stringify(errors));
+"""
+
+
+def test_no_handler_references_a_name_from_another_scope(tmp_path):
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not available")
+
+    script = tmp_path / "shell.js"
+    script.write_text(T.SHELL_JS, encoding="utf-8")
+    driver = tmp_path / "drive.js"
+    driver.write_text(_DRIVER, encoding="utf-8")
+
+    out = subprocess.run([node, str(driver), str(script)],
+                         capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, f"the driver itself failed:\n{out.stderr}"
+
+    errors = json.loads(out.stdout.strip().splitlines()[-1])
+    assert errors == [], (
+        "a handler referenced something it cannot see:\n  " + "\n  ".join(errors))

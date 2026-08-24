@@ -70,11 +70,26 @@ DRIVER = """
       document.getElementById(id).dispatchEvent(new Event('input',{bubbles:true}));
     });
   }
+  // The cash form defines capital, so its preview has to be driven by the page's
+  // own handler too -- a helper declared in the wrong scope parses fine and then
+  // silently never fills the box in.
+  function fillCash(amount){
+    document.querySelector("input[name=cf-kind][value=DEPOSIT]").checked = true;
+    document.getElementById('cf-amount').value = amount;
+    document.getElementById('cf-date').value   = '2026-08-23';
+    ['cf-amount','cf-date'].forEach(function(id){
+      document.getElementById(id).dispatchEvent(new Event('input',{bubbles:true}));
+    });
+  }
   ready(function(){
     var api = window.pywebview.api;
     if(!document.getElementById('trade-form')){
       api.report({stage:'no-form'}); return;
     }
+    if(!document.getElementById('cash-form')){
+      api.report({stage:'no-cash-form'}); return;
+    }
+    fillCash('10000000');
     // Record twice. One record was the whole of the previous check, and the
     // reported symptom was that the SECOND never worked.
     fill('BBRI', '3', '4150');
@@ -85,11 +100,17 @@ DRIVER = """
         fill('TLKM', '2', '2600');
         setTimeout(function(){
           api.log_trade('BUY','TLKM','2','2600','2026-08-23','second','tool').then(function(r2){
+            var cv = document.getElementById('cf-preview');
+            var cashPreview = cv ? (cv.textContent || '') : '(no #cf-preview element)';
+            api.record_cash('DEPOSIT','10000000','2026-08-23','harness').then(function(r4){
             api.rebuild().then(function(r3){
               api.report({
                 stage: 'done',
                 preview_filled: preview.indexOf('Gross') !== -1,
                 preview_text: preview.slice(0, 160),
+                cash_preview_filled: cashPreview.indexOf('Capital') !== -1,
+                cash_preview_text: cashPreview.slice(0, 160),
+                cash_ok: !!r4.ok, cash_msg: r4.message,
                 go_disabled: document.getElementById('tf-submit').disabled,
                 shell_ran: !!window.__idxShellRan,
                 shell_error: window.__idxError || '',
@@ -99,6 +120,7 @@ DRIVER = """
                 rebuild_ok: !!r3.ok,
                 rebuild_url: !!(r3.data && r3.data.url)
               });
+            });
             });
           });
         }, 700);
@@ -144,15 +166,20 @@ def main() -> int:
     settings.account = {**settings.account,
                         "journal_path": str(tmp / "journal.csv"),
                         "marks_path": str(tmp / "marks.csv"),
-                        "holdings_path": str(tmp / "holdings.yaml")}
+                        "holdings_path": str(tmp / "holdings.yaml"),
+                        "cash_path": str(tmp / "cash.csv"),
+                        "snapshot_path": str(tmp / "run.joblib")}
 
     # `--browser` renders the CLI fallback instead of the form, so a page generated
     # that way has nothing to drive. Saying which artifact is wrong beats the JS
     # reporting a bare "no-form" from inside the window.
-    if 'id="trade-form"' not in BRIEF.read_text(encoding="utf-8"):
-        print(f"{BRIEF} has no trade form -- it was generated with --browser.")
-        print("Regenerate it by launching the app normally, then verify.")
-        return 2
+    page_html = BRIEF.read_text(encoding="utf-8")
+    for needed, what in (('id="trade-form"', "trade form"),
+                         ('id="cash-form"', "cash form")):
+        if needed not in page_html:
+            print(f"{BRIEF} has no {what} -- it was generated with --browser.")
+            print("Regenerate it by launching the app normally, then verify.")
+            return 2
 
     page = tmp / "brief.html"
     shutil.copyfile(BRIEF, page)
@@ -169,7 +196,8 @@ def main() -> int:
             RESULT.update({"stage": "driver-failed", "note": str(e)})
         for _ in range(120):
             time.sleep(0.25)
-            if RESULT.get("stage") in ("done", "no-form", "driver-failed"):
+            if RESULT.get("stage") in ("done", "no-form", "no-cash-form",
+                                       "driver-failed"):
                 break
         try:
             window.destroy()
@@ -181,11 +209,14 @@ def main() -> int:
 
     journal = tmp / "journal.csv"
     rows = pd.read_csv(journal) if journal.exists() else pd.DataFrame()
+    cash_file = tmp / "cash.csv"
+    cash_rows = pd.read_csv(cash_file) if cash_file.exists() else pd.DataFrame()
 
     print("\n--- what the real page did ---")
     print(json.dumps(RESULT, indent=2))
     print(f"\npreview_trade calls the PAGE made on its own: {Probe.page_previews}")
     print(f"journal rows written: {len(rows)}")
+    print(f"cash rows written: {len(cash_rows)}")
     if not rows.empty:
         print(rows[["date", "ticker", "action", "lots", "price",
                     "fee_rp", "stamp_rp", "net_rp"]].to_string(index=False))
@@ -208,10 +239,16 @@ def main() -> int:
           and RESULT.get("first_ok") is True
           and RESULT.get("second_ok") is True
           and len(rows) == 2
-          and set(rows["ticker"]) == {"BBRI.JK", "TLKM.JK"})
+          and set(rows["ticker"]) == {"BBRI.JK", "TLKM.JK"}
+          # Capital comes from this ledger, so the cash form is not optional
+          # furniture -- if its preview is dead, the number every lot count is
+          # sized against is set blind.
+          and RESULT.get("cash_preview_filled") is True
+          and RESULT.get("cash_ok") is True
+          and len(cash_rows) == 1)
 
-    print("\n" + ("PASS - two trades recorded through the real page, and the bridge "
-                  "survived a rebuild call."
+    print("\n" + ("PASS - two trades and a deposit recorded through the real page, "
+                  "and the bridge survived a rebuild call."
                   if ok else "FAIL - the bridge did not work end to end."))
     return 0 if ok else 1
 

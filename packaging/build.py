@@ -99,10 +99,46 @@ def verify(tree: Path) -> list[str]:
     return problems
 
 
+# Files that mean somebody is using this folder as their app, not as a build output.
+_USER_DATA = ("configs/user.yaml", "data/journal.csv", "data/cash.csv")
+
+
+def user_data_in(folder: Path) -> list:
+    """
+    The reader's own files found inside a build directory.
+
+    This function exists because of a real loss. `dist/` is deleted before every
+    build, and the app used to keep `configs/user.yaml` and `data/journal.csv`
+    beside the exe -- so anybody running the app straight out of `dist/` had their
+    capital and their trade log destroyed by the next rebuild, silently and
+    repeatedly. The app now keeps those in a per-user folder (see core/paths.py);
+    this is the second line of defence for anyone who unzips a build into `dist/`.
+    """
+    found = []
+    for rel in _USER_DATA:
+        path = folder / rel
+        if not path.exists():
+            continue
+        # A journal with only its header row is what a fresh run leaves behind.
+        if path.suffix == ".csv" and len(path.read_text(
+                encoding="utf-8", errors="replace").strip().splitlines()) < 2:
+            continue
+        found.append(path)
+    return found
+
+
 def build() -> None:
     for stale in (ROOT / "build", ROOT / "dist"):
-        if stale.exists():
-            shutil.rmtree(stale)
+        if not stale.exists():
+            continue
+        owned = user_data_in(stale) + user_data_in(stale / APP)
+        if owned:
+            raise SystemExit(
+                f"\n{stale} holds files that are not this build's to delete:\n"
+                + "\n".join(f"  {p}" for p in owned)
+                + "\n\nMove them somewhere safe first. Deleting them is how a "
+                  "rebuild used to erase somebody's capital and trade log.\n")
+        shutil.rmtree(stale)
 
     print(f"Building {APP}...")
     result = subprocess.run(
@@ -142,21 +178,33 @@ would rather build it yourself.
 
 YOUR CAPITAL
 ------------
-Open configs\\user.yaml (create it if it is not there) and put in:
+Open the Portfolio page and record what you have paid in under "Cash in and
+out". That figure is what every lot count is sized against, and it is the only
+place capital is set. Record a withdrawal the same way when you take money out.
 
-    account:
-      capital_rp: 25000000     <- your number goes here
+Until you do, the app is sized for a placeholder of Rp100,000,000 and says so in
+red on every page.
 
-Everything in configs\\default.yaml can be changed the same way. Your capital,
-your holdings and your trade journal stay in this folder and are never sent
+OPENING IT, AND UPDATING IT
+---------------------------
+The app opens from the last screen it fetched, which takes about two seconds.
+Press "Update data" when you want fresh prices - that is the part that takes
+about forty seconds and needs an internet connection.
+
+WHERE YOUR FILES LIVE
+---------------------
+Not in this folder. Your capital, journal and cache are kept in
+
+    %LOCALAPPDATA%\\{APP}\\
+
+so that replacing this folder with a newer version cannot touch them. Paste
+that path into Explorer's address bar to open it. Nothing there is ever sent
 anywhere.
 
 WHAT IS IN THIS FOLDER
 ----------------------
   {APP}.exe        the program
-  configs\\          default.yaml (edit), user.yaml (yours)
-  data\\             price cache, the generated terminal, your journal
-  logs\\             run logs
+  configs\\          default.yaml, a copy of the shipped settings
   _internal\\        the Python runtime - leave it alone
 
 NOT INVESTMENT ADVICE

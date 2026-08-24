@@ -138,14 +138,18 @@ class TerminalAPI:
         ctx = self._ctx
         if ctx is None:
             return _fail("Nothing to re-run - restart the app.")
-        from runner import full_run, render
+        from runner import full_run, render, save_snapshot
         if self._logger:
-            self._logger.info("Re-running the screen from the window")
+            self._logger.info("Updating the data from the window")
         fresh = full_run(self._settings, ctx.args, self._logger)
         path = render(fresh)
+        # Saved here, not only at startup: this is the fetch the next launch will
+        # open from, and not writing it would mean updating now and waiting again
+        # tomorrow for data already on this machine.
+        save_snapshot(fresh)
         set_context(fresh)
         self._prices = dict(fresh.plan["prices"]) if fresh.plan else {}
-        return _ok("Re-ran the screen.", path=str(path), url=self._url_for(path))
+        return _ok("Updated.", path=str(path), url=self._url_for(path))
 
     # ------------------------------------------------------------------ paths
     def _paths(self):
@@ -429,6 +433,135 @@ class TerminalAPI:
         return (f"You hold {held // 100} lot of {trade['ticker']}, which is fewer "
                 f"than the {trade['lots']} being sold. Nothing was recorded.")
 
+    # -------------------------------------------------------------------- cash
+    #
+    # Deposits and withdrawals, and therefore capital. This used to be a number typed
+    # into configs/user.yaml, which meant the figure every recommendation was sized
+    # against lived somewhere other than the money it described -- and a rebuild of
+    # the app could quietly erase it. Recording a deposit is setting capital now.
+    def _cash_path(self):
+        from portfolio.cash import cash_path
+        return cash_path(self._settings)
+
+    def _cash(self):
+        from portfolio.cash import load_cash
+        return load_cash(self._cash_path())
+
+    def _has_cash(self) -> bool:
+        return not self._cash().empty
+
+    def _apply_capital(self) -> float:
+        """Re-derive capital after any change, so the next render is sized right."""
+        from portfolio.cash import sync_capital
+        sync_capital(self._settings)
+        return float(self._settings.capital_rp)
+
+    def _free_cash(self) -> float:
+        """Paid in, plus the signed effect of every trade. What is actually spendable."""
+        from portfolio.cash import net_paid_in
+        journal = self._journal()
+        traded = float(journal["net_rp"].fillna(0).sum()) if not journal.empty else 0.0
+        return net_paid_in(self._cash()) + traded
+
+    @guarded
+    def preview_cash(self, kind: str, amount: Any, on_date: str = "") -> Dict[str, Any]:
+        """What this would do to capital and to available cash, before recording it."""
+        from portfolio.cash import build_entry, net_paid_in, would_overdraw
+
+        entry = build_entry(kind, self._as_float(amount, "Amount"), on_date or None)
+        ledger = self._cash()
+
+        if would_overdraw(ledger, entry):
+            return _fail(
+                f"You have paid in Rp{net_paid_in(ledger):,.0f} in total, so "
+                f"Rp{entry['amount_rp']:,.0f} cannot come out. Nothing was recorded.")
+
+        delta = entry["amount_rp"] if entry["kind"] == "DEPOSIT" else -entry["amount_rp"]
+        free = self._free_cash()
+
+        note = ""
+        if entry["kind"] == "WITHDRAW" and entry["amount_rp"] > free + 0.005:
+            # A warning, not a veto: your broker is the authority on what has
+            # settled, and this tool only knows the trades you have told it about.
+            note = (f"That is more than the Rp{max(free, 0):,.0f} this tool thinks "
+                    f"you have free. Check your broker before recording it.")
+
+        return _ok(note,
+                   kind=entry["kind"], amount_rp=entry["amount_rp"],
+                   date=entry["date"],
+                   capital_now=round(net_paid_in(ledger), 2),
+                   capital_after=round(net_paid_in(ledger) + delta, 2),
+                   free_now=round(free, 2), free_after=round(free + delta, 2))
+
+    @guarded
+    def record_cash(self, kind: str, amount: Any, on_date: str = "",
+                    note: str = "") -> Dict[str, Any]:
+        """Record it, re-derive capital, and hand back a rebuilt page."""
+        from portfolio.cash import append_entry, build_entry, net_paid_in, would_overdraw
+
+        entry = build_entry(kind, self._as_float(amount, "Amount"), on_date or None, note)
+        ledger = self._cash()
+        if would_overdraw(ledger, entry):
+            return _fail(
+                f"You have paid in Rp{net_paid_in(ledger):,.0f} in total, so "
+                f"Rp{entry['amount_rp']:,.0f} cannot come out. Nothing was recorded.")
+
+        append_entry(entry, self._cash_path())
+        capital = self._apply_capital()
+
+        verb = "Paid in" if entry["kind"] == "DEPOSIT" else "Took out"
+        message = (f"{verb} Rp{entry['amount_rp']:,.0f}. "
+                   f"Capital is now Rp{capital:,.0f}.")
+
+        rebuilt = self.rebuild()
+        if rebuilt["ok"]:
+            return _ok(message, url=rebuilt["data"]["url"], capital=capital)
+        return _ok(message, capital=capital)
+
+    @guarded
+    def list_cash(self, limit: int = 40) -> Dict[str, Any]:
+        """Every entry with the index `remove_cash` takes, oldest first."""
+        from portfolio.cash import recent, totals
+
+        ledger = self._cash()
+        if ledger.empty:
+            return _ok("Nothing recorded yet.", entries=[], totals=totals(ledger))
+
+        rows = []
+        for i, row in recent(ledger, limit).iterrows():
+            rows.append({
+                "index": int(i),
+                "date": pd.to_datetime(row["date"]).strftime("%Y-%m-%d"),
+                "kind": str(row["kind"]).upper(),
+                "amount_rp": float(row["amount_rp"]),
+                "note": "" if pd.isna(row["note"]) else str(row["note"]),
+                "label": (f"{str(row['kind']).lower()} of "
+                          f"Rp{float(row['amount_rp']):,.0f} on "
+                          f"{pd.to_datetime(row['date']):%d %b %Y}"),
+            })
+        return _ok("", entries=rows, totals=totals(ledger))
+
+    @guarded
+    def remove_cash(self, index: Any, kind: str = "", amount: Any = None,
+                    on_date: str = "") -> Dict[str, Any]:
+        """Remove one entry, then re-derive capital from what is left."""
+        from portfolio.cash import remove_entry_at
+
+        expect = {"kind": kind or None, "date": on_date or None,
+                  "amount_rp": None if amount in (None, "") else self._as_float(
+                      amount, "Amount")}
+        result = remove_entry_at(self._cash_path(), index, expect)
+        if not result["ok"]:
+            return _fail(result["message"])
+
+        capital = self._apply_capital()
+        message = f"{result['message']} Capital is now Rp{capital:,.0f}."
+
+        rebuilt = self.rebuild()
+        if rebuilt["ok"]:
+            return _ok(message, url=rebuilt["data"]["url"], capital=capital)
+        return _ok(message, capital=capital)
+
     # ------------------------------------------------------------------- other
     @guarded
     def snapshot(self) -> Dict[str, Any]:
@@ -508,6 +641,13 @@ class TerminalAPI:
         allowed = {p: k for p, _, k in self._EDITABLE}
         if dotted not in allowed:
             return _fail(f"{dotted} is not editable from here.")
+
+        # Once there is a cash ledger it owns capital. Letting this write too would
+        # leave two numbers describing the same money, free to disagree -- and the
+        # one on screen would depend on which was written last.
+        if dotted == "account.capital_rp" and self._has_cash():
+            return _fail("Capital comes from your cash ledger now. Record a deposit "
+                         "or a withdrawal on the Portfolio page instead.")
 
         value = self._coerce(raw, allowed[dotted], dotted)
         parts = dotted.split(".")

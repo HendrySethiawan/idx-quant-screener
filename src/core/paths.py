@@ -14,8 +14,16 @@ path becomes correct by construction. The alternative -- threading a base direct
 through six modules -- is a much larger change with many more places to get wrong,
 for the same result.
 
-Config files are copied *out* beside the exe on first run rather than read from
-inside the bundle. A config you cannot edit is not a config.
+Config files are copied *out* of the bundle on first run rather than read from
+inside it. A config you cannot edit is not a config.
+
+**The reader's files do not live beside the exe.** They used to, and it cost
+somebody their capital and their trade log: `packaging/build.py` deletes `dist/`
+before every build, and `dist/IDX Terminal/` was exactly where `configs/user.yaml`
+and `data/journal.csv` sat. Rebuilding the app erased the app's memory. Unzipping
+a new version over an old folder would have done the same. So when frozen those
+files live in `%LOCALAPPDATA%\\IDX Terminal\\`, which no build and no unzip can
+reach.
 """
 from __future__ import annotations
 
@@ -56,6 +64,70 @@ def app_dir() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+APP_FOLDER_NAME = "IDX Terminal"
+
+# Copied across from an older install that kept its files beside the exe.
+_MIGRATE: Tuple[str, ...] = ("configs", "data", "logs", "current_holdings.yaml")
+
+
+def data_dir() -> Path:
+    """
+    Where the reader's own files live: capital, journal, cash ledger, cache.
+
+    Frozen: a per-user folder outside any install directory. This is the whole
+    point -- see the module docstring. Falls back to the home directory on a
+    machine with no LOCALAPPDATA, because failing to start is not an option.
+
+    From source: the repo root, unchanged. Every relative path in the project
+    already assumes it, and moving a developer's working files would be a
+    surprise with no upside.
+    """
+    if not is_frozen():
+        return app_dir()
+
+    base = os.environ.get("LOCALAPPDATA") or ""
+    root = Path(base) if base else Path.home() / ".local" / "share"
+    return root / APP_FOLDER_NAME
+
+
+def migrate_from(source: Path, target: Path) -> List[Path]:
+    """
+    Move an older install's files into the per-user folder, once.
+
+    Only ever copies into a gap: anything already in `target` wins, so running
+    this twice is a no-op and a newer file is never clobbered by an older one.
+    Returns what was copied, for the log.
+    """
+    moved: List[Path] = []
+    if source.resolve() == target.resolve():
+        return moved
+
+    for rel in _MIGRATE:
+        src = source / rel
+        if not src.exists():
+            continue
+        dst = target / rel
+        try:
+            if src.is_dir():
+                for item in src.rglob("*"):
+                    if item.is_dir():
+                        continue
+                    out = dst / item.relative_to(src)
+                    if out.exists():
+                        continue
+                    out.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(item, out)
+                    moved.append(out)
+            elif not dst.exists():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(src, dst)
+                moved.append(dst)
+        except OSError:
+            # A file that cannot be copied is not a reason to refuse to start.
+            continue
+    return moved
+
+
 def bundled(relative: str) -> Path:
     """
     A read-only file that shipped inside the build.
@@ -76,8 +148,12 @@ def bootstrap(chdir: bool = True) -> List[Path]:
     reset it every run would be worse than no launcher at all. Nothing here touches
     that file -- it is created by `save_user_overrides` or by hand.
     """
-    base = app_dir()
+    base = data_dir()
     if chdir and is_frozen():
+        base.mkdir(parents=True, exist_ok=True)
+        # Before the chdir, so an older install's files are found by their old
+        # relative paths and end up where the new ones will be looked for.
+        migrate_from(app_dir(), base)
         os.chdir(base)
 
     created: List[Path] = []

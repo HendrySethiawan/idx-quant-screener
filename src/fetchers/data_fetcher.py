@@ -15,6 +15,7 @@ Revision 2 fixes two data-supply defects (docs/AUDIT.md):
 """
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -91,22 +92,34 @@ class DataFetcher:
         safe = ticker.replace("/", "_").replace("\\", "_")
         return self.cache_dir / f"{safe}__{period}.pkl"
 
+    def _fresh(self, path: Path) -> bool:
+        """
+        Within the TTL. One rule, so prices and fundamentals cannot disagree.
+
+        `time.time()`, not `pd.Timestamp.now().timestamp()`. A naive Timestamp is
+        assumed to be UTC when converted, while `st_mtime` is a true epoch value --
+        so on a UTC+7 machine every file read as seven hours older than it was and
+        the cache never hit once. The symptom was a "cached" app that refetched all
+        49 tickers on every single run.
+        """
+        if not path.exists():
+            return False
+        return (time.time() - path.stat().st_mtime) < self.settings.cache_ttl_minutes * 60
+
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10), reraise=True)
     def _fetch_single(self, ticker: str, period: Optional[str] = None) -> pd.DataFrame:
         period = period or self.settings.history_period
         cache_path = self._cache_path(ticker, period)
 
-        if cache_path.exists():
-            age = pd.Timestamp.now().timestamp() - cache_path.stat().st_mtime
-            if age < self.settings.cache_ttl_minutes * 60:
-                try:
-                    cached = joblib.load(cache_path)
-                    logger.debug(f"Cache hit: {ticker} ({period})")
-                    return cached
-                except Exception as e:
-                    # Swallow deliberately: letting this escape would make @retry
-                    # reload the same corrupt pickle three times before failing.
-                    logger.warning(f"Corrupt cache for {ticker}, refetching: {e}")
+        if self._fresh(cache_path):
+            try:
+                cached = joblib.load(cache_path)
+                logger.debug(f"Cache hit: {ticker} ({period})")
+                return cached
+            except Exception as e:
+                # Swallow deliberately: letting this escape would make @retry
+                # reload the same corrupt pickle three times before failing.
+                logger.warning(f"Corrupt cache for {ticker}, refetching: {e}")
 
         df = yf.download(
             ticker,
@@ -143,14 +156,37 @@ class DataFetcher:
         return self._fx_cache
 
     def fetch_fundamentals(self, tickers: dict) -> list[dict]:
+        """
+        One record per name, cached on disk exactly like prices.
+
+        This was the uncached half of the pipeline: `yf.Ticker(t).info` is a slow
+        call and it ran for all 49 names on every single launch, which is where
+        most of the forty seconds went. Fundamentals move on a quarterly cycle --
+        re-reading them within the same hour was never buying anything.
+        """
         records = []
         fx = self.usd_idr_rate()
         repaired = 0
+        hits = 0
 
         for ticker, name in tickers.items():
             if is_index(ticker):
                 logger.debug(f"Skipping fundamentals for index: {ticker}")
                 continue
+
+            cache_path = self._cache_path(ticker, "info")
+            if self._fresh(cache_path):
+                try:
+                    cached = joblib.load(cache_path)
+                    # The display name comes from settings, not from the cache: a
+                    # renamed ticker in configs must not be overridden by whatever
+                    # it was called when the file was written.
+                    records.append({**cached, "name": name})
+                    hits += 1
+                    continue
+                except Exception as e:
+                    logger.warning(f"Corrupt fundamentals cache for {ticker}: {e}")
+
             try:
                 info = yf.Ticker(ticker).info or {}
                 record = {"ticker": ticker, "name": name}
@@ -163,13 +199,18 @@ class DataFetcher:
                 if note and note.startswith("price_to_book:repaired"):
                     repaired += 1
 
+                try:
+                    joblib.dump(record, cache_path)
+                except Exception as e:
+                    logger.warning(f"Could not cache fundamentals for {ticker}: {e}")
+
                 records.append(record)
             except Exception as e:
                 logger.error(f"Failed fundamentals for {ticker}: {e}")
 
         logger.info(
-            f"Fetched fundamentals for {len(records)}/{len(tickers)} tickers "
-            f"({repaired} P/B repaired for USD reporters)"
+            f"Fundamentals for {len(records)}/{len(tickers)} tickers "
+            f"({hits} cached, {repaired} P/B repaired for USD reporters)"
         )
         return records
 

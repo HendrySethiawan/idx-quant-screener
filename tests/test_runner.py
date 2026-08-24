@@ -48,6 +48,11 @@ def ctx(settings_mock, tmp_path):
         "journal_path": str(tmp_path / "journal.csv"),
         "marks_path": str(tmp_path / "marks.csv"),
         "holdings_path": str(tmp_path / "holdings.yaml"),
+        # Every file the API writes belongs under tmp_path. Leaving cash_path at
+        # its default sent these tests at the repo's own data/cash.csv, where they
+        # accumulated across the whole run and across each other.
+        "cash_path": str(tmp_path / "cash.csv"),
+        "snapshot_path": str(tmp_path / "run.joblib"),
         "capital_rp": 10_000_000,
     }
     settings_mock.events_path = str(tmp_path / "events.yaml")

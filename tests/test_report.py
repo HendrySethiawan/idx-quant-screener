@@ -8,6 +8,7 @@ import pytest
 
 from market.regime import Regime, Signal
 from portfolio.holdings import Holding
+from portfolio.sizing import Allocation
 from report.assemble import assemble, build_candidates, build_orders
 from report.brief import render_brief, rp, write_brief
 from report.explain import data_quality_note, reason_phrase, zscore_label
@@ -296,3 +297,70 @@ def test_write_brief_creates_the_file(tmp_path):
 ])
 def test_rp_formatting(value, expect):
     assert rp(value) == expect
+
+
+# ------------------------------------------- the top bar states facts about you
+# It used to show `allocation.cash_left` under the heading "Cash" and
+# `fees.total` under "Est. fees" -- what would be left, and what it would cost, IF
+# you executed the suggested buys. Both were sized against the placeholder capital.
+# Neither was a fact about the account, and both read as though they were.
+class _Perf:
+    cash = 6_845_370.0
+    position_value = 1_149_000.0
+    total_value = 7_994_370.0
+    return_pct = -1.2
+    realized_pnl = 0.0
+    unrealized_pnl = 0.0
+    n_closed = 0
+
+
+def test_the_top_bar_shows_your_cash_not_the_tickets_leftover():
+    from portfolio.fees import FeeConfig, estimate_fees
+
+    alloc = Allocation(positions=[], cash_left=31_500.0, budget=0.0,
+                       capital=10_000_000, n_positions=4)
+    html_out = _render(allocation=alloc, perf=_Perf(),
+                       fees=estimate_fees([{"action": "BUY", "rupiah": 20_000_000}],
+                                          FeeConfig()))
+
+    head = html_out.split("</header>")[0]
+    assert "6,845,370" in head, "your cash is missing from the top bar"
+    assert "1,149,000" in head, "your holdings are missing from the top bar"
+    assert "31,500" not in head, "the ticket's leftover is being shown as your cash"
+
+
+def test_the_tickets_own_figures_say_they_are_the_ticket():
+    alloc = Allocation(positions=[], cash_left=31_500.0, budget=0.0,
+                       capital=10_000_000, n_positions=4)
+    html_out = _render(allocation=alloc, perf=_Perf())
+
+    assert "After these buys" in html_out
+    assert "Fees on these buys" in html_out
+    assert "Paid in" in html_out
+
+    # Only the ticket's own row. The what-if grid still says "Cash left", which is
+    # right there: that whole panel is explicitly a hypothesis you are exploring.
+    ticket = html_out.split('id="panel-ticket"')[-1].split("</section>")[0]
+    assert ">Cash left<" not in ticket
+    assert ">Capital<" not in ticket
+
+
+def test_without_a_performance_object_the_bar_falls_back_to_paid_in():
+    """The brief must still render for anyone with no journal at all."""
+    head = _render().split("</header>")[0]
+    assert "Paid in" in head
+
+
+def test_the_page_says_how_old_its_data_is():
+    import pandas as pd
+
+    fresh = _render(fetched_at=pd.Timestamp.now() - pd.Timedelta(hours=2))
+    assert "data as of" in fresh
+    assert "Update data" in fresh
+
+    stale = _render(fetched_at=pd.Timestamp.now() - pd.Timedelta(days=3))
+    assert "3d old" in stale
+
+
+def test_no_timestamp_leaves_the_old_subtitle_alone():
+    assert "names screened" in _render()

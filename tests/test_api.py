@@ -28,6 +28,11 @@ def api(settings_mock, tmp_path):
         "journal_path": str(tmp_path / "journal.csv"),
         "marks_path": str(tmp_path / "marks.csv"),
         "holdings_path": str(tmp_path / "holdings.yaml"),
+        # Every file the API writes belongs under tmp_path. Leaving cash_path at
+        # its default sent these tests at the repo's own data/cash.csv, where they
+        # accumulated across the whole run and across each other.
+        "cash_path": str(tmp_path / "cash.csv"),
+        "snapshot_path": str(tmp_path / "run.joblib"),
         "capital_rp": 10_000_000,
     }
     settings_mock.events_path = str(tmp_path / "events.yaml")
@@ -335,6 +340,11 @@ def ctx_api(settings_mock, tmp_path):
         "journal_path": str(tmp_path / "journal.csv"),
         "marks_path": str(tmp_path / "marks.csv"),
         "holdings_path": str(tmp_path / "holdings.yaml"),
+        # Every file the API writes belongs under tmp_path. Leaving cash_path at
+        # its default sent these tests at the repo's own data/cash.csv, where they
+        # accumulated across the whole run and across each other.
+        "cash_path": str(tmp_path / "cash.csv"),
+        "snapshot_path": str(tmp_path / "run.joblib"),
         "capital_rp": 10_000_000,
     }
     settings_mock.events_path = str(tmp_path / "events.yaml")
@@ -535,3 +545,109 @@ def test_the_previewed_realisation_matches_what_gets_recorded(api):
     journal_path, _, _ = api._paths()
     realised = closed_trades(load_journal(journal_path))["net_pnl"].sum()
     assert previewed == pytest.approx(realised, abs=1.0)
+
+
+# ------------------------------------------------------------ cash in and out
+# Capital comes from this ledger now. It used to be a number typed into a config
+# file that a rebuild of the app kept deleting.
+def test_a_deposit_sets_capital(api):
+    r = api.record_cash("DEPOSIT", 10_000_000, "2026-08-12", "opening balance")
+    assert r["ok"], r["message"]
+    assert r["data"]["capital"] == 10_000_000
+    assert api._settings.capital_rp == 10_000_000
+    assert "10,000,000" in r["message"]
+
+
+def test_a_withdrawal_reduces_it(api):
+    api.record_cash("DEPOSIT", 10_000_000, "2026-08-12")
+    r = api.record_cash("WITHDRAW", 2_000_000, "2026-08-20")
+    assert r["data"]["capital"] == 8_000_000
+
+
+def test_taking_out_more_than_was_paid_in_is_refused_and_records_nothing(api):
+    api.record_cash("DEPOSIT", 5_000_000, "2026-08-12")
+    r = api.record_cash("WITHDRAW", 6_000_000, "2026-08-20")
+
+    assert not r["ok"]
+    assert "cannot come out" in r["message"]
+    assert api._settings.capital_rp == 5_000_000
+    assert len(api.list_cash()["data"]["entries"]) == 1
+
+
+def test_the_preview_says_what_capital_would_become(api):
+    api.record_cash("DEPOSIT", 10_000_000, "2026-08-12")
+    d = api.preview_cash("DEPOSIT", 5_000_000, "2026-08-20")["data"]
+    assert d["capital_now"] == 10_000_000
+    assert d["capital_after"] == 15_000_000
+
+
+def test_withdrawing_more_than_is_free_warns_but_still_records(api):
+    """
+    Your broker is the authority on what has settled; this tool only knows the
+    trades you have told it about. So it says so rather than refusing.
+    """
+    api.record_cash("DEPOSIT", 10_000_000, "2026-08-12")
+    api.log_trade("BUY", "BBRI", 20, 4_150, "2026-08-13")     # 8.3 juta committed
+
+    warned = api.preview_cash("WITHDRAW", 5_000_000, "2026-08-20")
+    assert warned["ok"]
+    assert "more than" in warned["message"]
+    assert api.record_cash("WITHDRAW", 5_000_000, "2026-08-20")["ok"]
+
+
+def test_free_cash_counts_the_trades_as_well_as_the_deposits(api):
+    api.record_cash("DEPOSIT", 10_000_000, "2026-08-12")
+    api.log_trade("BUY", "BBRI", 1, 4_000, "2026-08-13")      # 400,000 + fee out
+
+    d = api.preview_cash("WITHDRAW", 1_000_000, "2026-08-20")["data"]
+    assert d["free_now"] == pytest.approx(10_000_000 - 400_760, abs=1)
+
+
+def test_entries_are_listed_with_the_index_removal_takes(api):
+    api.record_cash("DEPOSIT", 10_000_000, "2026-08-12")
+    api.record_cash("DEPOSIT", 3_000_000, "2026-08-15")
+
+    entries = api.list_cash()["data"]["entries"]
+    assert [e["amount_rp"] for e in entries] == [10_000_000, 3_000_000]
+    assert [e["index"] for e in entries] == [0, 1]
+
+
+def test_removing_an_entry_re_derives_capital(api):
+    api.record_cash("DEPOSIT", 10_000_000, "2026-08-12")
+    api.record_cash("DEPOSIT", 3_000_000, "2026-08-15")
+
+    r = api.remove_cash(1, "DEPOSIT", 3_000_000, "2026-08-15")
+    assert r["ok"], r["message"]
+    assert r["data"]["capital"] == 10_000_000
+    assert api._settings.capital_rp == 10_000_000
+
+
+def test_the_bridge_refuses_a_cash_row_that_has_moved(api):
+    api.record_cash("DEPOSIT", 10_000_000, "2026-08-12")
+    api.record_cash("DEPOSIT", 3_000_000, "2026-08-15")
+
+    assert not api.remove_cash(1, "DEPOSIT", 10_000_000, "2026-08-12")["ok"]
+    assert len(api.list_cash()["data"]["entries"]) == 2
+
+
+def test_nothing_in_the_cash_bridge_raises(api):
+    for bad in [("", 0, "", ""), ("DEPOSIT", "abc", "", ""), ("SPEND", 1, "", "")]:
+        assert api.record_cash(*bad)["ok"] is False
+        assert api.preview_cash(bad[0], bad[1], bad[2])["ok"] is False
+    assert api.remove_cash("x")["ok"] is False
+    assert api.list_cash()["ok"] is True
+
+
+def test_capital_stays_editable_until_there_is_a_ledger(api):
+    assert api.save_setting("account.capital_rp", 7_500_000)["ok"]
+    assert api._settings.capital_rp == 7_500_000
+
+
+def test_once_there_is_a_ledger_the_settings_field_refuses(api):
+    """Two numbers describing the same money would be free to disagree."""
+    api.record_cash("DEPOSIT", 10_000_000, "2026-08-12")
+
+    r = api.save_setting("account.capital_rp", 99_000_000)
+    assert not r["ok"]
+    assert "cash ledger" in r["message"]
+    assert api._settings.capital_rp == 10_000_000
