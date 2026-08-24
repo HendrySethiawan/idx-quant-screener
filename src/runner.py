@@ -62,12 +62,16 @@ class RunContext:
     # them. Those are different questions and the page used to answer only the
     # second one, which is how a screen of 21 August closes read as current.
     sessions: Dict[str, Any] = field(default_factory=dict)
+    # The watchlist, equally weighted, as an index level. Persisted because
+    # `price_data` is not, and the benchmark has to survive a snapshot launch.
+    watchlist_level: Optional[pd.Series] = None
 
 
 # --------------------------------------------------------------- needs network
 def full_run(settings, args, logger=None) -> RunContext:
     """Fetch, score and rank. The slow half."""
-    from fetchers.data_fetcher import DataFetcher, session_report
+    from fetchers.data_fetcher import (DataFetcher, equal_weight_level,
+                                       session_report)
     from market import seasonality as S
 
     # One fetcher for the whole run. `run_screener` used to build its own, so the
@@ -84,6 +88,8 @@ def full_run(settings, args, logger=None) -> RunContext:
                 f"{len(sessions['laggards'])} ticker(s) are priced on an older "
                 f"session than the rest: "
                 f"{', '.join(t for t, _ in sessions['laggards'][:6])}")
+
+    watchlist_level = equal_weight_level(price_data)
 
     regime_cfg = settings.regime or {}
     fx_data = fetcher.fetch_technical_data([regime_cfg.get("fx_ticker", "IDR=X")])
@@ -115,7 +121,7 @@ def full_run(settings, args, logger=None) -> RunContext:
         df=df, price_data=price_data, benchmark_data=benchmark_data,
         regime=regime, season_table=season_table, season_line=season_line,
         fetched_at=pd.Timestamp.now(), universe_key=universe_key(settings),
-        sessions=sessions,
+        sessions=sessions, watchlist_level=watchlist_level,
     )
 
 
@@ -172,6 +178,7 @@ def save_snapshot(ctx: RunContext) -> Optional[Path]:
             "fetched_at": ctx.fetched_at or pd.Timestamp.now(),
             "universe_key": ctx.universe_key or universe_key(ctx.settings),
             "sessions": ctx.sessions or {},
+            "watchlist_level": ctx.watchlist_level,
         }, path)
         return path
     except Exception as e:
@@ -228,6 +235,7 @@ def load_snapshot(settings, args, logger=None) -> Optional[RunContext]:
         season_line=blob.get("season_line") or "",
         fetched_at=blob.get("fetched_at"), universe_key=want,
         sessions=blob.get("sessions") or {},
+        watchlist_level=blob.get("watchlist_level"),
     )
 
 
@@ -347,6 +355,7 @@ def render(ctx: RunContext) -> Path:
         settings, prices=plan["prices"],
         ihsg=_close_series(ctx.benchmark_data,
                            (settings.regime or {}).get("benchmark", "^JKSE")),
+        watchlist=ctx.watchlist_level,
     )
 
     advanced_html = steps_html = ledger_html = trade_form_html = ""

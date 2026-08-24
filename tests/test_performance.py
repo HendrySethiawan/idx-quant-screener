@@ -324,3 +324,97 @@ def test_trading_across_two_sessions_is_comparable_even_when_flat():
     perf = _evaluate(j, {}, _ihsg(6000, 6000))
     assert perf.comparable
     assert perf.vs_ihsg_rp is not None
+
+
+# ------------------------------------------------- the benchmark that can be lost to
+# Beating IHSG proves little: across the backtest window the 49 names this tool
+# picks from returned +29.6%/yr against the index's +1.3%, a gap that is an
+# artifact of a list drawn in 2026 knowing which companies survived. Equal-weighting
+# that same list is the comparison stock picking can actually lose to.
+def _watchlist(start=1000.0, end=1000.0, days=400):
+    idx = pd.date_range("2026-01-01", periods=days, freq="D")
+    return pd.Series(np.linspace(start, end, days), index=idx)
+
+
+def test_the_watchlist_benchmark_is_reported_alongside_the_index():
+    j = _journal([("BUY", "BBRI", 3, 4150.0, "2026-01-01")])
+    perf = evaluate(
+        journal=j, closed=J.closed_trades(j), positions=J.net_positions(j),
+        prices={"BBRI.JK": 4300.0}, open_cost=J.average_cost(j),
+        starting_capital=CAPITAL, cfg=CFG, ihsg_close=_ihsg(6000, 6000),
+        watchlist_close=_watchlist(1000, 1000),
+    )
+    assert perf.vs_ihsg_rp is not None
+    assert perf.vs_watchlist_rp is not None
+
+
+def test_a_pick_that_beat_the_index_can_still_lose_to_the_watchlist():
+    """
+    The whole point. A flat index and a watchlist that ran hard is exactly the
+    situation IHSG would have called a win.
+    """
+    j = _journal([("BUY", "BBRI", 3, 4150.0, "2026-01-01")])
+    perf = evaluate(
+        journal=j, closed=J.closed_trades(j), positions=J.net_positions(j),
+        prices={"BBRI.JK": 4300.0}, open_cost=J.average_cost(j),
+        starting_capital=CAPITAL, cfg=CFG,
+        ihsg_close=_ihsg(6000, 6000),          # index went nowhere
+        watchlist_close=_watchlist(1000, 1600),  # the list ran +60%
+    )
+    assert perf.vs_ihsg_rp > 0, "should look good against a flat index"
+    assert perf.vs_watchlist_rp < 0, "and bad against the list it was picked from"
+
+
+def test_no_watchlist_series_leaves_the_second_comparison_unstated():
+    """None, not zero. An uncomputed comparison must never read as a dead heat."""
+    j = _journal([("BUY", "BBRI", 3, 4150.0, "2026-01-01")])
+    perf = _evaluate(j, {"BBRI.JK": 4300.0}, _ihsg(6000, 6000))
+
+    assert perf.vs_watchlist_rp is None
+    assert perf.watchlist.unavailable is True
+
+
+def test_both_shadows_use_the_same_function():
+    """
+    One implementation benchmarking both. A second copy would drift, and the two
+    numbers sit side by side where a discrepancy would be read as a finding.
+    """
+    from portfolio.performance import ihsg_shadow, index_shadow
+    assert ihsg_shadow is index_shadow
+
+
+def test_the_equal_weight_level_tracks_the_average_name():
+    from fetchers.data_fetcher import equal_weight_level
+
+    idx = pd.date_range("2026-01-01", periods=3, freq="D")
+    data = {
+        "A.JK": pd.DataFrame({"Close": [100.0, 110.0, 121.0]}, index=idx),   # +10%/day
+        "B.JK": pd.DataFrame({"Close": [50.0, 50.0, 50.0]}, index=idx),      # flat
+    }
+    level = equal_weight_level(data, base=1000.0)
+
+    # Mean of +10% and 0% is +5% a day, twice.
+    assert float(level.iloc[-1]) == pytest.approx(1000 * 1.05 * 1.05, rel=1e-6)
+
+
+def test_a_name_with_no_prices_does_not_sink_the_whole_day():
+    """A listing or delisting partway through must not blank the series."""
+    from fetchers.data_fetcher import equal_weight_level
+
+    idx = pd.date_range("2026-01-01", periods=3, freq="D")
+    data = {
+        "A.JK": pd.DataFrame({"Close": [100.0, 110.0, 121.0]}, index=idx),
+        "B.JK": pd.DataFrame({"Close": [50.0, np.nan, 55.0]}, index=idx),
+    }
+    level = equal_weight_level(data)
+    assert level is not None and level.notna().all()
+
+
+def test_too_few_names_gives_no_benchmark():
+    """One name is not a universe, and calling it one would be a false comparison."""
+    from fetchers.data_fetcher import equal_weight_level
+
+    idx = pd.date_range("2026-01-01", periods=3, freq="D")
+    assert equal_weight_level({"A.JK": pd.DataFrame({"Close": [1.0, 2.0, 3.0]},
+                                                    index=idx)}) is None
+    assert equal_weight_level({}) is None

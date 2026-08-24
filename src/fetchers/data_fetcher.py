@@ -131,6 +131,43 @@ def session_report(price_data: dict, market_session=None) -> dict:
     }
 
 
+def equal_weight_level(price_data: dict, base: float = 1000.0) -> Optional[pd.Series]:
+    """
+    Your whole watchlist, equally weighted, as an index level series.
+
+    The benchmark that means something. Beating IHSG proves little here: across the
+    backtest window the 49 names in this list returned +29.6% a year against the
+    index's +1.3%, a gap that is an artifact of the list having been drawn in 2026
+    knowing which companies survived. Equal-weighting that same list is the
+    comparison stock picking can actually lose to.
+
+    Built as a level, not as returns, so `index_shadow` can consume it unchanged --
+    it takes a close series and moves the same rupiah on the same days, and one
+    implementation benchmarking both is what stops the two drifting apart.
+
+    Cross-sectional mean of daily returns, so a name that lists or delists partway
+    through contributes only while it has prices, instead of dropping the whole day.
+    """
+    closes = {}
+    for ticker, frame in (price_data or {}).items():
+        if frame is None or getattr(frame, "empty", True) or "Close" not in frame:
+            continue
+        series = frame["Close"].dropna()
+        if len(series) < 2:
+            continue
+        idx = pd.DatetimeIndex(series.index)
+        closes[ticker] = pd.Series(
+            series.values,
+            index=idx.tz_localize(None) if idx.tz is not None else idx)
+
+    if len(closes) < 2:
+        return None
+
+    panel = pd.DataFrame(closes).sort_index()
+    daily = panel.pct_change().mean(axis=1, skipna=True).fillna(0.0)
+    return (1.0 + daily).cumprod() * float(base)
+
+
 class DataFetcher:
     def __init__(self, settings: Settings):
         self.settings = settings

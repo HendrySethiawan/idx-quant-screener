@@ -206,7 +206,7 @@ def _ihsg_series(settings) -> Optional[pd.Series]:
     return frame["Close"] if frame is not None and "Close" in frame else None
 
 
-def build_performance(settings, prices=None, ihsg=None):
+def build_performance(settings, prices=None, ihsg=None, watchlist=None):
     journal_path, _, _ = _paths(settings)
     cfg = FeeConfig.from_settings(settings)
 
@@ -229,6 +229,7 @@ def build_performance(settings, prices=None, ihsg=None):
         ihsg_close=ihsg,
         min_trades_for_verdict=int(account.get("min_trades_for_verdict", 30)),
         dividends=load_dividends(dividends_path(settings)),
+        watchlist_close=watchlist,
     )
 
 

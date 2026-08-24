@@ -109,6 +109,16 @@ class Performance:
     vs_ihsg_rp: Optional[float] = None
     vs_ihsg_pct: Optional[float] = None
 
+    # The harder benchmark, and the one that means something. Beating IHSG proves
+    # little when the universe this tool picks from beat IHSG by 28pp a year on
+    # the backtest window -- an artifact of a ticker list drawn knowing who
+    # survived. Equal-weighting that same watchlist is the comparison your picking
+    # can actually lose to, so it is the one the panel calls honest.
+    watchlist: ShadowResult = field(default_factory=ShadowResult)
+    watchlist_total: Optional[float] = None
+    vs_watchlist_rp: Optional[float] = None
+    vs_watchlist_pct: Optional[float] = None
+
     # closed-trade stats
     n_closed: int = 0
     hit_rate: Optional[float] = None
@@ -136,12 +146,19 @@ def _price_asof(series: pd.Series, when) -> Optional[float]:
     return float(upto.iloc[-1]) if len(upto) else None
 
 
-def ihsg_shadow(journal: pd.DataFrame, ihsg_close: Optional[pd.Series]) -> ShadowResult:
-    """Mirror every equity cash flow into ^JKSE instead."""
+def index_shadow(journal: pd.DataFrame, close: Optional[pd.Series]) -> ShadowResult:
+    """
+    Mirror every equity cash flow into some index instead.
+
+    Named for IHSG originally, but it never depended on which index -- it takes a
+    close series and moves the same rupiah on the same days. That is what lets the
+    equal-weighted watchlist be benchmarked with this exact function rather than a
+    second implementation that would drift from it.
+    """
     out = ShadowResult()
     if journal is None or journal.empty:
         return out
-    if ihsg_close is None or len(ihsg_close) == 0:
+    if close is None or len(close) == 0:
         out.unavailable = True
         return out
 
@@ -150,7 +167,7 @@ def ihsg_shadow(journal: pd.DataFrame, ihsg_close: Optional[pd.Series]) -> Shado
     df = df.sort_values("date", kind="stable")
 
     for _, row in df.iterrows():
-        level = _price_asof(ihsg_close, row["date"])
+        level = _price_asof(close, row["date"])
         if not level:
             continue
         gross = float(row["gross_rp"])
@@ -168,7 +185,7 @@ def ihsg_shadow(journal: pd.DataFrame, ihsg_close: Optional[pd.Series]) -> Shado
             out.units -= wanted
             out.redeemed += wanted * level
 
-    latest = _price_asof(ihsg_close, pd.Timestamp.max)
+    latest = _price_asof(close, pd.Timestamp.max)
     out.value_now = out.units * latest if latest else 0.0
     return out
 
@@ -191,6 +208,11 @@ def _apply_dividends(perf: "Performance", dividends, open_cost, positions) -> "P
                   for t, shares in (positions or {}).items()}
     perf.realised_yield_pct = realised_yield(dividends, cost_basis)
     return perf
+
+
+# The original name. Kept because it reads correctly at the IHSG call site and is
+# imported by name elsewhere; `index_shadow` is the same function said generically.
+ihsg_shadow = index_shadow
 
 
 def stamp_analysis(journal: pd.DataFrame, cfg: FeeConfig) -> Dict[str, float]:
@@ -257,6 +279,7 @@ def evaluate(
     ihsg_close: Optional[pd.Series] = None,
     min_trades_for_verdict: int = DEFAULT_MIN_TRADES,
     dividends: Optional[pd.DataFrame] = None,
+    watchlist_close: Optional[pd.Series] = None,
 ) -> Performance:
     perf = Performance(
         starting_capital=starting_capital,
@@ -335,6 +358,18 @@ def evaluate(
         perf.vs_ihsg_rp = perf.total_value - perf.shadow_total
         perf.vs_ihsg_pct = (
             perf.vs_ihsg_rp / perf.shadow_total * 100 if perf.shadow_total else 0.0
+        )
+
+    # The same machinery against the harder benchmark. Beating IHSG says little
+    # when the list this tool picks from beat IHSG by 28pp/yr across the backtest
+    # window; equal-weighting that list is the comparison the picking can lose to.
+    perf.watchlist = index_shadow(journal, watchlist_close)
+    if not perf.watchlist.unavailable and perf.comparable:
+        perf.watchlist_total = perf.cash + perf.watchlist.value_now
+        perf.vs_watchlist_rp = perf.total_value - perf.watchlist_total
+        perf.vs_watchlist_pct = (
+            perf.vs_watchlist_rp / perf.watchlist_total * 100
+            if perf.watchlist_total else 0.0
         )
 
     perf.n_closed = len(closed)

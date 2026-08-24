@@ -49,6 +49,16 @@ def console_block(perf) -> str:
         add("    ETF with its own costs.")
     add("")
 
+    if perf.vs_watchlist_rp is not None:
+        verb = "AHEAD of" if perf.vs_watchlist_rp >= 0 else "BEHIND"
+        add("  VERSUS YOUR OWN WATCHLIST, EQUALLY WEIGHTED")
+        add(f"    same money, all names {rp(perf.watchlist_total):>13}")
+        add(f"    -> {verb} by        {rp(abs(perf.vs_watchlist_rp)):>16}   "
+            f"{_pct(perf.vs_watchlist_pct, 2)}")
+        add("    This is the comparison that tests your picking; beating the index")
+        add("    says little when the list itself beat it by a wide margin.")
+        add("")
+
     add(f"  Fees paid            {rp(perf.total_fees):>16}   {perf.fee_drag_pct:.2f}% of capital")
     add(f"    stamp duty         {rp(perf.stamp_paid):>16}")
     if perf.stamp_saved > 0:
@@ -143,6 +153,27 @@ def brief_section(perf) -> str:
             f'position would be an ETF with its own costs.</div>'
         )
 
+    # The harder benchmark, said second so it lands last. Beating IHSG proves
+    # little when the list this tool picks from beat IHSG by 28pp a year across
+    # the backtest window; equal-weighting that same list is the comparison the
+    # picking can actually lose to.
+    watchlist = ""
+    if perf.comparable and perf.vs_watchlist_rp is not None:
+        ahead = perf.vs_watchlist_rp >= 0
+        watchlist = (
+            f'<div class="callout {"save" if ahead else ""}">'
+            f"<strong>Versus your own watchlist.</strong> The same rupiah, moved on "
+            f"the same days, spread equally across every name you screen would have "
+            f"left you with {html.escape(rp(perf.watchlist_total))}. You have "
+            f"{html.escape(rp(perf.total_value))} &mdash; "
+            f'{"ahead by" if ahead else "behind by"} '
+            f"{html.escape(rp(abs(perf.vs_watchlist_rp)))} "
+            f"({_pct(perf.vs_watchlist_pct, 2)}). <strong>This is the one that "
+            f"tests your picking.</strong> Beating the index says little here: the "
+            f"list itself beat the index by a wide margin over the backtest window, "
+            f"because it was drawn knowing which companies survived.</div>"
+        )
+
     stamp = ""
     if perf.stamp_saved > 0 or perf.stamp_avoidable > 0:
         bits = [f"You have paid {html.escape(rp(perf.stamp_paid))} in stamp duty"]
@@ -168,7 +199,7 @@ def brief_section(perf) -> str:
 <h2>How you're doing</h2>
 <div class="kpis">{kpis}</div>
 {deployed_note}
-<div class="card">{bench}{stamp}{verdict}</div>"""
+<div class="card">{bench}{watchlist}{stamp}{verdict}</div>"""
 
 
 # ===========================================================================
