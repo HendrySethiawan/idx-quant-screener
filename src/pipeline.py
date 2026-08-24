@@ -43,8 +43,15 @@ def build_technical_frame(settings, fetcher: DataFetcher, logger=None) -> pd.Dat
     return pd.DataFrame(records), price_data
 
 
-def run_screener(settings, logger=None) -> pd.DataFrame:
-    fetcher = DataFetcher(settings)
+def run_screener(settings, logger=None, fetcher: Optional[DataFetcher] = None):
+    """
+    The whole screen. `fetcher` is accepted so a caller that already has one can
+    pass it in -- `runner.full_run` built a second `DataFetcher` for FX and
+    seasonality, and sharing it means one fewer object holding one fewer cache
+    view, and lets the caller read what the shared fetcher learned (which session
+    the market last traded).
+    """
+    fetcher = fetcher or DataFetcher(settings)
     engine = FundamentalEngine(settings)
 
     fund_records = fetcher.fetch_fundamentals(settings.stock_tickers)

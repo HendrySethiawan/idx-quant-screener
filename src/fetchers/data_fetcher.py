@@ -81,12 +81,66 @@ def repair_price_to_book(info: dict, fx_usd_idr: Optional[float]) -> tuple[Optio
     return price / (book_value * fx_usd_idr), f"price_to_book:repaired_{fin_cur}_to_{quote_cur}"
 
 
+def session_report(price_data: dict, market_session=None) -> dict:
+    """
+    Which session the prices are from, and whether they all agree.
+
+    Two separate facts, and the page needs both:
+
+      * `session_date` -- the newest bar we hold. This is what every price on
+        screen is, and stating the fetch time instead is what let a page of
+        21 August closes present itself as current.
+      * `laggards` -- names whose newest bar is older than that. Every score here
+        is cross-sectional, a z-score against peers, so ranking names priced on
+        different days is wrong in a way no single figure admits to. It happens:
+        50 tickers on one session and 1 on another, in real data.
+
+    `behind` is only claimed when `market_session` is known. Not knowing must never
+    read as being up to date.
+    """
+    dated = {}
+    for ticker, frame in (price_data or {}).items():
+        if frame is None or getattr(frame, "empty", True):
+            continue
+        try:
+            dated[ticker] = pd.Timestamp(frame.index.max()).tz_localize(None)
+        except (TypeError, ValueError):
+            dated[ticker] = pd.Timestamp(frame.index.max())
+
+    if not dated:
+        return {"session_date": None, "laggards": [], "mixed": False, "behind": None}
+
+    newest = max(dated.values())
+    laggards = sorted(
+        ((t, d) for t, d in dated.items() if d < newest), key=lambda kv: kv[1])
+
+    behind = None
+    if market_session is not None:
+        try:
+            market = pd.Timestamp(market_session).tz_localize(None)
+        except (TypeError, ValueError):
+            market = pd.Timestamp(market_session)
+        behind = bool(newest < market)
+
+    return {
+        "session_date": newest,
+        "laggards": [(t, d.date().isoformat()) for t, d in laggards],
+        "mixed": bool(laggards),
+        "behind": behind,
+        "market_session": None if market_session is None else pd.Timestamp(market_session),
+    }
+
+
 class DataFetcher:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.cache_dir = Path("data/cache")
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._fx_cache: Optional[float] = None
+        # The newest session the market actually traded, learned from the intraday
+        # probe. None when it could not be established -- which must read as "not
+        # known", never as "we are up to date".
+        self.latest_market_session = None
 
     def _cache_path(self, ticker: str, period: str) -> Path:
         safe = ticker.replace("/", "_").replace("\\", "_")
@@ -138,9 +192,45 @@ class DataFetcher:
         if df.empty:
             raise ValueError(f"No valid Close rows for {ticker}")
 
+        df = self._keep_known_sessions(df, cache_path, ticker)
+
         joblib.dump(df, cache_path)
         logger.info(f"Fetched {ticker}: {len(df)} bars ({period})")
         return df
+
+    def _keep_known_sessions(self, fresh: pd.DataFrame, cache_path: Path,
+                             ticker: str) -> pd.DataFrame:
+        """
+        Union the fetch with what was already cached, newest fetch winning ties.
+
+        A refetch used to overwrite the cache wholesale, so a vendor that stops
+        serving a session simply deleted it from our history. That is exactly what
+        happened: Yahoo served the 24 Aug IDX close, then withdrew it, and the next
+        run replaced a good cache with one a session shorter -- silently, and the
+        page went on presenting it as current.
+
+        A session that traded did not un-trade. So a date only the cache has is
+        kept, while a date both have takes the fresh value, because revisions are
+        real and should land.
+        """
+        if not cache_path.exists():
+            return fresh
+        try:
+            cached = joblib.load(cache_path)
+        except Exception:
+            return fresh
+        if not isinstance(cached, pd.DataFrame) or cached.empty:
+            return fresh
+
+        missing = cached.index.difference(fresh.index)
+        if not len(missing):
+            return fresh
+
+        merged = pd.concat([fresh, cached.loc[missing]]).sort_index()
+        merged = merged[~merged.index.duplicated(keep="first")]
+        logger.info(f"{ticker}: kept {len(missing)} session(s) the fetch no longer "
+                    f"carries (newest {missing.max().date()})")
+        return merged
 
     def usd_idr_rate(self) -> Optional[float]:
         """Spot USD/IDR, cached for the session. None if unavailable (offline)."""
@@ -221,4 +311,155 @@ class DataFetcher:
                 data[ticker] = self._fetch_single(ticker, period=period)
             except Exception as e:
                 logger.error(f"Failed technical data for {ticker}: {e}")
+
+        if period is None:
+            # Only for the standard daily panel. A caller asking for "max" or "5y"
+            # wants history, not the last session, and topping that up would make
+            # the backtest disagree with itself between runs.
+            data = self.top_up_last_session(data)
         return data
+
+    # ------------------------------------------------------- the missing session
+    #
+    # Yahoo's DAILY feed dropped the 24 Aug IDX close while its INTRADAY feed still
+    # served it. Aggregating 60m bars reproduces the daily bar exactly -- verified
+    # digit-for-digit against Yahoo's own daily bars for 20 and 21 Aug, and against
+    # the broker's screen for 24 Aug. So the gap is filled from the same vendor
+    # rather than by adding a second one.
+    INTRADAY_INTERVAL = "60m"
+    INTRADAY_PERIOD = "5d"
+
+    def _exchange_tz(self) -> str:
+        return str((self.settings.regime or {}).get("exchange_tz", "Asia/Jakarta"))
+
+    @staticmethod
+    def _sessions_from_intraday(frame: pd.DataFrame, tz: str) -> pd.DataFrame:
+        """
+        Daily OHLC per session, from intraday bars.
+
+        Volume is deliberately absent. Intraday sums to roughly 60% of the official
+        daily figure because the opening auction and off-book prints are missing,
+        and a volume 40% short feeding a liquidity floor is worse than no volume at
+        all -- the floor decides whether a name can be exited.
+        """
+        if frame is None or frame.empty or "Close" not in frame:
+            return pd.DataFrame()
+
+        local = frame.dropna(subset=["Close"]).copy()
+        if local.empty:
+            return pd.DataFrame()
+
+        index = pd.DatetimeIndex(local.index)
+        # The batched download comes back in UTC; the session a bar belongs to is a
+        # question about the exchange's day, not ours.
+        index = index.tz_localize("UTC") if index.tz is None else index
+        local["_session"] = index.tz_convert(tz).date
+
+        grouped = local.groupby("_session")
+        out = pd.DataFrame({
+            "Open": grouped["Open"].first() if "Open" in local else grouped["Close"].first(),
+            "High": grouped["High"].max() if "High" in local else grouped["Close"].max(),
+            "Low": grouped["Low"].min() if "Low" in local else grouped["Close"].min(),
+            "Close": grouped["Close"].last(),
+        })
+        out.index = pd.DatetimeIndex(out.index)
+        return out
+
+    def _latest_market_session(self, probe_ticker: str):
+        """
+        The newest session the market has actually traded, or None if unknown.
+
+        One cheap request against the benchmark. When the daily panel already
+        reaches it, nothing further is fetched and an ordinary day costs this alone.
+        """
+        try:
+            raw = yf.Ticker(probe_ticker).history(
+                period=self.INTRADAY_PERIOD, interval=self.INTRADAY_INTERVAL,
+                auto_adjust=True,
+            )
+        except Exception as e:
+            logger.warning(f"Could not probe the latest session: {e}")
+            return None
+        sessions = self._sessions_from_intraday(raw, self._exchange_tz())
+        return None if sessions.empty else sessions.index.max()
+
+    def top_up_last_session(self, data: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+        """
+        Rebuild sessions the daily feed is missing, from intraday bars.
+
+        Returns the same dict. Never raises: a top-up that fails leaves the daily
+        data exactly as it was, which is the behaviour this replaces.
+        """
+        if not data:
+            return data
+
+        # Always the index, never whichever ticker happens to be first in the dict.
+        # A thinly traded name that did not print on the latest session would report
+        # the market as older than it is, and the top-up would decline to run for
+        # the whole universe -- silently, which is the failure mode this exists to
+        # end. The index trades whenever the exchange is open.
+        probe = str((self.settings.regime or {}).get("benchmark", "^JKSE"))
+        latest = self._latest_market_session(probe)
+        self.latest_market_session = latest
+        if latest is None:
+            return data
+
+        behind = [t for t, df in data.items()
+                  if df is not None and not df.empty and df.index.max() < latest]
+        if not behind:
+            logger.info(f"Daily data already reaches {latest.date()}")
+            return data
+
+        logger.info(f"Daily feed is behind for {len(behind)} of {len(data)} tickers; "
+                    f"rebuilding up to {latest.date()} from "
+                    f"{self.INTRADAY_INTERVAL} bars")
+        try:
+            intraday = yf.download(
+                behind, period=self.INTRADAY_PERIOD, interval=self.INTRADAY_INTERVAL,
+                auto_adjust=True, progress=False, group_by="ticker", threads=True,
+                timeout=self.settings.yfinance_timeout,
+            )
+        except Exception as e:
+            logger.warning(f"Could not fetch intraday bars: {e}")
+            return data
+        if intraday is None or intraday.empty:
+            return data
+
+        tz = self._exchange_tz()
+        filled = 0
+        for ticker in behind:
+            try:
+                frame = (intraday[ticker] if intraday.columns.nlevels > 1
+                         and ticker in intraday.columns.get_level_values(0)
+                         else intraday)
+                sessions = self._sessions_from_intraday(frame, tz)
+                if sessions.empty:
+                    continue
+
+                daily = data[ticker]
+                extra = sessions[sessions.index > daily.index.max()]
+                if extra.empty:
+                    continue
+
+                # Match whatever the daily index carries, or concat misaligns them.
+                if daily.index.tz is not None:
+                    extra.index = extra.index.tz_localize(daily.index.tz)
+                extra = extra.reindex(columns=daily.columns)
+                extra["synthetic"] = True
+
+                merged = pd.concat([daily.assign(synthetic=False), extra]).sort_index()
+                data[ticker] = merged[~merged.index.duplicated(keep="last")]
+                filled += 1
+                self._recache(ticker, data[ticker])
+            except Exception as e:
+                logger.warning(f"Could not rebuild the last session for {ticker}: {e}")
+
+        logger.info(f"Rebuilt the missing session for {filled} of {len(behind)} tickers")
+        return data
+
+    def _recache(self, ticker: str, frame: pd.DataFrame) -> None:
+        """Write the topped-up frame back, so the next run starts from it."""
+        try:
+            joblib.dump(frame, self._cache_path(ticker, self.settings.history_period))
+        except Exception as e:
+            logger.warning(f"Could not cache the rebuilt session for {ticker}: {e}")

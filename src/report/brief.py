@@ -456,6 +456,7 @@ def render_brief(
     generated: Optional[datetime] = None,
     perf=None,
     fetched_at=None,
+    sessions: Optional[dict] = None,
 ) -> str:
     """
     The terminal. One document, five destinations, nothing scrolls but panels.
@@ -466,6 +467,10 @@ def render_brief(
     answer is usually that nothing must, and an empty ticket is a result.
     """
     when = (generated or datetime.now()).strftime("%a %d %b %Y, %H:%M")
+
+    sessions = sessions or {}
+    session_date = sessions.get("session_date")
+    behind = bool(sessions.get("behind"))
 
     # Every one of these describes the PROPOSED ticket, not the account. "Cash left"
     # read as money you have; it is what would remain if you executed the buys below.
@@ -492,6 +497,39 @@ def render_brief(
             "press Rebuild.</div>"
         )
 
+    # Behind the market: the lot counts stay, because a day-old ranking is still
+    # mostly right over a one-to-two week hold and a vendor hiccup should not leave
+    # you with nothing at lunchtime. But the price each one was sized on is named,
+    # because that is the number the order will be wrong against.
+    stale_note = ""
+    if behind and session_date is not None:
+        market_session = sessions.get("market_session")
+        traded = (f", and the market has since traded "
+                  f"{pd.Timestamp(market_session):%a %d %b}"
+                  if market_session is not None else "")
+        stale_note = (
+            '<div class="callout" style="border-left-color:var(--bad)">'
+            f"<strong>Prices are from the {pd.Timestamp(session_date):%a %d %b} "
+            f"close{traded}.</strong> Every lot count below is sized on those "
+            "prices, so the rupiah amounts will not match a live order. Check the "
+            "price in Indopremier before you send anything.</div>"
+        )
+
+    # Ranking here is cross-sectional -- each name scored against its peers -- so
+    # names priced on different days are not actually being compared.
+    mixed_note = ""
+    laggards = sessions.get("laggards") or []
+    if laggards:
+        shown = ", ".join(f"{t} ({d})" for t, d in laggards[:5])
+        more = f" and {len(laggards) - 5} more" if len(laggards) > 5 else ""
+        mixed_note = (
+            '<div class="callout" style="border-left-color:var(--warn)">'
+            f"<strong>{len(laggards)} of {universe_n} names are priced on an older "
+            f"session than the rest.</strong> Every score is a comparison against "
+            f"peers, so these are not being ranked on the same day as the others: "
+            f"{html.escape(shown)}{more}.</div>"
+        )
+
     granularity = ""
     if allocation and allocation.positions:
         granularity = (
@@ -514,7 +552,8 @@ def render_brief(
     markets = T.grid([
         T.column([
             T.panel("Do this today",
-                    placeholder_note + _ticket_section(orders, fees, capital)
+                    stale_note + placeholder_note
+                    + _ticket_section(orders, fees, capital)
                     + granularity,
                     pid="panel-ticket", cls="print", grow=True),
             T.panel(f"Events, next {event_horizon} days",
@@ -530,7 +569,7 @@ def render_brief(
         ]),
         T.column([
             T.panel("Best candidates you can afford",
-                    _candidates_section(candidates), grow=True),
+                    mixed_note + _candidates_section(candidates), grow=True),
             T.panel("Skipped", _rejected_section(rejected, capped, compact=True)),
         ]),
     ])
@@ -595,22 +634,33 @@ def render_brief(
     else:
         stats.append(("Paid in", rp(capital), ""))
 
-    # What the data is, not when the page was drawn. The page redraws in two seconds
-    # for reasons that have nothing to do with the market; the fetch behind it is
-    # what decides whether these prices are worth acting on.
+    # WHICH SESSION the prices are from, first. "data as of Tue 25 Aug 01:44" was
+    # the moment we asked, and every price under it was the 21 August close --
+    # nothing on the page said so, and that one line is why a whole screen of
+    # stale prices looked current. Fetch time stays, because it answers the other
+    # question, but it no longer stands in for this one.
     subtitle = f"as of {when} · {universe_n} names screened"
-    if fetched_at is not None:
+    if session_date is not None:
+        stamp = pd.Timestamp(session_date)
+        subtitle = f"prices from {stamp:%a %d %b} close · {universe_n} names"
+        if fetched_at is not None:
+            subtitle += f" · fetched {pd.Timestamp(fetched_at):%H:%M}"
+        if behind:
+            subtitle += " · BEHIND THE MARKET"
+    elif fetched_at is not None:
         stamp = pd.Timestamp(fetched_at)
         age_h = (pd.Timestamp.now() - stamp).total_seconds() / 3600
         freshness = "" if age_h < 24 else f" · {int(age_h // 24)}d old, press Update data"
         subtitle = (f"data as of {stamp:%a %d %b, %H:%M} · {universe_n} names"
                     f"{freshness} · redrawn {when.split(', ')[-1]}")
 
+    fetch_stale = fetched_at is not None and (
+        pd.Timestamp.now() - pd.Timestamp(fetched_at)).total_seconds() > 86400
+
     top = T.topbar(
         "IDX Terminal", subtitle, stats,
         placeholder_capital=placeholder_capital,
-        stale=fetched_at is not None and (
-            pd.Timestamp.now() - pd.Timestamp(fetched_at)).total_seconds() > 86400,
+        stale=behind or (session_date is None and fetch_stale),
     )
 
     ticks = []

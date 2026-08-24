@@ -67,7 +67,16 @@ def compute_indicators(
         # Rupiah actually traded per session -- the number that decides whether a
         # position can be exited, unlike share count which ignores price.
         df["daily_value_rp"] = close * df["Volume"]
-        df["median_daily_value_rp"] = df["daily_value_rp"].rolling(liquidity_window).median()
+        # `min_periods`, because one missing volume must not blank the whole metric.
+        # A session rebuilt from intraday bars carries no trustworthy volume (the
+        # auction and off-book prints are absent), so its Volume is NaN -- and with
+        # the default `min_periods=liquidity_window` a single NaN makes the rolling
+        # median NaN for the newest row. `extract_latest_indicators` reads that row,
+        # `liquidity.assess` reads None as "cannot trade", and the ticket would empty
+        # itself against the entire universe. A median over 19 of 20 sessions is
+        # sound; one over nothing is not.
+        df["median_daily_value_rp"] = df["daily_value_rp"].rolling(
+            liquidity_window, min_periods=max(2, liquidity_window // 2)).median()
 
     df["price_change_pct"] = close.pct_change() * 100
     df["return_20d"] = close.pct_change(20) * 100

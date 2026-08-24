@@ -70,3 +70,58 @@ def test_nan_close_rows_are_dropped():
     out = compute_indicators(frame)
     assert out["Close"].notna().all()
     assert len(out) == 59
+
+
+# ------------------------------------------ a missing volume must not empty the ticket
+# A session rebuilt from intraday bars carries no trustworthy volume, so its Volume
+# is NaN. With the default `min_periods` on the rolling median, ONE NaN made
+# `median_daily_value_rp` NaN for the newest row -- which `extract_latest_indicators`
+# reads, `assess` reads as "cannot trade", and the ticket would then refuse
+# the entire universe. This is the guard against that.
+def _series(n=40, close=1000.0, volume=1_000_000.0):
+    idx = pd.date_range("2026-06-01", periods=n, freq="B")
+    return pd.DataFrame(
+        {"Open": [close] * n, "High": [close] * n, "Low": [close] * n,
+         "Close": [close] * n, "Volume": [volume] * n},
+        index=idx)
+
+
+def test_the_liquidity_median_survives_a_session_with_no_volume():
+    df = _series()
+    df.loc[df.index[-1], "Volume"] = np.nan          # a rebuilt bar
+
+    out = compute_indicators(df, vol_window=20, liquidity_window=20)
+    latest = extract_latest_indicators(out)
+
+    assert latest["median_daily_value_rp"] is not None
+    assert latest["median_daily_value_rp"] > 0
+
+
+def test_a_name_with_a_rebuilt_last_bar_is_still_tradeable():
+    """The end-to-end version: it must survive the liquidity gate, not just be a number."""
+    from market.liquidity import LiquidityConfig, assess
+
+    df = _series(volume=2_000_000.0)
+    df.loc[df.index[-1], "Volume"] = np.nan
+
+    latest = extract_latest_indicators(compute_indicators(df, liquidity_window=20))
+    verdict = assess("BBRI.JK", latest["median_daily_value_rp"],
+                     position_rp=2_000_000, cfg=LiquidityConfig())
+    assert verdict.ok, verdict.reason
+
+
+def test_a_genuinely_thin_name_is_still_rejected():
+    """The floor must keep working; this loosens a window, not the rule."""
+    from market.liquidity import LiquidityConfig, assess
+
+    latest = extract_latest_indicators(
+        compute_indicators(_series(close=50.0, volume=100.0), liquidity_window=20))
+    verdict = assess("TINY.JK", latest["median_daily_value_rp"],
+                     position_rp=2_000_000, cfg=LiquidityConfig())
+    assert not verdict.ok
+
+
+def test_too_few_sessions_still_gives_no_liquidity_figure():
+    """Half a window is a median; three days is not."""
+    out = compute_indicators(_series(n=3), liquidity_window=20)
+    assert pd.isna(out["median_daily_value_rp"].iloc[-1])

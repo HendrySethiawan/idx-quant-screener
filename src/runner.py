@@ -58,19 +58,34 @@ class RunContext:
     # rendered against scores computed for a different one.
     fetched_at: Optional[pd.Timestamp] = None
     universe_key: str = ""
+    # Which trading session the prices are from, as opposed to when we asked for
+    # them. Those are different questions and the page used to answer only the
+    # second one, which is how a screen of 21 August closes read as current.
+    sessions: Dict[str, Any] = field(default_factory=dict)
 
 
 # --------------------------------------------------------------- needs network
 def full_run(settings, args, logger=None) -> RunContext:
     """Fetch, score and rank. The slow half."""
-    from fetchers.data_fetcher import DataFetcher
+    from fetchers.data_fetcher import DataFetcher, session_report
     from market import seasonality as S
 
-    df, price_data, benchmark_data = run_screener(settings, logger)
+    # One fetcher for the whole run. `run_screener` used to build its own, so the
+    # probe it makes for the latest traded session was invisible out here.
+    fetcher = DataFetcher(settings)
+    df, price_data, benchmark_data = run_screener(settings, logger, fetcher=fetcher)
     write_outputs(settings, df, top_picks(settings, df), logger)
 
+    sessions = session_report(price_data, fetcher.latest_market_session)
+    if logger and sessions["session_date"] is not None:
+        logger.info(f"Prices are from the {sessions['session_date'].date()} session")
+        if sessions["mixed"]:
+            logger.warning(
+                f"{len(sessions['laggards'])} ticker(s) are priced on an older "
+                f"session than the rest: "
+                f"{', '.join(t for t, _ in sessions['laggards'][:6])}")
+
     regime_cfg = settings.regime or {}
-    fetcher = DataFetcher(settings)
     fx_data = fetcher.fetch_technical_data([regime_cfg.get("fx_ticker", "IDR=X")])
 
     regime = assess_regime(
@@ -100,6 +115,7 @@ def full_run(settings, args, logger=None) -> RunContext:
         df=df, price_data=price_data, benchmark_data=benchmark_data,
         regime=regime, season_table=season_table, season_line=season_line,
         fetched_at=pd.Timestamp.now(), universe_key=universe_key(settings),
+        sessions=sessions,
     )
 
 
@@ -155,6 +171,7 @@ def save_snapshot(ctx: RunContext) -> Optional[Path]:
             "season_line": ctx.season_line,
             "fetched_at": ctx.fetched_at or pd.Timestamp.now(),
             "universe_key": ctx.universe_key or universe_key(ctx.settings),
+            "sessions": ctx.sessions or {},
         }, path)
         return path
     except Exception as e:
@@ -210,6 +227,7 @@ def load_snapshot(settings, args, logger=None) -> Optional[RunContext]:
         regime=blob.get("regime"), season_table=blob.get("season_table"),
         season_line=blob.get("season_line") or "",
         fetched_at=blob.get("fetched_at"), universe_key=want,
+        sessions=blob.get("sessions") or {},
     )
 
 
@@ -383,7 +401,7 @@ def render(ctx: RunContext) -> Path:
             cash_form_html=cash_form_html,
             market=_market_panel_data(ctx),
             placeholder_capital=is_placeholder_capital(settings),
-            perf=perf, fetched_at=ctx.fetched_at,
+            perf=perf, fetched_at=ctx.fetched_at, sessions=ctx.sessions,
         ),
         settings.output_dir,
     )

@@ -1,8 +1,9 @@
 import pandas as pd
 import pytest
+import yfinance as yf
 from unittest.mock import MagicMock
 
-from fetchers.data_fetcher import DataFetcher, is_index
+from fetchers.data_fetcher import DataFetcher, is_index, session_report
 
 
 @pytest.fixture(autouse=True)
@@ -169,3 +170,247 @@ def test_a_missing_file_is_never_fresh(settings_mock, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     fetcher = DataFetcher(settings_mock)
     assert not fetcher._fresh(tmp_path / "nothing.pkl")
+
+
+# ----------------------------------------------------- the session that vanished
+# Yahoo's daily feed served the 24 Aug IDX close, then withdrew it. Its intraday
+# feed still had it, and aggregating 60m bars reproduced the daily bar exactly --
+# verified digit-for-digit against Yahoo's own 20 and 21 Aug bars, and against the
+# broker's screen for 24 Aug. Two defences came out of that: rebuild what the daily
+# feed is missing, and never let a refetch delete a session we already hold.
+def _intraday(rows):
+    """rows: (timestamp, open, high, low, close)"""
+    idx = pd.DatetimeIndex([pd.Timestamp(t, tz="UTC") for t, *_ in rows])
+    return pd.DataFrame(
+        {"Open": [r[1] for r in rows], "High": [r[2] for r in rows],
+         "Low": [r[3] for r in rows], "Close": [r[4] for r in rows],
+         "Volume": [1000] * len(rows)},
+        index=idx)
+
+
+def _daily(dates, closes):
+    return pd.DataFrame(
+        {"Open": closes, "High": closes, "Low": closes, "Close": closes,
+         "Volume": [5_000_000] * len(closes)},
+        index=pd.DatetimeIndex([pd.Timestamp(d) for d in dates]))
+
+
+def test_intraday_bars_aggregate_into_one_daily_bar(settings_mock):
+    """First = open, max = high, min = low, last = close."""
+    bars = _intraday([
+        ("2026-08-24 02:00", 6544.0, 6548.0, 6540.0, 6546.0),   # 09:00 Jakarta
+        ("2026-08-24 05:00", 6546.0, 6551.0, 6474.57, 6480.0),
+        ("2026-08-24 09:00", 6480.0, 6510.0, 6478.0, 6501.67),  # 16:00 Jakarta
+    ])
+    out = DataFetcher(settings_mock)._sessions_from_intraday(bars, "Asia/Jakarta")
+
+    assert len(out) == 1
+    row = out.iloc[0]
+    assert (row["Open"], row["High"], row["Low"], row["Close"]) == (
+        6544.0, 6551.0, 6474.57, 6501.67)
+
+
+def test_sessions_are_grouped_in_the_exchanges_day_not_ours(settings_mock):
+    """The batched download comes back in UTC; the session is a local question."""
+    bars = _intraday([("2026-08-24 02:00", 1.0, 1.0, 1.0, 1.0),
+                      ("2026-08-24 09:00", 2.0, 2.0, 2.0, 2.0)])
+    out = DataFetcher(settings_mock)._sessions_from_intraday(bars, "Asia/Jakarta")
+    assert [str(d.date()) for d in out.index] == ["2026-08-24"]
+
+
+def test_a_rebuilt_bar_carries_no_volume(settings_mock, monkeypatch, tmp_path):
+    """
+    Intraday sums to roughly 60% of the official daily figure, because the auction
+    and off-book prints are missing. A volume 40% short feeding a liquidity floor
+    is worse than none: the floor decides whether a name can be exited at all.
+    """
+    monkeypatch.chdir(tmp_path)
+    fetcher = DataFetcher(settings_mock)
+    data = {"BBRI.JK": _daily(["2026-08-20", "2026-08-21"], [3140.0, 3230.0])}
+
+    monkeypatch.setattr(fetcher, "_latest_market_session",
+                        lambda *_a, **_k: pd.Timestamp("2026-08-24"))
+    monkeypatch.setattr(
+        yf, "download",
+        lambda *a, **k: _intraday([("2026-08-24 09:00", 3200.0, 3240.0, 3170.0, 3180.0)]))
+
+    out = fetcher.top_up_last_session(data)["BBRI.JK"]
+
+    assert str(out.index[-1].date()) == "2026-08-24"
+    assert float(out["Close"].iloc[-1]) == 3180.0
+    assert pd.isna(out["Volume"].iloc[-1]), "a derived bar must not claim a volume"
+    assert bool(out["synthetic"].iloc[-1]) is True
+    assert bool(out["synthetic"].iloc[0]) is False
+
+
+def test_nothing_is_rebuilt_when_the_data_already_reaches_the_market(settings_mock,
+                                                                    monkeypatch,
+                                                                    tmp_path):
+    monkeypatch.chdir(tmp_path)
+    fetcher = DataFetcher(settings_mock)
+    data = {"BBRI.JK": _daily(["2026-08-21", "2026-08-24"], [3230.0, 3180.0])}
+
+    monkeypatch.setattr(fetcher, "_latest_market_session",
+                        lambda *_a, **_k: pd.Timestamp("2026-08-24"))
+
+    def boom(*a, **k):
+        raise AssertionError("nothing to rebuild, so nothing should be fetched")
+
+    monkeypatch.setattr(yf, "download", boom)
+    assert len(fetcher.top_up_last_session(data)["BBRI.JK"]) == 2
+
+
+def test_an_unknown_market_session_leaves_the_data_alone(settings_mock, monkeypatch,
+                                                        tmp_path):
+    """Not knowing must never be treated as being up to date."""
+    monkeypatch.chdir(tmp_path)
+    fetcher = DataFetcher(settings_mock)
+    data = {"BBRI.JK": _daily(["2026-08-21"], [3230.0])}
+    monkeypatch.setattr(fetcher, "_latest_market_session", lambda *_a, **_k: None)
+
+    assert fetcher.top_up_last_session(data)["BBRI.JK"].equals(data["BBRI.JK"])
+
+
+def test_a_failed_intraday_fetch_leaves_the_data_alone(settings_mock, monkeypatch,
+                                                       tmp_path):
+    monkeypatch.chdir(tmp_path)
+    fetcher = DataFetcher(settings_mock)
+    original = _daily(["2026-08-21"], [3230.0])
+    data = {"BBRI.JK": original.copy()}
+
+    monkeypatch.setattr(fetcher, "_latest_market_session",
+                        lambda *_a, **_k: pd.Timestamp("2026-08-24"))
+
+    def boom(*a, **k):
+        raise RuntimeError("network gone")
+
+    monkeypatch.setattr(yf, "download", boom)
+    assert fetcher.top_up_last_session(data)["BBRI.JK"].equals(original)
+
+
+def test_the_probe_asks_the_index_not_whichever_ticker_is_first(settings_mock,
+                                                                monkeypatch,
+                                                                tmp_path):
+    """
+    A thinly traded name that did not print on the latest session would report the
+    market as older than it is, and the top-up would decline to run for everyone.
+    """
+    monkeypatch.chdir(tmp_path)
+    settings_mock.regime = {**(settings_mock.regime or {}), "benchmark": "^JKSE"}
+    fetcher = DataFetcher(settings_mock)
+
+    asked = []
+    monkeypatch.setattr(fetcher, "_latest_market_session",
+                        lambda t: asked.append(t) or pd.Timestamp("2026-08-24"))
+    monkeypatch.setattr(yf, "download", lambda *a, **k: pd.DataFrame())
+
+    fetcher.top_up_last_session({"ADHI.JK": _daily(["2026-08-21"], [200.0])})
+    assert asked == ["^JKSE"]
+
+
+# ------------------------------------------------- a session is never given back
+def _always_refetch(fetcher, monkeypatch):
+    """These tests are about what a refetch merges, not about the TTL."""
+    monkeypatch.setattr(fetcher, "_fresh", lambda _p: False)
+
+
+def test_a_refetch_keeps_a_session_the_vendor_stopped_serving(settings_mock, tmp_path,
+                                                              mocker, monkeypatch):
+    """
+    The failure this exists for. Yahoo served the 24 Aug close, then withdrew it,
+    and the next run wrote a shorter frame straight over the good cache. A session
+    that traded did not un-trade.
+    """
+    fetcher = DataFetcher(settings_mock)
+    fetcher.cache_dir = tmp_path
+    _always_refetch(fetcher, monkeypatch)
+
+    mocker.patch("fetchers.data_fetcher.yf.download",
+                 return_value=_daily(["2026-08-21", "2026-08-24"], [3230.0, 3180.0]))
+    first = fetcher._fetch_single("BBRI.JK", period="2y")
+    assert str(first.index[-1].date()) == "2026-08-24"
+
+    # The vendor drops the newest session on the next call.
+    mocker.patch("fetchers.data_fetcher.yf.download",
+                 return_value=_daily(["2026-08-21"], [3230.0]))
+    second = fetcher._fetch_single("BBRI.JK", period="2y")
+
+    assert str(second.index[-1].date()) == "2026-08-24", "the session was thrown away"
+    assert float(second["Close"].iloc[-1]) == 3180.0
+
+
+def test_a_revision_to_a_session_we_hold_does_land(settings_mock, tmp_path, mocker,
+                                                   monkeypatch):
+    """Keeping old dates must not mean ignoring corrections to them."""
+    fetcher = DataFetcher(settings_mock)
+    fetcher.cache_dir = tmp_path
+    _always_refetch(fetcher, monkeypatch)
+
+    mocker.patch("fetchers.data_fetcher.yf.download",
+                 return_value=_daily(["2026-08-21"], [3230.0]))
+    fetcher._fetch_single("BBRI.JK", period="2y")
+
+    mocker.patch("fetchers.data_fetcher.yf.download",
+                 return_value=_daily(["2026-08-21"], [3225.0]))
+    out = fetcher._fetch_single("BBRI.JK", period="2y")
+
+    assert float(out["Close"].iloc[-1]) == 3225.0
+
+
+def test_the_official_bar_replaces_a_rebuilt_one(settings_mock, tmp_path, mocker,
+                                                 monkeypatch):
+    """Once the vendor publishes the real session, the derived one steps aside."""
+    fetcher = DataFetcher(settings_mock)
+    fetcher.cache_dir = tmp_path
+    _always_refetch(fetcher, monkeypatch)
+
+    derived = _daily(["2026-08-21", "2026-08-24"], [3230.0, 3180.0])
+    derived.loc[derived.index[-1], "Volume"] = float("nan")
+    derived["synthetic"] = [False, True]
+    import joblib
+    joblib.dump(derived, fetcher._cache_path("BBRI.JK", "2y"))
+
+    official = _daily(["2026-08-21", "2026-08-24"], [3230.0, 3180.0])
+    mocker.patch("fetchers.data_fetcher.yf.download", return_value=official)
+    out = fetcher._fetch_single("BBRI.JK", period="2y")
+
+    assert float(out["Volume"].iloc[-1]) == 5_000_000, "still the derived bar"
+
+
+# ---------------------------------------------------------- which session is this
+def test_the_session_report_names_the_newest_bar():
+    data = {"BBRI.JK": _daily(["2026-08-21", "2026-08-24"], [1.0, 2.0]),
+            "TLKM.JK": _daily(["2026-08-21", "2026-08-24"], [1.0, 2.0])}
+    out = session_report(data)
+
+    assert str(out["session_date"].date()) == "2026-08-24"
+    assert out["mixed"] is False
+    assert out["laggards"] == []
+
+
+def test_the_session_report_names_the_laggards():
+    """
+    Every score here is a z-score against peers, so names priced on different days
+    are not actually being compared. Real data had 50 tickers on one session and 1
+    on another.
+    """
+    data = {"BBRI.JK": _daily(["2026-08-24"], [1.0]),
+            "ADHI.JK": _daily(["2026-08-21"], [1.0])}
+    out = session_report(data)
+
+    assert out["mixed"] is True
+    assert out["laggards"] == [("ADHI.JK", "2026-08-21")]
+
+
+def test_being_behind_is_only_claimed_when_the_market_session_is_known():
+    """Not knowing must never render as being up to date."""
+    data = {"BBRI.JK": _daily(["2026-08-21"], [1.0])}
+
+    assert session_report(data)["behind"] is None
+    assert session_report(data, pd.Timestamp("2026-08-24"))["behind"] is True
+    assert session_report(data, pd.Timestamp("2026-08-21"))["behind"] is False
+
+
+def test_the_session_report_survives_empty_data():
+    assert session_report({})["session_date"] is None
+    assert session_report({"X": pd.DataFrame()})["session_date"] is None

@@ -364,3 +364,78 @@ def test_the_page_says_how_old_its_data_is():
 
 def test_no_timestamp_leaves_the_old_subtitle_alone():
     assert "names screened" in _render()
+
+
+# ------------------------------------------- which session, not when we asked
+# "data as of Tue 25 Aug, 01:44" was the moment we fetched. Every price under it
+# was the 21 August close, and nothing on the page said so. That one line is why a
+# whole screen of stale prices read as current.
+def _sessions(session="2026-08-21", market=None, laggards=()):
+    return {
+        "session_date": pd.Timestamp(session) if session else None,
+        "market_session": pd.Timestamp(market) if market else None,
+        "behind": None if market is None else pd.Timestamp(session) < pd.Timestamp(market),
+        "laggards": list(laggards),
+        "mixed": bool(laggards),
+    }
+
+
+def test_the_header_names_the_session_the_prices_came_from():
+    head = _render(sessions=_sessions("2026-08-24"),
+                   fetched_at=pd.Timestamp("2026-08-25 01:44")).split("</header>")[0]
+    assert "prices from Mon 24 Aug close" in head
+    assert "fetched 01:44" in head
+
+
+def test_the_fetch_time_alone_never_stands_in_for_the_session():
+    """The exact shape of the original defect."""
+    head = _render(sessions=_sessions("2026-08-21"),
+                   fetched_at=pd.Timestamp("2026-08-25 01:44")).split("</header>")[0]
+    assert "prices from Fri 21 Aug" in head
+    assert "data as of Tue 25 Aug" not in head
+
+
+def test_being_behind_the_market_is_said_in_the_header_and_on_the_ticket():
+    out = _render(sessions=_sessions("2026-08-21", market="2026-08-24"),
+                  fetched_at=pd.Timestamp("2026-08-25 01:44"))
+
+    assert "BEHIND THE MARKET" in out.split("</header>")[0]
+    assert "Prices are from the Fri 21 Aug close" in out
+    assert "market has since traded Mon 24 Aug" in out
+    assert "Indopremier" in out
+
+
+def test_a_stale_ticket_keeps_its_lot_counts():
+    """You chose to be told, not to be stopped."""
+    out = _render(sessions=_sessions("2026-08-21", market="2026-08-24"))
+    assert "BBRI.JK" in out
+    assert "3 lot" in out
+
+
+def test_current_prices_raise_no_banner():
+    out = _render(sessions=_sessions("2026-08-24", market="2026-08-24"))
+    assert "Prices are from the" not in out
+    assert "BEHIND THE MARKET" not in out
+
+
+def test_mixed_sessions_are_named_beside_the_candidates():
+    """
+    Every score is a z-score against peers, so names priced on different days are
+    not being compared. Real data had 50 tickers on one session and 1 on another.
+    """
+    out = _render(sessions=_sessions(
+        "2026-08-24", laggards=[("ADHI.JK", "2026-08-21"), ("WIKA.JK", "2026-08-21")]))
+
+    assert "2 of 49 names are priced on an older session" in out
+    assert "ADHI.JK (2026-08-21)" in out
+
+
+def test_one_session_for_everyone_raises_nothing():
+    out = _render(sessions=_sessions("2026-08-24"))
+    assert "priced on an older session" not in out
+
+
+def test_the_page_still_renders_with_no_session_information():
+    """Anything built before this existed, and any snapshot without it."""
+    assert "IDX Terminal" in _render()
+    assert "names screened" in _render()
