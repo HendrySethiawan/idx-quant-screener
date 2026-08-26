@@ -255,3 +255,84 @@ def test_no_tab_anywhere_on_the_page_opens_onto_nothing():
     assert targets, "no tabs were rendered at all"
     for target in targets:
         assert f'id="{target}"' in out, f"tab {target!r} opens onto nothing"
+
+
+# ------------------------------------------- a column cannot outgrow the viewport
+# `.col` is `overflow:hidden` and `.pnl` is `flex:none`, so a column taller than
+# the window is silently CLIPPED -- no scrollbar, no hint. Adding a third form to
+# the Portfolio column pushed the dividend form half off the bottom and the whole
+# "How you are doing" panel off it entirely, and every test still passed: they all
+# assert that markup is PRESENT, which it was.
+MAX_FIXED_PANELS_PER_COLUMN = 2
+
+
+def _columns(page_html: str):
+    """(fixed, growing, titles) for each column in a rendered page."""
+    out = []
+    for chunk in re.split(r'<div class="col"', page_html)[1:]:
+        fixed = len(re.findall(r'<section class="pnl"', chunk))
+        grow = len(re.findall(r'<section class="pnl grow', chunk))
+        titles = re.findall(r'class="pnl-ttl">([^<]*)', chunk)[: fixed + grow]
+        if fixed or grow:
+            out.append((fixed, grow, titles))
+    return out
+
+
+def _full_brief(**kw):
+    """The real page, with every optional section switched on."""
+    from market.regime import Regime, Signal
+    from portfolio.fees import FeeConfig, estimate_fees
+    from report.brief import render_brief
+    from report.journal_view import cash_form, dividend_form, trade_form
+
+    defaults = dict(
+        regime=Regime([Signal("IHSG trend", "^JKSE", True, "above")],
+                      1.0, "RISK-ON", "G", "Deploy 100%."),
+        orders=[{"action": "BUY", "ticker": "BBRI.JK", "lots": 3, "shares": 300,
+                 "price": 4150.0, "rupiah": 1_245_000, "note": "target 33%"}],
+        fees=estimate_fees([{"action": "BUY", "rupiah": 1_245_000}], FeeConfig()),
+        capital=10_000_000, holdings_rows=[], candidates=[], rejected={}, capped={},
+        allocation=None, universe_n=49, imputed_n=0,
+        trade_form_html=trade_form(), cash_form_html=cash_form(),
+        dividend_form_html=dividend_form(),
+        ledger_html="<p>ledger</p>", journal_html="<p>doing</p>",
+    )
+    defaults.update(kw)
+    return render_brief(**defaults)
+
+
+def test_no_column_stacks_more_fixed_panels_than_fit():
+    for fixed, grow, titles in _columns(_full_brief()):
+        assert fixed <= MAX_FIXED_PANELS_PER_COLUMN, (
+            f"{fixed} fixed-height panels in one column {titles} -- `.col` is "
+            "overflow:hidden, so whatever does not fit is clipped with no scrollbar")
+
+
+def test_every_recording_form_is_reachable():
+    """
+    All three were rendered before this fix too. Two of them were off-screen, which
+    no assertion about markup could see.
+    """
+    out = _full_brief()
+    for form in ('id="trade-form"', 'id="cash-form"', 'id="dividend-form"'):
+        assert form in out, form
+    # ...and in ONE panel, sharing a tab strip, rather than stacked.
+    assert 'data-group="record"' in out
+
+
+def test_a_column_has_at_most_one_growing_panel():
+    """Two growing panels fight over the leftover height; the docstring says so."""
+    for fixed, grow, titles in _columns(_full_brief()):
+        assert grow <= 1, f"{grow} growing panels in one column {titles}"
+
+
+def test_the_cli_fallback_does_not_leave_an_empty_tab():
+    """
+    Opened as a file there are no forms at all. `tabbed` drops empty sections, so
+    the strip must not offer a tab pointing at nothing.
+    """
+    out = _full_brief(trade_form_html="<p>use the command line</p>",
+                 cash_form_html="", dividend_form_html="")
+    assert 'data-group="record"' not in out, (
+        "one section left should render bare, not as a single-choice tab strip")
+    assert "use the command line" in out

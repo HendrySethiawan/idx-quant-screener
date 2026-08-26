@@ -18,7 +18,7 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
-from report import terminal as T
+from report import layout, terminal as T
 from report.terminal import SHELL_JS, THEME_CSS
 
 # Styling that belongs to content this module renders, not to the shell.
@@ -683,11 +683,22 @@ def render_brief(
         ]),
     ])
 
+    # One panel, three tabs -- not three stacked panels. `.col` is
+    # `overflow:hidden` and `.pnl` is `flex:none`, so a column taller than the
+    # viewport is silently CLIPPED: adding the cash and dividend forms pushed the
+    # dividend form half off the bottom and "How you are doing" entirely off it,
+    # with nothing on screen suggesting either existed. Recording a trade, a
+    # deposit and a dividend are never the same moment anyway.
+    record = layout.tabbed(
+        [("Trade", trade_form_html),
+         ("Cash in / out", cash_form_html),
+         ("Dividend", dividend_form_html)],
+        group="record",
+    )
+
     portfolio = T.grid([
         T.column([
-            T.panel("Record a trade", trade_form_html, pid="panel-trade"),
-            T.panel("Cash in and out", cash_form_html, pid="panel-cash"),
-            T.panel("Dividend received", dividend_form_html, pid="panel-dividend"),
+            T.panel("Record what you did", record, pid="panel-trade"),
             T.panel("How you are doing",
                     journal_html or '<div class="empty">Nothing logged yet.</div>',
                     grow=True),
