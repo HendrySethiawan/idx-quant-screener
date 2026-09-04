@@ -519,3 +519,71 @@ def test_the_note_reaches_the_ticket_panel():
 def test_the_untested_warning_reaches_the_ticket_panel_too():
     ticket = _render().split('id="panel-ticket"')[-1].split("</section>")[0]
     assert "never been tested on this machine" in ticket
+
+
+# ----------------------------- names that could not be fetched, and benchmark bases
+def test_unfetched_names_are_named_on_the_ticket():
+    """
+    A ticker that fails silently changes the peer group every other name is
+    z-scored against. The page must not go on implying it screened all 49.
+    """
+    out = _render(sessions={"session_date": None, "laggards": [], "mixed": False,
+                            "behind": None, "missing": ["GOTO.JK", "WIKA.JK"]})
+    ticket = out.split('id="panel-ticket"')[-1].split("</section>")[0]
+
+    assert "2 names could not be fetched" in ticket
+    assert "GOTO.JK, WIKA.JK" in ticket
+    assert "smaller group than usual" in ticket
+
+
+def test_one_unfetched_name_reads_as_singular():
+    out = _render(sessions={"session_date": None, "laggards": [], "mixed": False,
+                            "behind": None, "missing": ["WIKA.JK"]})
+    assert "1 name could not be fetched" in out
+    assert "is absent from the ranking" in out
+
+
+def test_a_clean_fetch_raises_nothing():
+    assert "could not be fetched" not in _render()
+
+
+def test_the_two_benchmarks_state_which_basis_they_use():
+    """
+    Stock closes are dividend-adjusted (BBRI: 9.5% over a year); ^JKSE is a price
+    index and pays nothing. Printed side by side they read as comparable, and they
+    are not.
+    """
+    from report.journal_view import brief_section
+
+    class _Perf:
+        total_value = 10_000_000.0
+        cash = 8_000_000.0
+        position_value = 2_000_000.0
+        return_pct = 1.0
+        realized_pnl = unrealized_pnl = 0.0
+        total_fees = fee_drag_pct = 0.0
+        closed_cost = open_cost = 0.0
+        return_on_closed_pct = return_on_open_pct = None
+        dividend_income = 0.0
+        realised_yield_pct: dict = {}
+        n_closed = 0
+        comparable = True
+        shadow_total = 9_700_000.0
+        vs_ihsg_rp = 300_000.0
+        vs_ihsg_pct = 3.1
+        watchlist_total = 10_100_000.0
+        vs_watchlist_rp = -100_000.0
+        vs_watchlist_pct = -1.0
+        stamp_paid = stamp_saved = stamp_avoidable = 0.0
+        sell_days = 0
+        verdict = "Not enough data yet."
+
+        class shadow:
+            unavailable = False
+            shortfall = False
+
+    out = brief_section(_Perf())
+
+    assert "PRICE" in out and "pays no dividends" in out      # the IHSG line
+    assert "dividends included" in out                        # the watchlist line
+    assert "same basis as your own total" in out

@@ -515,3 +515,75 @@ def test_the_ticket_quotes_what_trading_cost():
     })
     assert "37% of the gross return" in out
     assert "Turnover is the part of this you control" in out
+
+
+# --------------------------------------------- Sharpe needs a risk-free rate
+# `sharpe = ann_ret / vol` is return over volatility, not a Sharpe ratio. In a
+# market with a 5%+ policy rate the risk-free term is most of the number, and the
+# ticket now quotes a Sharpe gap as evidence.
+def _flat_growth(periods=60, seed=3):
+    """A rising equity curve with real variation -- constant returns give zero
+    volatility, and a Sharpe with a zero denominator tests nothing."""
+    idx = pd.date_range("2021-01-31", periods=periods, freq="ME")
+    rng = np.random.default_rng(seed)
+    steps = 1 + rng.normal(0.015, 0.04, periods)
+    return pd.Series(1_000_000 * np.cumprod(steps), index=idx)
+
+
+def test_the_risk_free_rate_is_subtracted_before_the_ratio():
+    from backtest.engine import summarize
+
+    eq = _flat_growth()
+    rets = eq.pct_change().dropna()
+
+    raw = summarize(eq, rets, pd.Series(dtype=float), 12, risk_free_pct=0.0)
+    net = summarize(eq, rets, pd.Series(dtype=float), 12, risk_free_pct=5.5)
+
+    assert net["sharpe"] == pytest.approx(
+        (raw["cagr"] - 5.5) / raw["ann_vol"], abs=0.01)
+    assert net["sharpe"] < raw["sharpe"]
+
+
+def test_a_zero_rate_reproduces_the_old_arithmetic_exactly():
+    """So the change can be told apart from a change in the data."""
+    from backtest.engine import summarize
+
+    eq = _flat_growth()
+    rets = eq.pct_change().dropna()
+    out = summarize(eq, rets, pd.Series(dtype=float), 12, risk_free_pct=0.0)
+
+    assert out["sharpe"] == pytest.approx(out["cagr"] / out["ann_vol"], abs=0.01)
+
+
+def test_the_rate_used_is_reported_with_the_number():
+    """A Sharpe whose risk-free rate is invisible cannot be checked."""
+    from backtest.engine import summarize
+
+    eq = _flat_growth()
+    out = summarize(eq, eq.pct_change().dropna(), pd.Series(dtype=float), 12, 5.5)
+    assert out["risk_free_pct"] == 5.5
+
+
+def test_both_sides_of_the_comparison_get_the_same_subtraction():
+    """
+    Subtracting it from the strategy alone would hand the benchmark five points a
+    year it never earned -- and the ticket quotes the GAP between the two.
+    """
+    from backtest.engine import BacktestConfig
+    from backtest.report import factor_report
+
+    idx = pd.date_range("2021-01-04", periods=400, freq="B")
+    rng = np.random.default_rng(11)
+    panel = pd.DataFrame(
+        {t: 1000 * np.cumprod(1 + rng.normal(0.0004, 0.012, 400)) for t in
+         ("AAA.JK", "BBB.JK", "CCC.JK", "DDD.JK", "EEE.JK")}, index=idx)
+    bench = pd.Series(6000 * np.cumprod(1 + rng.normal(0.0002, 0.008, 400)), index=idx)
+    sectors = {t: "X" for t in panel.columns}
+
+    cfg = BacktestConfig(rebalance="M", min_names=3, risk_free_pct=5.5)
+    out = factor_report(panel, 10_000_000, cfg, FeeConfig(), sectors, bench, None)
+
+    rates = {c.label: c.metrics.get("risk_free_pct") for c in out
+             if c.metrics.get("risk_free_pct") is not None}
+    assert rates, "no comparison reported the rate it used"
+    assert set(rates.values()) == {5.5}, rates

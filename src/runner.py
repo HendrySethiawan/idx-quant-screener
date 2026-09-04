@@ -83,9 +83,14 @@ def full_run(settings, args, logger=None) -> RunContext:
     df, price_data, benchmark_data = run_screener(settings, logger, fetcher=fetcher)
     write_outputs(settings, df, top_picks(settings, df), logger)
 
-    sessions = session_report(price_data, fetcher.latest_market_session)
+    sessions = session_report(price_data, fetcher.latest_market_session,
+                              failed=fetcher.failed)
     if logger and sessions["session_date"] is not None:
         logger.info(f"Prices are from the {sessions['session_date'].date()} session")
+        if sessions.get("missing"):
+            logger.warning(
+                f"{len(sessions['missing'])} ticker(s) could not be fetched and are "
+                f"absent from the ranking: {', '.join(sessions['missing'])}")
         if sessions["mixed"]:
             logger.warning(
                 f"{len(sessions['laggards'])} ticker(s) are priced on an older "

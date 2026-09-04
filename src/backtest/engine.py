@@ -59,6 +59,8 @@ class BacktestConfig:
     min_names: int = 10              # skip dates with too few listed names
     start: Optional[pd.Timestamp] = None
     end: Optional[pd.Timestamp] = None
+    # Annualised percent, subtracted before every Sharpe this config produces.
+    risk_free_pct: float = 0.0
 
     @property
     def periods_per_year(self) -> int:
@@ -83,7 +85,8 @@ class BacktestResult:
 
     def metrics(self) -> Dict[str, Optional[float]]:
         return summarize(self.equity, self.returns, self.turnover,
-                         self.config.periods_per_year if self.config else 12)
+                         self.config.periods_per_year if self.config else 12,
+                         self.config.risk_free_pct if self.config else 0.0)
 
 
 # --------------------------------------------------------------------- plumbing
@@ -385,7 +388,17 @@ def max_drawdown(equity: pd.Series) -> float:
 
 
 def summarize(equity: pd.Series, returns: pd.Series, turnover: pd.Series,
-              periods_per_year: int) -> Dict[str, Optional[float]]:
+              periods_per_year: int,
+              risk_free_pct: float = 0.0) -> Dict[str, Optional[float]]:
+    """
+    Return, risk, and the ratio between them.
+
+    `risk_free_pct` is subtracted before the Sharpe. Return divided by volatility
+    with no risk-free term is not a Sharpe ratio, and in a market with a 5%+
+    policy rate the difference is most of the number: 25.2/24.5 = 1.03 becomes
+    (25.2-5.5)/24.5 = 0.80. It defaults to 0.0 so a caller that has no view gets
+    the old arithmetic explicitly rather than by omission.
+    """
     if equity is None or len(equity) < 2:
         return {}
 
@@ -395,7 +408,8 @@ def summarize(equity: pd.Series, returns: pd.Series, turnover: pd.Series,
 
     vol = float(returns.std() * np.sqrt(periods_per_year) * 100) if len(returns) > 1 else None
     ann_ret = cagr
-    sharpe = (ann_ret / vol) if (vol and vol > 0 and ann_ret is not None) else None
+    excess = None if ann_ret is None else ann_ret - float(risk_free_pct or 0.0)
+    sharpe = (excess / vol) if (vol and vol > 0 and excess is not None) else None
 
     def clean(v):
         return None if v is None or not np.isfinite(v) else round(float(v), 2)
@@ -406,6 +420,7 @@ def summarize(equity: pd.Series, returns: pd.Series, turnover: pd.Series,
         "ann_vol": clean(vol),
         "sharpe": clean(sharpe),
         "max_drawdown": clean(max_drawdown(equity)),
+        "risk_free_pct": clean(float(risk_free_pct or 0.0)),
         "hit_rate": clean(float((returns > 0).mean() * 100)) if len(returns) else None,
         "avg_turnover": clean(float(turnover.mean() * 100)) if len(turnover) else None,
         "periods": len(equity),

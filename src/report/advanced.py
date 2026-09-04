@@ -113,10 +113,15 @@ def universe_table(df: pd.DataFrame) -> str:
                 (' style="color:var(--bad)"' if z < -0.8 else "")
             )
             cells.append((f"<span{shade}>{z:+.2f}</span>" if z is not None else "-", z))
-        cells.append(
-            (f'<span class="pill warn">{_e(gaps)}</span>' if gaps
-             else '<span class="note">-</span>', len(gaps))
-        )
+        # The gaps, and where a price factor was unmeasurable, WHY. "at the Rp50
+        # floor on 100% of the last 60 sessions" is a different fact from "missing"
+        # -- it says the number was never available, not merely absent.
+        gap_cell = (f'<span class="pill warn">{_e(gaps)}</span>' if gaps
+                    else '<span class="note">-</span>')
+        price_note = str(r.get("price_note") or "")
+        if price_note:
+            gap_cell += f'<br><span class="note">{_e(price_note)}</span>'
+        cells.append((gap_cell, len(gaps)))
 
         tds = ""
         for i, (rendered, sort_val) in enumerate(cells):
@@ -172,6 +177,14 @@ def score_breakdown(df: pd.DataFrame, factor_weights: Dict[str, float],
         caption = f"Total {total:+.2f}" if total is not None else ""
         if gaps:
             caption += f' &middot; <span class="pill warn">scored neutral on {_e(gaps)}</span>'
+
+        # WHY a price factor could not be measured -- "at the Rp50 floor on 100% of
+        # the last 60 sessions" is a different fact from "missing", and it is the
+        # one that says the number was never available rather than merely absent.
+        price_note = str(row.get("price_note") or "")
+        if price_note:
+            caption += (f'<br><span class="note">price could not support: '
+                        f'{_e(price_note)}</span>')
 
         out += (
             f'<div style="margin-bottom:18px">'

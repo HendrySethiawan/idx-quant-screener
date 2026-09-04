@@ -299,6 +299,7 @@ def cmd_backtest(settings, logger=None) -> int:
             min_position_rp=float(account.get("min_position_rp", 1_000_000)),
             max_per_sector=int(getattr(settings, "max_per_sector", 2)),
             min_names=int(bt.get("min_names", 10)),
+            risk_free_pct=float(getattr(settings, "risk_free_pct", 0.0) or 0.0),
         )
         args = (panel, settings.capital_rp, cfg, fee_cfg, settings.sectors,
                 benchmark, fx, int(regime_cfg.get("trend_ma", 200)),

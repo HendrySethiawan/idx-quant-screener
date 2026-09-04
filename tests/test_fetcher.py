@@ -414,3 +414,45 @@ def test_being_behind_is_only_claimed_when_the_market_session_is_known():
 def test_the_session_report_survives_empty_data():
     assert session_report({})["session_date"] is None
     assert session_report({"X": pd.DataFrame()})["session_date"] is None
+
+
+# ------------------------------- a name that could not be fetched is not silent
+# `fetch_technical_data` logged the error and moved on, so the ticker vanished
+# from price_data and from the run. Every score here is cross-sectional, so the
+# survivors were then z-scored against a different peer group than the page named.
+def test_a_failed_ticker_is_recorded_not_just_logged(settings_mock, tmp_path, mocker):
+    fetcher = DataFetcher(settings_mock)
+    fetcher.cache_dir = tmp_path
+    mocker.patch("fetchers.data_fetcher.yf.download", side_effect=ValueError("gone"))
+
+    assert fetcher.fetch_technical_data(["WIKA.JK", "BBRI.JK"], period="2y") == {}
+    assert fetcher.failed == ["BBRI.JK", "WIKA.JK"]
+
+
+def test_a_clean_fetch_records_no_failures(settings_mock, tmp_path, mocker, frame):
+    fetcher = DataFetcher(settings_mock)
+    fetcher.cache_dir = tmp_path
+    mocker.patch("fetchers.data_fetcher.yf.download", return_value=frame)
+
+    fetcher.fetch_technical_data(["BBRI.JK"], period="2y")
+    assert fetcher.failed == []
+
+
+def test_the_session_report_carries_the_missing_names():
+    data = {"BBRI.JK": _daily(["2026-09-04"], [3180.0])}
+    out = session_report(data, failed=["WIKA.JK", "GOTO.JK"])
+
+    assert out["missing"] == ["GOTO.JK", "WIKA.JK"]
+    # Not a laggard: a laggard was priced on an older session, these were not
+    # priced at all.
+    assert out["laggards"] == []
+
+
+def test_missing_is_empty_when_everything_arrived():
+    data = {"BBRI.JK": _daily(["2026-09-04"], [3180.0])}
+    assert session_report(data)["missing"] == []
+
+
+def test_missing_survives_a_total_fetch_failure():
+    """Nothing came back at all -- the names still have to be named."""
+    assert session_report({}, failed=["WIKA.JK"])["missing"] == ["WIKA.JK"]

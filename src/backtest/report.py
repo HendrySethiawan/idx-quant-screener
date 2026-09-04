@@ -120,6 +120,9 @@ def factor_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
 
     dates = rebalance_dates(panel, cfg.rebalance)
     ppy = cfg.periods_per_year
+    # The same rate on both sides. Subtracting it from the strategy alone would
+    # hand the benchmark five points a year it never earned.
+    rf = getattr(cfg, "risk_free_pct", 0.0)
 
     gross_cfg = BacktestConfig(**{**cfg.__dict__, "charge_fees": False, "whole_lots": False})
     gross = run_backtest(panel, capital, gross_cfg, fee_cfg, sectors, benchmark, fx,
@@ -138,7 +141,7 @@ def factor_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
     if not ew.empty:
         out.append(Comparison(
             "Equal-weight universe", ew,
-            summarize(ew, ew.pct_change().dropna(), pd.Series(dtype=float), ppy),
+            summarize(ew, ew.pct_change().dropna(), pd.Series(dtype=float), ppy, rf),
             "every listed name, no ranking - did the ranking beat this?",
         ))
 
@@ -147,7 +150,7 @@ def factor_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
         if not idx.empty:
             out.append(Comparison(
                 "IHSG (buy and hold)", idx,
-                summarize(idx, idx.pct_change().dropna(), pd.Series(dtype=float), ppy),
+                summarize(idx, idx.pct_change().dropna(), pd.Series(dtype=float), ppy, rf),
                 "the do-nothing alternative",
             ))
     return out

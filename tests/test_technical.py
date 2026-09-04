@@ -2,7 +2,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from analysis.technical import compute_indicators, extract_latest_indicators
+from analysis.technical import (DEFAULT_MARKET, compute_indicators,
+                                extract_latest_indicators,
+                                unmeasurable_factors)
 
 
 def test_indicator_columns_present(price_frame):
@@ -27,7 +29,15 @@ def test_rising_series_has_positive_momentum(price_frame):
 def test_momentum_skips_the_most_recent_month():
     """6-1 momentum must ignore the last ~21 sessions, so a late spike cannot leak in."""
     idx = pd.date_range("2023-01-02", periods=300, freq="B")
-    close = pd.Series(np.full(300, 1000.0), index=idx)
+    # A repeating 15-day pattern, not a flat line. 6-1 momentum compares t-21 with
+    # t-126, and 126-21 = 105 is a whole number of periods, so those two points are
+    # bit-identical and the expected answer is still exactly 0. A constant series
+    # would be simpler and would also be a suspended stock -- which the price
+    # checks now (correctly) refuse to measure.
+    pattern = np.array([1000.0, 1010.0, 1005.0, 995.0, 1020.0,
+                        1015.0, 990.0, 1000.0, 1030.0, 1008.0,
+                        998.0, 1012.0, 1002.0, 1018.0, 992.0])
+    close = pd.Series(np.tile(pattern, 20)[:300], index=idx)
     close.iloc[-10:] = 5000.0  # violent spike inside the skip window
     frame = pd.DataFrame({"Close": close, "Volume": pd.Series(np.full(300, 1e6), index=idx)})
 
@@ -125,3 +135,117 @@ def test_too_few_sessions_still_gives_no_liquidity_figure():
     """Half a window is a median; three days is not."""
     out = compute_indicators(_series(n=3), liquidity_window=20)
     assert pd.isna(out["median_daily_value_rp"].iloc[-1])
+
+
+# ------------------------------- a price that cannot move is not a calm price
+# `realized_vol` is scored at -0.5, "prefer calmer names". Two things measure as
+# zero volatility without being calm: a price pinned at the IDX minimum (GOTO sat
+# at Rp50 for 85 of 250 sessions and cannot fall) and a suspended one (WIKA printed
+# no change on 249 of 250 with zero traded value). Both scored realized_vol =
+# 0.000000, the most favourable volatility z-score in the universe.
+MARKET = {"min_price_rp": 50.0, "max_flat_pct": 0.60, "max_floor_pct": 0.20}
+
+
+def _prices(values):
+    idx = pd.date_range("2024-01-01", periods=len(values), freq="B")
+    return pd.Series(np.asarray(values, dtype=float), index=idx)
+
+
+def _frame(close):
+    return pd.DataFrame({"Close": close,
+                         "Volume": pd.Series(np.full(len(close), 1e6), index=close.index)})
+
+
+def test_a_suspended_price_cannot_support_volatility_or_momentum():
+    """WIKA's shape: 300 sessions, one move. Not calm -- not trading."""
+    vals = np.full(300, 204.0)
+    vals[0] = 210.0
+    blocked = unmeasurable_factors(_prices(vals), MARKET, vol_window=60)
+
+    assert set(blocked) == {"realized_vol", "mom_1m", "mom_6m", "mom_12m"}
+    assert "no price change" in blocked["realized_vol"]
+
+
+def test_a_price_pinned_at_the_floor_cannot_support_them_either():
+    """GOTO's shape: sitting on the Rp50 minimum, unable to fall."""
+    vals = np.concatenate([np.linspace(120.0, 50.0, 100), np.full(200, 50.0)])
+    blocked = unmeasurable_factors(_prices(vals), MARKET, vol_window=60)
+
+    assert "realized_vol" in blocked
+    assert "floor" in blocked["realized_vol"]
+    assert "Rp50" in blocked["realized_vol"]
+
+
+def test_the_floor_is_configuration_not_a_constant():
+    """
+    BEI is moving the minimum price Rp50 -> Rp1 (targeted 7 Sept 2026). When it
+    lands, one config value changes and a name at Rp50 stops being pinned.
+    """
+    vals = np.full(300, 50.0)
+    vals[::2] = 51.0            # changes every session, so ONLY the floor rule can fire
+    assert "realized_vol" in unmeasurable_factors(_prices(vals), MARKET, 60)
+
+    after = {**MARKET, "min_price_rp": 1.0}
+    assert "realized_vol" not in unmeasurable_factors(_prices(vals), after, 60)
+
+
+def test_an_ordinary_name_is_left_alone():
+    rng = np.random.default_rng(7)
+    vals = 3000.0 * np.cumprod(1 + rng.normal(0, 0.015, 300))
+    assert unmeasurable_factors(_prices(vals), MARKET, vol_window=60) == {}
+
+
+def test_a_thin_but_real_name_is_left_alone():
+    """
+    BBKP runs 27-48% flat sessions and touches the floor at most 5% of the time.
+    Thin is not unmeasurable, and the liquidity gate already judges thin.
+    """
+    vals = np.full(300, 54.0)
+    vals[::2] = 55.0                       # ~50% flat, never at the floor
+    assert unmeasurable_factors(_prices(vals), MARKET, vol_window=60) == {}
+
+
+def test_each_factor_is_judged_over_its_own_window():
+    """
+    A name can have unmeasurable 60-day volatility and perfectly good 12-month
+    momentum. Judging the ticker once would throw away the half that still works.
+    """
+    vals = np.concatenate([3000.0 + np.arange(200) * 2.0, np.full(100, 3400.0)])
+    blocked = unmeasurable_factors(_prices(vals), MARKET, vol_window=60)
+
+    assert "realized_vol" in blocked          # last 60 are flat
+    assert "mom_12m" not in blocked           # the 252-session window still moves
+
+
+def test_the_blocked_factors_come_back_as_missing_not_as_zero():
+    """
+    Nulled, so the scorer treats them as neutral and lists them in
+    imputed_factors. Zero would read as "no volatility", which is the bug.
+    """
+    vals = np.full(300, 204.0)
+    vals[0] = 210.0
+    latest = extract_latest_indicators(compute_indicators(_frame(_prices(vals))),
+                                       market=MARKET, vol_window=60)
+
+    assert np.isnan(latest["realized_vol"])
+    assert np.isnan(latest["mom_12m"])
+    assert "no price change" in latest["price_note"]
+
+
+def test_the_reason_is_carried_for_the_page_to_show():
+    vals = np.concatenate([np.linspace(120.0, 50.0, 100), np.full(200, 50.0)])
+    latest = extract_latest_indicators(compute_indicators(_frame(_prices(vals))),
+                                       market=MARKET, vol_window=60)
+    assert "Rp50 floor" in latest["price_note"]
+
+
+def test_no_market_config_falls_back_to_the_shipped_defaults():
+    vals = np.full(300, 204.0)
+    vals[0] = 210.0
+    assert unmeasurable_factors(_prices(vals), None, 60)
+    assert DEFAULT_MARKET["min_price_rp"] == 50.0
+
+
+def test_a_short_series_is_not_judged():
+    assert unmeasurable_factors(_prices([100.0, 100.0, 100.0]), MARKET, 60) == {}
+    assert unmeasurable_factors(None, MARKET, 60) == {}

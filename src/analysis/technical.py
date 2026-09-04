@@ -27,6 +27,72 @@ _LATEST_KEYS = (
     "last_close", "volume_ratio",
 )
 
+# Each price-derived factor, and the window it is actually measured over. A name
+# can have a perfectly good 12-month momentum and an unmeasurable 60-day
+# volatility, so the check is made per factor rather than once for the ticker.
+_FACTOR_WINDOWS = {
+    "realized_vol": 60,
+    "mom_1m": _SESSIONS_1M,
+    "mom_6m": _SESSIONS_6M,
+    "mom_12m": _SESSIONS_12M,
+}
+
+DEFAULT_MARKET = {"min_price_rp": 50.0, "max_flat_pct": 0.60, "max_floor_pct": 0.20}
+
+
+def unmeasurable_factors(close: pd.Series, market: Dict = None,
+                         vol_window: int = 60) -> Dict[str, str]:
+    """
+    Which price factors this series cannot support, and why.
+
+    Two ways a price stops carrying information, and both measure as *low*
+    volatility -- which `realized_vol` scores at -0.5, "prefer calmer names":
+
+      * **Pinned at the floor.** GOTO sat at Rp50, the minimum tradable price, for
+        85 of its last 250 sessions. It cannot fall. That is a market rule, not a
+        calm business.
+      * **Not moving at all.** WIKA printed no change on 249 of 250 sessions with
+        zero traded value -- suspended, not calm. It scored `realized_vol = 0.000`,
+        the most favourable volatility z-score in the universe, worth +0.96 on its
+        composite.
+
+    Both then distort everyone else: `_global_z` standardises on mean and standard
+    deviation, so two impossible zeros in 49 names shift the mean and inflate the
+    spread for every name being compared against them.
+
+    Returning a reason per factor rather than dropping the ticker: the scorer
+    already turns a missing factor into a neutral 0 and lists it in
+    `imputed_factors`, so this says "we cannot measure this" instead of either
+    "this is calm" or silently removing a name from the universe.
+    """
+    market = {**DEFAULT_MARKET, **(market or {})}
+    floor = float(market.get("min_price_rp") or 0.0)
+    max_flat = float(market.get("max_flat_pct", 0.60))
+    max_floor = float(market.get("max_floor_pct", 0.20))
+
+    out: Dict[str, str] = {}
+    if close is None or len(close) < 5:
+        return out
+
+    clean = close.dropna()
+    windows = {**_FACTOR_WINDOWS, "realized_vol": int(vol_window)}
+
+    for factor, n in windows.items():
+        window = clean.tail(int(n))
+        if len(window) < 5:
+            continue
+
+        flat = float((window.pct_change() == 0).mean())
+        at_floor = float((window <= floor).mean()) if floor > 0 else 0.0
+
+        if at_floor > max_floor:
+            out[factor] = (f"at the Rp{floor:,.0f} floor on {at_floor:.0%} of the "
+                           f"last {n} sessions")
+        elif flat > max_flat:
+            out[factor] = (f"no price change on {flat:.0%} of the last {n} "
+                           f"sessions")
+    return out
+
 
 def compute_indicators(
     df: pd.DataFrame,
@@ -94,7 +160,8 @@ def compute_indicators(
     return df
 
 
-def extract_latest_indicators(df: pd.DataFrame) -> Dict[str, float]:
+def extract_latest_indicators(df: pd.DataFrame, market: Dict = None,
+                              vol_window: int = 60) -> Dict[str, float]:
     """Last-row snapshot. Returns an all-NaN dict rather than raising on short series."""
     if df is None or df.empty or len(df) < 2:
         return {k: np.nan for k in _LATEST_KEYS}
@@ -115,4 +182,14 @@ def extract_latest_indicators(df: pd.DataFrame) -> Dict[str, float]:
     out["volume_ratio"] = (
         last_vol / vol_sma if np.isfinite(vol_sma) and np.isfinite(last_vol) and vol_sma != 0 else np.nan
     )
+
+    # A price that cannot move does not get to score as calm. Nulled here rather
+    # than at scoring time, so the ONE place that decides "this is unmeasurable"
+    # is the one place that owns the price series.
+    blocked = unmeasurable_factors(df["Close"] if "Close" in df else None,
+                                   market, vol_window)
+    for factor, reason in blocked.items():
+        out[factor] = np.nan
+    out["price_note"] = "; ".join(
+        f"{f}: {r}" for f, r in sorted(blocked.items())) if blocked else ""
     return out

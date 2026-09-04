@@ -278,20 +278,28 @@ def build_holdings_rows(
     return rows
 
 
-def attach_events(items: List[dict], events, blind, horizon_days: int) -> None:
+def attach_events(items: List[dict], events, blind, horizon_days: int,
+                  today=None) -> None:
     """
     Stamp each order/candidate with its event state, in place.
 
     Deliberately does NOT filter anything. With earnings dates for only a third of
     the universe, a blocking rule would fire only on the names we can see and
     quietly bias the book toward the ones we cannot.
+
+    `today` is injectable, as it already is on `upcoming` and `state_for`. Without
+    it a test could freeze the event dates but not the clock they are measured
+    against, so the same assertion passed in August and failed in September -- a
+    test that depends on the day it runs is worse than no test, because it trains
+    you to ignore a red suite.
     """
     from market.events import by_ticker, state_for
 
     grouped = by_ticker(events)
     for item in items:
         ticker = item.get("ticker")
-        state, message = state_for(ticker, grouped.get(ticker, []), blind, horizon_days)
+        state, message = state_for(ticker, grouped.get(ticker, []), blind,
+                                   horizon_days, today=today)
         item["event_state"] = state
         item["event_note"] = message
 

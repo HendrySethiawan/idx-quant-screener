@@ -81,7 +81,7 @@ def repair_price_to_book(info: dict, fx_usd_idr: Optional[float]) -> tuple[Optio
     return price / (book_value * fx_usd_idr), f"price_to_book:repaired_{fin_cur}_to_{quote_cur}"
 
 
-def session_report(price_data: dict, market_session=None) -> dict:
+def session_report(price_data: dict, market_session=None, failed=None) -> dict:
     """
     Which session the prices are from, and whether they all agree.
 
@@ -107,8 +107,11 @@ def session_report(price_data: dict, market_session=None) -> dict:
         except (TypeError, ValueError):
             dated[ticker] = pd.Timestamp(frame.index.max())
 
+    missing = sorted(set(failed or []))
+
     if not dated:
-        return {"session_date": None, "laggards": [], "mixed": False, "behind": None}
+        return {"session_date": None, "laggards": [], "mixed": False,
+                "behind": None, "missing": missing}
 
     newest = max(dated.values())
     laggards = sorted(
@@ -127,6 +130,9 @@ def session_report(price_data: dict, market_session=None) -> dict:
         "laggards": [(t, d.date().isoformat()) for t, d in laggards],
         "mixed": bool(laggards),
         "behind": behind,
+        # Names asked for and not received. Not the same as a laggard: a laggard
+        # is priced on an older session, these were not priced at all.
+        "missing": missing,
         "market_session": None if market_session is None else pd.Timestamp(market_session),
     }
 
@@ -218,6 +224,11 @@ class DataFetcher:
         # probe. None when it could not be established -- which must read as "not
         # known", never as "we are up to date".
         self.latest_market_session = None
+        # Tickers this fetcher could not retrieve. Every score here is
+        # cross-sectional, so a name that silently drops out changes the peer
+        # group every OTHER name is z-scored against -- the page should not go on
+        # implying it screened what it could not fetch.
+        self.failed: list = []
 
     def _cache_path(self, ticker: str, period: str) -> Path:
         safe = ticker.replace("/", "_").replace("\\", "_")
@@ -382,12 +393,15 @@ class DataFetcher:
         return records
 
     def fetch_technical_data(self, tickers, period: Optional[str] = None) -> dict[str, pd.DataFrame]:
-        data = {}
+        data, failed = {}, []
         for ticker in tickers:
             try:
                 data[ticker] = self._fetch_single(ticker, period=period)
             except Exception as e:
                 logger.error(f"Failed technical data for {ticker}: {e}")
+                failed.append(str(ticker))
+        if failed:
+            self.failed = sorted(set(self.failed) | set(failed))
 
         if period is None:
             # Only for the standard daily panel. A caller asking for "max" or "5y"

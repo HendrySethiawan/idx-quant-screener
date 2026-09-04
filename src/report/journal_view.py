@@ -46,7 +46,9 @@ def console_block(perf) -> str:
         if perf.shadow.shortfall:
             add("       (your sells exceeded what the shadow index held)")
         add("    IHSG is not directly buyable; a real index position would be an")
-        add("    ETF with its own costs.")
+        add("    ETF with its own costs. It is also a PRICE index and pays no")
+        add("    dividends, so this comparison leaves out what an index investor")
+        add("    would have received.")
     add("")
 
     if perf.vs_watchlist_rp is not None:
@@ -56,7 +58,8 @@ def console_block(perf) -> str:
         add(f"    -> {verb} by        {rp(abs(perf.vs_watchlist_rp)):>16}   "
             f"{_pct(perf.vs_watchlist_pct, 2)}")
         add("    This is the comparison that tests your picking; beating the index")
-        add("    says little when the list itself beat it by a wide margin.")
+        add("    says little when the list itself beat it by a wide margin. Total")
+        add("    return, dividends included - the same basis as your own total.")
         add("")
 
     add(f"  Fees paid            {rp(perf.total_fees):>16}   {perf.fee_drag_pct:.2f}% of capital")
@@ -150,7 +153,10 @@ def brief_section(perf) -> str:
             f'You actually have {html.escape(rp(perf.total_value))} &mdash; '
             f'{"ahead by" if ahead else "behind by"} {html.escape(rp(abs(perf.vs_ihsg_rp)))} '
             f'({_pct(perf.vs_ihsg_pct, 2)}). IHSG is not directly buyable; a real index '
-            f'position would be an ETF with its own costs.</div>'
+            f'position would be an ETF with its own costs. It is also a PRICE '
+            f'index &mdash; it pays no dividends, so this comparison leaves out '
+            f'what an index investor would actually have received, and flatters '
+            f'you by that much.</div>'
         )
 
     # The harder benchmark, said second so it lands last. Beating IHSG proves
@@ -171,7 +177,9 @@ def brief_section(perf) -> str:
             f"({_pct(perf.vs_watchlist_pct, 2)}). <strong>This is the one that "
             f"tests your picking.</strong> Beating the index says little here: the "
             f"list itself beat the index by a wide margin over the backtest window, "
-            f"because it was drawn knowing which companies survived.</div>"
+            f"because it was drawn knowing which companies survived. Measured on "
+            f"total return, dividends included, which is the same basis as your "
+            f"own total &mdash; unlike the IHSG line above.</div>"
         )
 
     stamp = ""

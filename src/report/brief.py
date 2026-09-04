@@ -639,6 +639,22 @@ def render_brief(
             + "</div>"
         )
 
+    # Names asked for and never received. Every score is cross-sectional, so a
+    # name dropping out silently changes the peer group every other name is
+    # measured against -- and the page would go on naming a universe it did not
+    # actually screen.
+    missing_note = ""
+    missing = sessions.get("missing") or []
+    if missing:
+        missing_note = (
+            '<div class="callout" style="border-left-color:var(--warn)">'
+            f"<strong>{len(missing)} name"
+            f"{'s' if len(missing) > 1 else ''} could not be fetched</strong> and "
+            f"{'are' if len(missing) > 1 else 'is'} absent from the ranking below: "
+            f"{_e(', '.join(missing))}. Every score here is a comparison against "
+            f"peers, so the rest were ranked against a smaller group than usual."
+        ) + "</div>"
+
     granularity = ""
     if allocation and allocation.positions:
         granularity = (
@@ -663,7 +679,8 @@ def render_brief(
             T.panel("Do this today",
                     stale_note + placeholder_note
                     + _ticket_section(orders, fees, capital)
-                    + granularity + concentration + evidence_note(verdict),
+                    + granularity + missing_note + concentration
+                    + evidence_note(verdict),
                     pid="panel-ticket", cls="print", grow=True),
             T.panel(f"Events, next {event_horizon} days",
                     _events_section(events or [], blind_n, universe_n, event_horizon)),

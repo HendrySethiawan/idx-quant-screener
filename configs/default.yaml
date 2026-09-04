@@ -219,6 +219,22 @@ account:
   marks_path: data/journal_marks.csv
   min_trades_for_verdict: 30   # below this the report refuses to name a winner
 
+# IDX market rules. BEI changes these; that is why they are here and not in code.
+# The minimum tradable price is moving Rp50 -> Rp1 (tested 22 & 29 Aug 2026,
+# targeted 7 Sept 2026). When it lands, change min_price_rp and nothing else.
+#
+# A price pinned at the floor cannot fall, and a suspended one cannot move at all.
+# Neither is "calm", but both measure as zero volatility -- and realized_vol is
+# scored at -0.5, "prefer calmer names". Above these thresholds the affected
+# factors are scored neutral instead of favourable.
+market:
+  min_price_rp: 50
+  max_flat_pct: 0.60      # share of sessions with no price change
+  max_floor_pct: 0.20     # share of sessions at the minimum price
+
+# Subtracted before every Sharpe. Roughly the BI 7-day reverse repo rate.
+risk_free_pct: 5.5
+
 # A position must be exitable in roughly one session.
 liquidity:
   max_position_pct_of_daily_value: 0.01

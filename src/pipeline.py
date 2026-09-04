@@ -36,7 +36,8 @@ def build_technical_frame(settings, fetcher: DataFetcher, logger=None) -> pd.Dat
         if ticker not in settings.stock_tickers:
             continue
         indicators = compute_indicators(raw, vol_window=vol_window, liquidity_window=liq_window)
-        records.append({"ticker": ticker, **extract_latest_indicators(indicators)})
+        records.append({"ticker": ticker, **extract_latest_indicators(
+            indicators, market=getattr(settings, "market", None), vol_window=vol_window)})
 
     if logger:
         logger.info(f"Built technical features for {len(records)} tickers")

@@ -143,6 +143,29 @@ class Settings(BaseSettings):
         "min_trades_for_verdict": 30,
     })
 
+    # ---- Market rules ------------------------------------------------------
+    # IDX rules, not broker rules, and in config because BEI changes them. The
+    # minimum tradable price is moving Rp50 -> Rp1 (tested 22 & 29 Aug 2026,
+    # targeted 7 Sept 2026); when it lands, edit `min_price_rp` here and nothing
+    # else needs to know.
+    #
+    # The thresholds decide when a price series can no longer support a
+    # volatility or momentum estimate. Chosen from the real universe, where the
+    # separation is wide: GOTO sat at the floor for 34-100% of each factor window
+    # and WIKA printed no change on 95-99% of sessions, while healthy names run
+    # 6-24% flat and never touch the floor.
+    market: Dict[str, Any] = Field(default_factory=lambda: {
+        "min_price_rp": 50.0,
+        "max_flat_pct": 0.60,      # sessions with no price change at all
+        "max_floor_pct": 0.20,     # sessions sitting at the minimum price
+    })
+
+    # Annualised, in percent. Subtracted before every Sharpe -- roughly the BI
+    # 7-day reverse repo rate. Return divided by volatility with no risk-free
+    # term is not a Sharpe ratio, and in a market with a 5%+ policy rate the
+    # difference is most of the number.
+    risk_free_pct: float = 5.5
+
     # ---- Liquidity ---------------------------------------------------------
     liquidity: Dict[str, Any] = Field(default_factory=lambda: {
         # A position may not exceed this share of median daily traded value,
