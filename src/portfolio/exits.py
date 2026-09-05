@@ -60,6 +60,13 @@ NO_STOP = "NO STOP"
 # one means the record of what you paid cannot.
 CHECK_ENTRY = "CHECK ENTRY"
 
+# Why the BOOK sold something the position's own plan was content to hold. These
+# are not exit reasons -- no stop was hit and no target was reached -- and telling
+# the reader the same thing for both was how a rank-4 holding and a rank-33 one
+# came to carry the identical note "no longer in the target book".
+DERISK = "de-risk"      # the regime cut the budget; the book has to be smaller
+ROTATE = "rotate"       # a better-ranked name takes the slot
+
 
 @dataclass(frozen=True)
 class ExitConfig:
@@ -151,6 +158,28 @@ class ExitPlan:
     to_stop_pct: Optional[float] = None
     to_next_pct: Optional[float] = None
     notes: List[str] = field(default_factory=list)
+
+    # What the BOOK decided, when it overrode this plan's own action -- a de-risk
+    # or a rotation, neither of which is an exit. Empty when `action` is already
+    # what you should do.
+    #
+    # This exists because the ticket and the exit panel used to answer the same
+    # question independently and disagree in public: "SELL ADRO.JK - no longer in
+    # the target book" beside "HOLD - stop 2,502, sell at 2,908", with nothing on
+    # the page saying which to follow. Both now render `final_action`, so they
+    # cannot drift apart again.
+    book_action: str = ""       # "" | SELL | HOLD
+    book_reason: str = ""
+    book_cause: str = ""        # "" | DERISK | ROTATE
+
+    @property
+    def final_action(self) -> str:
+        """The one verdict for today. Never read `action` for display."""
+        return self.book_action or self.action
+
+    @property
+    def final_reason(self) -> str:
+        return self.book_reason or self.reason
 
     @property
     def staged(self) -> bool:

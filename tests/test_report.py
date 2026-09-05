@@ -1021,3 +1021,65 @@ def test_the_same_day_sell_advice_appears_exactly_once():
     # callouts legitimately say "the same rupiah, moved on the same days".
     assert out.count("Rp40,000") == 1
     assert out.count("Execute all 5 sells") == 1
+
+
+# ======================================================================
+# The two panels answer with one voice.
+#
+# "SELL ADRO.JK - no longer in the target book" sat in the ticket beside
+# "HOLD - stop 2,502, sell at 2,908" in the exit panel, on the same screen,
+# with nothing saying which to follow.
+# ======================================================================
+def test_the_exit_panel_shows_the_books_verdict_not_its_own():
+    from portfolio.exits import DERISK
+
+    plan = _plan_for("ADRO.JK", lots=1, entry=2705.0, price=2720.0, atr=87.0)
+    assert plan.action == "HOLD"                     # the plan is content
+    plan.book_action = "SELL"                        # the book is not
+    plan.book_reason = "cutting the book back to today's Rp3,000,000 budget"
+    plan.book_cause = DERISK
+
+    out = _render(exit_plans={"ADRO.JK": plan})
+    # The verdict cell, not the tab strip: "SELL all 1" is the exit panel's own
+    # phrasing and appears nowhere else on the page.
+    assert "SELL all 1" in out
+    assert "cutting the book back" in out
+    # ...and its own HOLD verdict is gone, not shown alongside.
+    assert ">HOLD</span>" not in out
+
+
+def test_a_plan_the_book_left_alone_still_shows_its_own_verdict():
+    plan = _plan_for("ADRO.JK", lots=1, entry=2705.0, price=2720.0, atr=87.0)
+    out = _render(exit_plans={"ADRO.JK": plan})
+    assert ">HOLD</span>" in out
+    assert "SELL all" not in out
+
+
+def test_the_ticket_says_why_it_is_buying_nothing():
+    """
+    In de-risk mode there are no BUY rows while "Best candidates you can afford"
+    still lists names. Without this the page contradicts itself again, quietly.
+    """
+    out = _render(book_state={"derisking": True, "book_rp": 6_920_000.0,
+                              "budget_rp": 3_000_000.0})
+    assert "Cutting back, not buying" in out
+    assert "Rp6,920,000" in out and "Rp3,000,000" in out
+
+
+def test_no_over_budget_callout_when_the_book_fits():
+    out = _render(book_state={"derisking": False, "book_rp": 1_000.0,
+                              "budget_rp": 3_000_000.0})
+    assert "Cutting back, not buying" not in out
+
+
+def test_the_ticket_no_longer_says_no_longer_in_the_target_book():
+    """
+    One label covered a rank-4 de-risk and a rank-33 rotation. Whatever a row
+    says now, it must not say that -- it named neither cause.
+    """
+    out = _render(orders=[{
+        "action": "SELL", "ticker": "ADRO.JK", "lots": 1, "shares": 100,
+        "price": 2720.0, "rupiah": 272_000,
+        "note": "cutting the book back to today's Rp3,000,000 budget",
+    }])
+    assert "no longer in the target book" not in out

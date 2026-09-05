@@ -30,6 +30,12 @@ def _price_of(row) -> Optional[float]:
     return float(price) if price and not pd.isna(price) else None
 
 
+def _rp(v: Optional[float]) -> str:
+    """Rupiah for an order note. `report.brief.rp` is the display one; importing
+    it here would point a data module at a rendering one."""
+    return "-" if v is None else f"Rp{float(v):,.0f}"
+
+
 def _num(v) -> Optional[float]:
     if v is None or (isinstance(v, float) and pd.isna(v)):
         return None
@@ -249,30 +255,69 @@ def build_orders(
     prices: Dict[str, float],
     exit_plans: Optional[Dict[str, object]] = None,
     cooling: Optional[Dict[str, int]] = None,
+    rank_of: Optional[Dict[str, int]] = None,
+    raw_of: Optional[Dict[str, float]] = None,
+    score_floor: float = 0.0,
+    universe_n: int = 0,
+    book_state: Optional[dict] = None,
 ) -> List[dict]:
     """
-    SELL what left the target, BUY what entered it, HOLD the rest -- and act on the
-    exits first.
+    One decision per position, and the exit panel renders the same one.
 
     **An exit outranks the ranking.** A stop that has been hit is a decision
     already made about a position you hold; the ranking is an opinion about one you
     might open. So a name with an EXIT or TRIM plan produces that row and is then
-    skipped by the rebalance diff entirely -- otherwise the same ticker could
-    appear twice, once being sold on the stop and once being held at target.
+    skipped by the rest of this function entirely.
+
+    **Everything else is one of two different things, and they were called the
+    same thing.** A position can leave the book because the regime shrank the
+    budget (DERISK) or because a better name took its slot (ROTATE). Both used to
+    read "no longer in the target book", so a rank-4 holding being liquidated to
+    cut exposure was indistinguishable from a rank-33 one that had simply been
+    beaten. They are now separated, because only one of them is a verdict on the
+    name.
+
+    **A rotation does not override a healthy HOLD it cannot actually beat.** The
+    ranking is z-scores against a list, and `score_floor` is how far a name moves
+    when the universe gains or loses one member. Selling a position you hold to
+    buy one that is inside that distance is paying 0.29%, the stamp and 0.19% to
+    act on a difference the score cannot resolve. A de-risk is not subject to this
+    test: it is not claiming the other name is better, it is reducing exposure.
 
     **`cooling` blocks the re-buy.** Without it the loop closes on itself: the stop
     sells today, tomorrow's re-rank puts the name straight back in the target book,
     and you pay 0.29% out, Rp10,000 stamp and 0.19% back in to end up exactly where
     you started.
     """
-    from portfolio.exits import EXIT, TRIM
+    from portfolio.exits import DERISK, EXIT, HOLD, ROTATE, TRIM
 
     exit_plans = exit_plans or {}
     cooling = cooling or {}
+    rank_of = rank_of or {}
+    raw_of = raw_of or {}
     target = {p.ticker: p for p in allocation.positions}
     held = {h.ticker: h for h in holdings if h.lots > 0}
     orders: List[dict] = []
     decided: set = set()
+
+    def _rank_phrase(ticker: str) -> str:
+        """"#17 of 74", or "" when the name is not in today's ranking at all."""
+        i = rank_of.get(ticker)
+        if i is None:
+            return ""
+        return f"#{i + 1} of {universe_n}" if universe_n else f"#{i + 1}"
+
+    def _book_says(ticker: str, action: str, reason: str, cause: str = "") -> None:
+        """
+        Record the book's verdict on the plan, so the exit panel shows this and
+        not its own. Silent when there is no plan -- an unheld name has none.
+        """
+        plan = exit_plans.get(ticker)
+        if plan is None:
+            return
+        plan.book_action = action
+        plan.book_reason = reason
+        plan.book_cause = cause
 
     for ticker, plan in exit_plans.items():
         # CHECK ENTRY never reaches here: `plan_for` returns before computing a
@@ -300,19 +345,144 @@ def build_orders(
             "stop_kind": plan.stop_kind,
         })
 
-    for ticker, holding in held.items():
-        if ticker in target or ticker in decided:
-            continue
-        price = prices.get(ticker)
-        orders.append({
-            "action": "SELL", "ticker": ticker, "lots": holding.lots,
-            "shares": holding.shares, "price": price,
-            "rupiah": (holding.shares * price) if price else 0.0,
-            "note": "no longer in the target book",
-        })
+    # What is still held after the exits above have taken their lots. A position
+    # trimmed 28 of 41 lots is Rp1.7 juta of exposure, not Rp5.4 juta, and the
+    # budget test below has to measure the book you will actually be left with.
+    def _value_after_exits(ticker: str, holding: Holding) -> float:
+        price = prices.get(ticker) or 0.0
+        sold = sum(o["lots"] for o in orders
+                   if o["ticker"] == ticker and o["action"] == "SELL")
+        return max(0, holding.lots - sold) * (holding.lot_size or 100) * price
+
+    remaining = {t: _value_after_exits(t, h) for t, h in held.items()}
+    book_value = sum(remaining.values())
+    budget = float(allocation.budget or 0.0)
+
+    # DE-RISK. You hold more than today's budget allows, so the book has to come
+    # down whatever the ranking thinks. Worst-ranked first: cutting a rank-33
+    # holding to keep a rank-4 one reduces exposure by the same rupiah and leaves
+    # you holding the better names. Rebuilding the book from the ranking instead
+    # sold a rank-4 holding to buy a rank-1 one, which is a rotation wearing a
+    # de-risk's clothes -- it pays both sides of the spread to reduce nothing.
+    derisking = budget > 0 and book_value > budget
+    if book_state is not None:
+        book_state.clear()
+        book_state.update({"derisking": derisking, "budget_rp": budget,
+                           "book_rp": book_value})
+    if derisking:
+        candidates_to_cut = sorted(
+            (t for t in held if t not in decided),
+            key=lambda t: rank_of.get(t, len(rank_of) + 1),
+        )
+        # A position the exits already acted on is staying at whatever size they
+        # left it -- an exit outranks the book -- so its remainder is exposure the
+        # budget has to cover before anything else competes for room. Starting the
+        # count at zero let a 28-of-41-lot trim leave Rp1.7 juta uncounted, and the
+        # book then "fitted" a budget it was Rp1.7 juta over.
+        kept_value = sum(remaining.get(t, 0.0) for t in decided)
+
+        # Drop from the WORST end until the book fits, rather than filling from the
+        # best end. Filling is bin-packing: a large well-ranked position that does
+        # not fit gets cut while a small badly-ranked one is kept, so the survivors
+        # are not the best names at all. Dropping guarantees they are.
+        survivors = set(candidates_to_cut)
+        running = kept_value + sum(remaining[t] for t in survivors)
+        for ticker in reversed(candidates_to_cut):
+            if running <= budget:
+                break
+            survivors.discard(ticker)
+            running -= remaining[ticker]
+
+        for ticker in candidates_to_cut:
+            holding = held[ticker]
+            price = prices.get(ticker)
+            where = _rank_phrase(ticker)
+            if ticker in survivors:
+                plan = exit_plans.get(ticker)
+                note = (f"kept — {where}, and the book fits today's "
+                        f"{_rp(budget)} budget with it in"
+                        if where else
+                        f"kept — the book fits today's {_rp(budget)} budget with it in")
+                if plan is not None and plan.action == HOLD:
+                    note = f"{plan.reason}. {note}"
+                orders.append({
+                    "action": "HOLD", "ticker": ticker, "lots": holding.lots,
+                    "shares": holding.shares, "price": price,
+                    "rupiah": remaining[ticker], "note": note,
+                })
+                _book_says(ticker, "", "", "")
+                continue
+
+            reason = (
+                f"cutting the book back to today's {_rp(budget)} budget — you hold "
+                f"{_rp(book_value)}. This was the worst-ranked of what you own"
+                + (f" ({where})" if where else "")
+                + ". It is not a verdict on the name."
+            )
+            orders.append({
+                "action": "SELL", "ticker": ticker, "lots": holding.lots,
+                "shares": holding.shares, "price": price,
+                "rupiah": (holding.shares * price) if price else 0.0,
+                "note": reason, "sell_cause": DERISK,
+            })
+            _book_says(ticker, "SELL", reason, DERISK)
+        decided.update(candidates_to_cut)
+
+    else:
+        # ROTATION. The book fits; a name is only sold because something better
+        # took its slot -- and that claim has to survive the score's own precision.
+        best_in = max((raw_of.get(t, float("-inf")) for t in target
+                       if t not in held), default=None)
+        for ticker, holding in held.items():
+            if ticker in target or ticker in decided:
+                continue
+            price = prices.get(ticker)
+            plan = exit_plans.get(ticker)
+            mine = raw_of.get(ticker)
+            where = _rank_phrase(ticker)
+
+            level = (
+                best_in is not None and mine is not None
+                and best_in != float("-inf")
+                and (best_in - mine) <= float(score_floor or 0.0)
+            )
+            if level and plan is not None and plan.action == HOLD:
+                note = (
+                    f"{plan.reason}. Held: the name that would take this slot is "
+                    f"ahead by {best_in - mine:.2f}, inside the "
+                    f"{float(score_floor):.2f} the score can actually resolve — "
+                    f"that is not a good enough reason to pay both sides of the "
+                    f"spread."
+                )
+                orders.append({
+                    "action": "HOLD", "ticker": ticker, "lots": holding.lots,
+                    "shares": holding.shares, "price": price,
+                    "rupiah": remaining.get(ticker, 0.0), "note": note,
+                })
+                _book_says(ticker, "", "", "")
+                continue
+
+            margin = ("" if (best_in is None or mine is None
+                             or best_in == float("-inf"))
+                      else f", beaten by {best_in - mine:.2f} against a "
+                           f"{float(score_floor):.2f} noise floor")
+            reason = (f"out-ranked{f' — {where}' if where else ''}{margin}")
+            orders.append({
+                "action": "SELL", "ticker": ticker, "lots": holding.lots,
+                "shares": holding.shares, "price": price,
+                "rupiah": (holding.shares * price) if price else 0.0,
+                "note": reason, "sell_cause": ROTATE,
+            })
+            _book_says(ticker, "SELL", reason, ROTATE)
 
     for ticker, pos in target.items():
         if ticker in decided:
+            continue
+        # Over budget and buying in the same breath is incoherent: every lot bought
+        # has to be funded by a lot sold, so the round trip costs 0.19% + 0.29% +
+        # the stamp to leave exposure exactly where the de-risk was trying to
+        # reduce it from.
+        if derisking:
             continue
         # The cooldown blocks any INCREASE, not just a re-entry. Blocking only the
         # names you no longer hold left the ladder undoing itself: trim 4 lots at
@@ -380,7 +550,13 @@ def build_orders(
         if order["action"] == "HOLD" and plan is not None and plan.stop_rp:
             order["stop_rp"] = plan.stop_rp
             order["stop_kind"] = plan.stop_kind
-            order["note"] = plan.reason
+            # Not when the row has already said it. The book's own HOLD notes open
+            # with this same reason and then explain why the position survived a
+            # de-risk or a rotation -- overwriting wholesale threw that sentence
+            # away and left the reader looking at a bare stop again, which is how
+            # a HOLD came to give no account of itself.
+            if plan.reason not in (order.get("note") or ""):
+                order["note"] = plan.reason
 
     return orders
 
@@ -637,7 +813,18 @@ def assemble(settings, df: pd.DataFrame, regime, holdings: List[Holding],
         settings, df, prices, risk_panel=risk_panel, journal=journal, today=today)
 
     fee_cfg = FeeConfig.from_settings(settings)
-    orders = build_orders(allocation, holdings, prices, exit_plans, cooling)
+    # From `df`, not `candidates`: `build_candidates` truncates to the shortlist,
+    # so a held name ranked 17th or 33rd has no score there at all -- and those are
+    # exactly the ones the book has to explain selling. `df` is sorted by
+    # `undervaluation_score` in `pipeline.run_screener`, which is a min-max of
+    # `raw_score`, so position IS rank.
+    rank_of = {t: i for i, t in enumerate(df["ticker"])}
+    raw_of = {t: float(v) for t, v in
+              zip(df["ticker"], df.get("raw_score", df["undervaluation_score"]))}
+    book_state: Dict[str, object] = {}
+    orders = build_orders(allocation, holdings, prices, exit_plans, cooling,
+                          rank_of=rank_of, raw_of=raw_of, score_floor=score_floor,
+                          universe_n=len(df), book_state=book_state)
     attach_entry_risk(orders, df, exit_cfg, fee_cfg, settings.capital_rp)
     fees = estimate_fees(orders, fee_cfg, settings.capital_rp, sell_days=1)
 
@@ -691,6 +878,7 @@ def assemble(settings, df: pd.DataFrame, regime, holdings: List[Holding],
         # The precision the ranking has, so the page can say which picks are
         # level rather than presenting 0.02 as a decision.
         "score_floor": float(score_floor or 0.0),
+        "book_state": book_state,
         # Filled by `build_candidates` from the full ranked list, so a tie that
         # straddles the shortlist boundary is still visible.
         "tie_groups": ties,
