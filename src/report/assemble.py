@@ -456,7 +456,7 @@ def build_holdings_rows(
 
 
 def attach_events(items: List[dict], events, blind, horizon_days: int,
-                  today=None) -> None:
+                  today=None, review_lookback_days: Optional[int] = None) -> None:
     """
     Stamp each order/candidate with its event state, in place.
 
@@ -470,13 +470,16 @@ def attach_events(items: List[dict], events, blind, horizon_days: int,
     test that depends on the day it runs is worse than no test, because it trains
     you to ignore a red suite.
     """
-    from market.events import by_ticker, state_for
+    from market.events import REVIEW_LOOKBACK_DAYS, by_ticker, state_for
 
+    lookback = (REVIEW_LOOKBACK_DAYS if review_lookback_days is None
+                else int(review_lookback_days))
     grouped = by_ticker(events)
     for item in items:
         ticker = item.get("ticker")
         state, message = state_for(ticker, grouped.get(ticker, []), blind,
-                                   horizon_days, today=today)
+                                   horizon_days, today=today,
+                                   review_lookback_days=lookback)
         item["event_state"] = state
         item["event_note"] = message
 
@@ -662,8 +665,11 @@ def assemble(settings, df: pd.DataFrame, regime, holdings: List[Holding],
 
     if events is not None:
         horizon = int(getattr(settings, "event_horizon_days", 14))
-        attach_events(orders, events, blind or set(), horizon)
-        attach_events(candidates, events, blind or set(), horizon)
+        lookback = int(getattr(settings, "review_lookback_days", 21))
+        attach_events(orders, events, blind or set(), horizon,
+                      review_lookback_days=lookback)
+        attach_events(candidates, events, blind or set(), horizon,
+                      review_lookback_days=lookback)
 
     return {
         "allocation": allocation,

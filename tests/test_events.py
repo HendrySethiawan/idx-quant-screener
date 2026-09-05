@@ -269,3 +269,184 @@ def test_saving_an_event_preserves_the_file_header(tmp_path):
     assert text.startswith("# Events you know about")
     assert "--event ADRO earnings" in text
     assert len(load_events(path)) == 1
+
+
+# ======================================================================
+# Index reviews: the one event whose PAST is still a live fact.
+#
+# GOTO and CPIN left the MSCI Standard index at the close of 31 Aug 2026. Five
+# sessions later the screener could rank either of them with nothing on the
+# ticket line to say the passive bid had just gone. That reads identically to
+# "nothing is happening", which is the silent failure this module exists to
+# refuse -- so a review, alone among the kinds, stays attached for a while after
+# it lands.
+# ======================================================================
+def _review(days, scope="GOTO.JK", note="", source="manual"):
+    return Event(TODAY + timedelta(days=days), scope, "review", note=note,
+                 source=source)
+
+
+def test_a_review_that_has_just_happened_still_reaches_the_ticket():
+    state, msg = state_for("GOTO.JK", [_review(-4)], set(), 14, TODAY)
+    assert state == KNOWN
+    assert "4 days ago" in msg
+
+
+def test_a_review_stops_mattering_once_the_flow_is_done():
+    """Three weeks out it is history, not a warning."""
+    state, _ = state_for("GOTO.JK", [_review(-40)], set(), 14, TODAY)
+    assert state != KNOWN
+
+
+def test_the_lookback_boundary_is_inclusive_on_both_sides():
+    assert state_for("G.JK", [_review(-21)], set(), 14, TODAY)[0] == KNOWN
+    assert state_for("G.JK", [_review(-22)], set(), 14, TODAY)[0] != KNOWN
+
+
+def test_a_past_earnings_date_is_still_ignored():
+    """
+    The lookback is for reviews only. A result that is already out is priced;
+    putting every stale earnings date back on the ticket is noise, not risk.
+    """
+    state, _ = state_for("ADRO.JK", [_ev(-4)], set(), 14, TODAY)
+    assert state != KNOWN
+
+
+def test_a_blind_ticker_with_a_recent_review_reports_the_review():
+    """The review is the more specific fact, so it wins over 'we cannot see'."""
+    state, msg = state_for("GOTO.JK", [_review(-4)], {"GOTO.JK"}, 14, TODAY)
+    assert state == KNOWN
+    assert "no earnings date" not in msg
+
+
+def test_a_coming_event_beats_a_review_that_already_happened():
+    state, msg = state_for("GOTO.JK", [_review(-4), _ev(2, "GOTO.JK")],
+                           set(), 14, TODAY)
+    assert state == KNOWN
+    assert "in 2 days" in msg
+
+
+def test_the_most_recent_review_is_the_one_shown():
+    msg = state_for("G.JK", [_review(-18, note="old"), _review(-2, note="new")],
+                    set(), 14, TODAY)[1]
+    assert "new" in msg and "old" not in msg
+
+
+def test_a_review_says_what_changed_not_just_that_it_happened():
+    """
+    "index review 4 days ago" names no action. The note is the whole point of
+    having recorded it.
+    """
+    msg = _review(-4, note="dropped from MSCI Global Standard").describe(TODAY)
+    assert "dropped from MSCI Global Standard" in msg
+
+
+def test_an_earnings_note_stays_off_the_ticket_line():
+    """For earnings the date IS the message; the note would only crowd it."""
+    e = Event(TODAY + timedelta(days=3), "ADRO.JK", "earnings", note="Q2 result")
+    assert "Q2 result" not in e.describe(TODAY)
+
+
+@pytest.mark.parametrize("days,expect", [(-1, "yesterday"), (-6, "6 days ago")])
+def test_past_wording(days, expect):
+    assert expect in _review(days).describe(TODAY)
+
+
+def test_the_events_panel_stays_a_forward_calendar():
+    """
+    The lookback belongs on the ticket line, where you act on the name. The panel
+    is headed "next 14 days" and must not start listing history under it.
+    """
+    assert upcoming([_review(-4)], 14, today=TODAY) == []
+
+
+# ------------------------------------------------- the calendar that ships
+def test_the_shipped_calendar_is_labelled_as_shipped():
+    """
+    The reader must not think they recorded it. "you" against a row they never
+    typed is the tool putting words in their mouth.
+    """
+    from market.events import load_calendar
+    rows = [{"date": "2026-09-01", "scope": "GOTO.JK", "kind": "review"}]
+    got = load_calendar(rows)[0]
+    assert got.source == "shipped"
+    assert got.source_label == "built in"
+
+
+def test_a_bad_calendar_row_does_not_discard_the_others():
+    from market.events import load_calendar
+    rows = [{"scope": "GOTO.JK"},                       # no date
+            {"date": "2026-09-01", "scope": "CPIN.JK", "kind": "review"}]
+    assert [e.scope for e in load_calendar(rows)] == ["CPIN.JK"]
+
+
+def test_a_missing_calendar_is_simply_empty():
+    from market.events import load_calendar
+    assert load_calendar(None) == [] and load_calendar([]) == []
+
+
+def test_your_own_row_wins_over_the_shipped_one():
+    """
+    Same date, scope and kind is the same event. If they checked it and wrote it
+    down, showing the shipped row beside it is the tool arguing with them.
+    """
+    from market.events import load_calendar, merge_events
+    shipped = load_calendar([{"date": "2026-09-01", "scope": "GOTO.JK",
+                              "kind": "review", "note": "shipped wording"}])
+    mine = [Event(date(2026, 9, 1), "GOTO.JK", "review", note="mine")]
+    merged = merge_events(shipped, mine)
+    assert len(merged) == 1
+    assert merged[0].note == "mine"
+
+
+def test_a_shipped_row_you_have_not_recorded_still_arrives():
+    from market.events import load_calendar, merge_events
+    shipped = load_calendar([{"date": "2026-09-01", "scope": "CPIN.JK",
+                              "kind": "review"}])
+    mine = [Event(date(2026, 9, 1), "GOTO.JK", "review")]
+    assert {e.scope for e in merge_events(shipped, mine)} == {"GOTO.JK", "CPIN.JK"}
+
+
+# ---------------------------------------------------- end to end, on the ticket
+def test_the_shipped_calendar_covers_the_names_the_august_review_hit():
+    """
+    The five in this universe that MSCI dropped on 31 Aug 2026. If the build ships
+    a calendar at all, these are the rows that had to be in it.
+    """
+    import yaml
+    from market.events import load_calendar
+    cfg = yaml.safe_load(open("configs/default.yaml", encoding="utf-8"))
+    scopes = {e.scope for e in load_calendar(cfg.get("market_calendar"))}
+    assert {"GOTO.JK", "CPIN.JK", "BUKA.JK", "ESSA.JK", "HEAL.JK"} <= scopes
+    universe = set(cfg["stock_tickers"])
+    named = {s for s in scopes if s.endswith(".JK")}
+    assert named <= universe, f"calendar names a ticker not in the universe: {named - universe}"
+
+
+def test_a_dropped_name_carries_its_warning_onto_the_order():
+    """
+    The whole chain: a shipped calendar row, four days old, reaching the ticket
+    line of an order for that name.
+    """
+    from report.assemble import attach_events
+    from market.events import load_calendar
+
+    rows = [{"date": "2026-09-01", "scope": "GOTO.JK", "kind": "review",
+             "note": "dropped from MSCI Global Standard"}]
+    orders = [{"ticker": "GOTO.JK", "action": "BUY"},
+              {"ticker": "BBRI.JK", "action": "BUY"}]
+    attach_events(orders, load_calendar(rows), set(), 14, today=date(2026, 9, 5))
+
+    assert orders[0]["event_state"] == KNOWN
+    assert "dropped from MSCI Global Standard" in orders[0]["event_note"]
+    assert orders[1]["event_state"] != KNOWN
+
+
+def test_the_lookback_is_configurable_from_settings():
+    """A reader who wants a shorter window must be able to have one."""
+    from report.assemble import attach_events
+    ev = [Event(date(2026, 9, 1), "GOTO.JK", "review", note="dropped")]
+    orders = [{"ticker": "GOTO.JK"}]
+    attach_events(orders, ev, set(), 14, today=date(2026, 9, 5),
+                  review_lookback_days=2)
+    assert orders[0]["event_state"] != KNOWN

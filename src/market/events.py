@@ -40,6 +40,13 @@ MARKET_SCOPES = {"MARKET", "MSCI", "FTSE", "IDX", "BI", "FED", "MACRO"}
 
 KNOWN, CLEAR, UNKNOWN = "known", "clear", "unknown"
 
+# How long an index review goes on mattering after it takes effect. Passive money
+# does not rebalance in a day and the liquidity a deleted name loses does not come
+# back, so a review is the one event whose *past* is still a live fact about the
+# order book. Three weeks is a judgement, not a measurement -- MSCI reviews run
+# quarterly, so it covers the flow without ever overlapping the next one.
+REVIEW_LOOKBACK_DAYS = 21
+
 _KIND_LABELS = {
     "earnings": "earnings",
     "ex_dividend": "ex-dividend",
@@ -47,7 +54,8 @@ _KIND_LABELS = {
     "note": "note",
 }
 
-_SOURCE_LABELS = {"auto": "auto", "manual": "you", "estimated": "est."}
+_SOURCE_LABELS = {"auto": "auto", "manual": "you", "estimated": "est.",
+                  "shipped": "built in"}
 
 # Rewritten on every save. yaml.safe_dump drops comments, and this file is meant to
 # be hand-edited as well as CLI-written, so the format documentation has to survive.
@@ -60,7 +68,12 @@ _HEADER = """\
 # an MSCI review notice belongs here.
 #
 #   python main.py --event ADRO earnings 2026-08-27
-#   python main.py --event MSCI review 2026-08-28 --note "Aug index review"
+#   python main.py --event BREN ex_dividend 2026-09-18
+#
+# Index review dates ship with the build (see `market_calendar` in
+# configs/default.yaml) and arrive here automatically -- you do not need to copy
+# them in. Recording one yourself overrides the shipped row for the same date,
+# scope and kind, which is how you correct one you have checked.
 #
 # Fields:
 #   date   YYYY-MM-DD
@@ -96,8 +109,18 @@ class Event:
 
     def describe(self, today: Optional[date] = None) -> str:
         d = self.days_away(today)
-        when = "today" if d == 0 else ("tomorrow" if d == 1 else f"in {d} days")
+        if d < 0:
+            n = -d
+            when = "yesterday" if n == 1 else f"{n} days ago"
+        else:
+            when = "today" if d == 0 else ("tomorrow" if d == 1 else f"in {d} days")
         text = f"{self.kind_label} {when}"
+        # For earnings, *when* is the whole message. For a review it is the least
+        # interesting part -- "index review 4 days ago" on a ticket line tells you
+        # something happened and not one thing you could act on, where "dropped
+        # from MSCI Global Standard" is the entire point of having recorded it.
+        if self.kind == "review" and self.note:
+            text = f"{text} - {self.note}"
         return f"{text} (est.)" if self.source == "estimated" else text
 
 
@@ -148,6 +171,53 @@ def load_events(path: str | Path) -> List[Event]:
         except Exception:
             continue
     return out
+
+
+def load_calendar(rows) -> List[Event]:
+    """
+    The index calendar that ships with the build, from `default.yaml`.
+
+    Separate from `events.yaml` on purpose, and the split is the same one
+    `core.paths` draws between app-owned and user-owned files. An MSCI review date
+    is a fact about the market: identical for every reader, and wrong the moment it
+    goes stale. `events.yaml` is the reader's own notebook, git-ignored, never
+    overwritten. Seeding the notebook with these dates would have frozen them at
+    install -- which is precisely how a build shipping 74 tickers went on analysing
+    the 49 seeded at first install.
+
+    Labelled `shipped` so the Events panel says "built in" rather than letting the
+    reader think they recorded it themselves.
+    """
+    out: List[Event] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            when = row["date"]
+            when = when if isinstance(when, date) else pd.to_datetime(when).date()
+            out.append(Event(
+                date=when,
+                scope=normalize_scope(row["scope"]),
+                kind=str(row.get("kind", "note")).strip().lower(),
+                note=str(row.get("note", "") or ""),
+                source="shipped",
+            ))
+        except Exception:
+            continue
+    return out
+
+
+def merge_events(shipped: List[Event], manual: List[Event]) -> List[Event]:
+    """
+    Both calendars, with the reader's own row winning any collision.
+
+    Same date, scope and kind means the same event. If they have recorded it
+    themselves -- with their own note, or a corrected date -- that is the one they
+    will trust, and a shipped duplicate beside it reads as the tool disagreeing
+    with them about something they already checked.
+    """
+    seen = {(e.date, e.scope, e.kind) for e in manual}
+    return manual + [e for e in shipped if (e.date, e.scope, e.kind) not in seen]
 
 
 def add_event(
@@ -339,16 +409,37 @@ def state_for(
     blind: Set[str],
     horizon_days: int,
     today: Optional[date] = None,
+    review_lookback_days: int = REVIEW_LOOKBACK_DAYS,
 ) -> tuple[str, str]:
     """
     Resolve one ticker to (state, message) for display next to its ticket line.
+
+    Forward-looking for every kind but one. An earnings date that has passed is
+    news the price has already had; an index review that has passed is a flow that
+    is still draining, and the name goes on being suggested with nothing to say it
+    just lost its passive bid. Rendering that identically to "nothing is happening"
+    is the same silent failure this module exists to refuse, so `review` events
+    stay attached for `review_lookback_days` after their effective date.
+
+    Only `review`. A blanket lookback would put every stale earnings date back on
+    the ticket, which is noise, not risk.
     """
     today = today or date.today()
-    near = [e for e in events_for_ticker if 0 <= e.days_away(today) <= horizon_days]
+    near, past = [], []
+    for e in events_for_ticker:
+        away = e.days_away(today)
+        if 0 <= away <= horizon_days:
+            near.append(e)
+        elif e.kind == "review" and -review_lookback_days <= away < 0:
+            past.append(e)
 
     if near:
         soonest = min(near, key=lambda e: e.date)
         return KNOWN, soonest.describe(today)
+    # Most recent first: two reviews inside the window means the later one is the
+    # one still moving the stock.
+    if past:
+        return KNOWN, max(past, key=lambda e: e.date).describe(today)
     if ticker in blind:
         return UNKNOWN, "no earnings date available - check IDX or CNBC yourself"
     return CLEAR, f"nothing scheduled in the next {horizon_days} days"

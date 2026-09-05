@@ -131,9 +131,13 @@ def collect_events(settings, include_auto: bool = True):
 
     tickers = list(settings.stock_tickers)
     manual = E.load_events(getattr(settings, "events_path", "configs/events.yaml"))
+    # Index dates that ship with the build. Merged rather than seeded into the
+    # reader's file, so a new build corrects them and a hand-recorded row still
+    # wins over a shipped one.
+    shipped = E.load_calendar(getattr(settings, "market_calendar", []))
     auto = E.load_auto_events(tickers) if include_auto else []
 
-    all_events = manual + auto
+    all_events = E.merge_events(shipped, manual) + auto
     blind = E.earnings_coverage(tickers, all_events)
     return all_events, blind
 

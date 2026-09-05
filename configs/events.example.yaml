@@ -11,7 +11,12 @@
 # file sorted for you:
 #
 #   python main.py --event ADRO earnings 2026-08-27
-#   python main.py --event MSCI review 2026-08-28 --note "Aug index review"
+#   python main.py --event BREN ex_dividend 2026-09-18
+#
+# Index review dates ship with the build (see `market_calendar` in
+# configs/default.yaml) and arrive here automatically -- you do not need to copy
+# them in. Recording one yourself overrides the shipped row for the same date,
+# scope and kind, which is how you correct one you have checked.
 #
 # Fields:
 #   date   YYYY-MM-DD
@@ -28,10 +33,10 @@ events:
     scope: ADRO.JK
     kind: earnings
     note: Q2 result
-  - date: '2026-08-28'
-    scope: MSCI
-    kind: review
-    note: August index review
+  - date: '2026-09-18'
+    scope: BREN.JK
+    kind: ex_dividend
+    note: interim, read off the IDX announcement
 
 # An empty calendar is simply:
 #
