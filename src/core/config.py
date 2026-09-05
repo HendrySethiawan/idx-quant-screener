@@ -143,6 +143,79 @@ class Settings(BaseSettings):
         "min_trades_for_verdict": 30,
     })
 
+    # ---- Market rules ------------------------------------------------------
+    # IDX rules, not broker rules, and in config because BEI changes them. The
+    # minimum tradable price is moving Rp50 -> Rp1 (tested 22 & 29 Aug 2026,
+    # targeted 7 Sept 2026); when it lands, edit `min_price_rp` here and nothing
+    # else needs to know.
+    #
+    # The thresholds decide when a price series can no longer support a
+    # volatility or momentum estimate. Chosen from the real universe, where the
+    # separation is wide: GOTO sat at the floor for 34-100% of each factor window
+    # and WIKA printed no change on 95-99% of sessions, while healthy names run
+    # 6-24% flat and never touch the floor.
+    market: Dict[str, Any] = Field(default_factory=lambda: {
+        "min_price_rp": 50.0,
+        "max_flat_pct": 0.60,      # sessions with no price change at all
+        "max_floor_pct": 0.20,     # sessions sitting at the minimum price
+    })
+
+    # Annualised, in percent. Subtracted before every Sharpe -- roughly the BI
+    # 7-day reverse repo rate. Return divided by volatility with no risk-free
+    # term is not a Sharpe ratio, and in a market with a 5%+ policy rate the
+    # difference is most of the number.
+    risk_free_pct: float = 5.5
+
+    # ---- Exits -------------------------------------------------------------
+    # When to get out, and in how many pieces. Every default here was measured on
+    # the cached universe -- 1,705 simulated entries across 46 tradable names over
+    # a 42-session horizon -- rather than picked as a round number.
+    #
+    #   rule                     stopped out within 2 months   median sessions held
+    #   2.0 x ATR fixed at entry            51%                        23
+    #   2.5 x ATR fixed at entry            44%                        27
+    #   3.0 x ATR fixed at entry            39%                        31
+    #   2.0 x ATR trailing                  82%                        13
+    #   2.5 x ATR trailing                  74%                        16
+    #   3.0 x ATR trailing                  66%                        20
+    #
+    # Trailing the whole position from entry is why `trail_after_stage` exists: at
+    # Rp10 juta each firing costs about Rp22,000 in stamp, sell fee and the buy fee
+    # to get back in -- roughly 0.9% of a Rp2.5 juta position, and near Rp700,000 a
+    # year across four slots. So the stop is fixed until the first trim banks a
+    # gain, and only the remainder trails.
+    risk: Dict[str, Any] = Field(default_factory=lambda: {
+        "atr_window": 14,
+        # Stop distance in ATRs. A percentage cannot serve this universe: 2.5 x ATR
+        # is 3.0% on BBSI and 16.8% on INET.
+        "k_atr": 2.5,
+        # Trim levels, in multiples of the initial risk (R = entry - stop), and the
+        # share of the ORIGINAL position sold at each. What is left runs.
+        "ladder": [1.0, 2.0],
+        "ladder_fractions": [0.4, 0.3],
+        "trail_after_stage": 1,
+        # The daily close, never the intraday low. This tool has no live feed and
+        # cannot observe an intraday print; close-triggering also churns less.
+        "trigger": "close",
+        # Beyond this the stop is not protection, it is a shrug. The plan says the
+        # name is too wild for one slot instead of quoting a 30% level.
+        "max_stop_pct": 15.0,
+        # A trim whose own sell fee and stamp exceed this share of its value is
+        # dropped and its lots roll into the next stage. The threshold is set by
+        # the stamp, not by taste: 10,000 / (0.025 - 0.0029) makes the smallest
+        # viable trim about Rp452,000. Below that the Rp10,000 dominates -- one
+        # lot of a Rp179,500 position costs Rp10,520 to sell alone, 5.9%. Anything
+        # tighter than this deletes every ladder the account can actually hold,
+        # since a solo Rp830,000 trim already costs 1.49%.
+        "max_trim_cost_pct": 2.5,
+        # Warned about, not enforced: the sizer deploys the budget, and it is the
+        # code the backtest validates. See docs and the ticket's risk line.
+        "max_position_risk_pct": 2.0,
+        # Sessions a name is blocked from re-entry after it was sold. Without this
+        # the next re-rank buys back what the stop just sold, paying both sides.
+        "cooldown_sessions": 10,
+    })
+
     # ---- Liquidity ---------------------------------------------------------
     liquidity: Dict[str, Any] = Field(default_factory=lambda: {
         # A position may not exceed this share of median daily traded value,

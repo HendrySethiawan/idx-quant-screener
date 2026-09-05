@@ -59,6 +59,12 @@ class BacktestConfig:
     min_names: int = 10              # skip dates with too few listed names
     start: Optional[pd.Timestamp] = None
     end: Optional[pd.Timestamp] = None
+    # Annualised percent, subtracted before every Sharpe this config produces.
+    risk_free_pct: float = 0.0
+    # Stops and the profit ladder, or None to hold every position untouched from
+    # one rebalance to the next -- which is what this simulation did before exits
+    # existed, and what the `exits=None` regression test pins.
+    exits: Optional[object] = None
 
     @property
     def periods_per_year(self) -> int:
@@ -78,12 +84,17 @@ class BacktestResult:
     # Share of the intended budget that whole-lot rounding left in cash. Unlike the
     # path effect of rounding (whose sign is luck), this drag is always >= 0.
     avg_undeployed_pct: float = 0.0
+    # Sessions on which a stop or a ladder rung fired between rebalances. Zero when
+    # `cfg.exits` is None, which is how you tell "the exits did nothing" from "the
+    # exits were not switched on".
+    n_exit_sales: int = 0
     holdings_log: List[dict] = field(default_factory=list)
     config: Optional[BacktestConfig] = None
 
     def metrics(self) -> Dict[str, Optional[float]]:
         return summarize(self.equity, self.returns, self.turnover,
-                         self.config.periods_per_year if self.config else 12)
+                         self.config.periods_per_year if self.config else 12,
+                         self.config.risk_free_pct if self.config else 0.0)
 
 
 # --------------------------------------------------------------------- plumbing
@@ -94,6 +105,30 @@ def build_price_panel(price_data: Dict[str, pd.DataFrame], field_name: str = "Cl
         if frame is None or field_name not in frame:
             continue
         col = frame[field_name].dropna()
+        if col.empty:
+            continue
+        col.index = pd.to_datetime(col.index).tz_localize(None)
+        series[ticker] = col[~col.index.duplicated(keep="last")]
+    if not series:
+        return pd.DataFrame()
+    return pd.DataFrame(series).sort_index()
+
+
+def build_atr_panel(price_data: Dict[str, pd.DataFrame], window: int = 14) -> pd.DataFrame:
+    """
+    Average true range per ticker per date, from the same function the live tool uses.
+
+    `analysis.technical.average_true_range`, not a reimplementation. A backtest
+    that computed its own ATR would be testing a rule nobody runs, and the whole
+    point of measuring the exits is to find out what the shipped ones do.
+    """
+    from analysis.technical import average_true_range
+
+    series = {}
+    for ticker, frame in (price_data or {}).items():
+        if frame is None or "Close" not in frame:
+            continue
+        col = average_true_range(frame, window).dropna()
         if col.empty:
             continue
         col.index = pd.to_datetime(col.index).tz_localize(None)
@@ -178,6 +213,233 @@ def _deploy_pct(bench_hist: Optional[pd.Series], fx_hist: Optional[pd.Series],
     return float(ladder[int(idx)])
 
 
+# -------------------------------------------------------------------- the exits
+#
+# What a position is carrying between rebalances. Held apart from `holdings`, which
+# stays a plain shares-per-ticker map, so every existing line that reads it keeps
+# working and `exits=None` runs down exactly the path it always did.
+@dataclass
+class _Book:
+    entry: float
+    original: float          # shares at the size the ladder was built for
+    stop: float
+    risk: float              # entry - initial stop, per share
+    rungs: List[Tuple[float, float]] = field(default_factory=list)  # (level, shares)
+    taken: int = 0
+    high: float = 0.0
+
+
+def _open_book(shares: float, entry: float, atr: Optional[float],
+               ecfg, fee_cfg: FeeConfig) -> Optional[_Book]:
+    """A stop and a ladder for one position, or None when the ATR cannot carry one."""
+    from portfolio.exits import build_ladder, stop_level
+
+    if shares <= 0 or entry <= 0:
+        return None
+    stop = stop_level(entry, atr, ecfg, fee_cfg, shares * entry)
+    if stop is None:
+        return None
+
+    risk = entry - stop
+    lots = int(shares // fee_cfg.lot_size)
+    rungs: List[Tuple[float, float]] = []
+    if lots >= 1:
+        for stage in build_ladder(lots, entry, risk, ecfg, fee_cfg):
+            rungs.append((stage.level_rp, float(stage.shares)))
+        # `build_ladder` returns one stage covering everything when the position
+        # is too small to slice. That is a full exit at a target, not a ladder,
+        # and treating it as a rung would sell the whole position at +1R.
+        if sum(s for _, s in rungs) >= shares:
+            rungs = []
+    else:
+        # The frictionless leg holds fractional shares, where whole lots and the
+        # per-trim cost floor are both meaningless. Trim by the configured
+        # fractions directly, so the two legs still run the same ladder shape.
+        for level, fraction in zip(ecfg.ladder, ecfg.ladder_fractions):
+            rungs.append((entry + float(level) * risk, shares * float(fraction)))
+
+    return _Book(entry=entry, original=shares, stop=stop, risk=risk,
+                 rungs=rungs, high=entry)
+
+
+def _apply_exits(books: Dict[str, _Book], holdings: Dict[str, float],
+                 panel: pd.DataFrame, atr_panel: Optional[pd.DataFrame],
+                 start, end, ecfg, fee_cfg: FeeConfig,
+                 charge_fees: bool,
+                 last_sale: Optional[Dict[str, pd.Timestamp]] = None,
+                 ) -> Tuple[float, float, List[pd.Timestamp]]:
+    """
+    Walk the sessions in `(start, end]` and act on stops and targets.
+
+    **Triggered on the close.** Not the intraday low, because the live tool has no
+    live feed and cannot observe one -- a simulation that filled at an intraday
+    level would be measuring a rule the reader could not run. It is also the less
+    optimistic assumption in the direction that matters: the position is carried
+    through the whole session and exits at its end.
+
+    Proceeds go to cash and stay there until the next rebalance. Redeploying the
+    same day would assume a second decision nobody made.
+
+    Returns `(proceeds, fees, sell_dates)`.
+    """
+    if not books:
+        return 0.0, 0.0, []
+
+    window = panel.loc[(panel.index > start) & (panel.index <= end)]
+    proceeds = fees = 0.0
+    sell_dates: List[pd.Timestamp] = []
+
+    for day in window.index:
+        row = window.loc[day]
+        sold_today = False
+
+        for ticker in list(books):
+            book = books[ticker]
+            shares = holdings.get(ticker, 0.0)
+            if shares <= 0:
+                books.pop(ticker, None)
+                continue
+
+            price = row.get(ticker)
+            if price is None or pd.isna(price) or price <= 0:
+                continue
+            price = float(price)
+            book.high = max(book.high, price)
+
+            take = 0.0
+            if price <= book.stop:
+                take = shares
+            else:
+                # Every rung the price has reached, not just the next one. A gap
+                # through both in one session is one selling day and therefore one
+                # stamp -- taking them a day apart would pay two, and would be
+                # simulating a rule the live plan does not follow.
+                while book.rungs and price >= book.rungs[0][0]:
+                    take += book.rungs.pop(0)[1]
+                    book.taken += 1
+                take = min(take, shares)
+                if take > 0:
+                    _ratchet(book, atr_panel, day, ticker, ecfg, fee_cfg,
+                             shares - take)
+
+            if take <= 0:
+                continue
+
+            value = take * price
+            proceeds += value
+            if charge_fees:
+                fees += value * fee_cfg.sell_fee
+            holdings[ticker] = shares - take
+            sold_today = True
+            if last_sale is not None:
+                last_sale[ticker] = day
+            if holdings[ticker] <= 0:
+                holdings.pop(ticker, None)
+                books.pop(ticker, None)
+
+        if sold_today:
+            sell_dates.append(day)
+
+    return proceeds, fees, sell_dates
+
+
+def _ratchet(book: _Book, atr_panel, day, ticker: str, ecfg,
+             fee_cfg: FeeConfig, remaining: float) -> None:
+    """
+    Move the stop up once enough rungs have been banked. Never down.
+
+    Break-even first, and break-even is the entry price PLUS the round trip -- a
+    stop at the entry price is a small loss wearing the word "even". The trail
+    takes over from there as the high pulls away.
+    """
+    from portfolio.exits import break_even_level, trailing_level
+
+    if book.taken < ecfg.trail_after_stage or remaining <= 0:
+        return
+
+    book.stop = max(book.stop, break_even_level(book.entry, remaining, fee_cfg))
+
+    atr = None
+    if atr_panel is not None and ticker in atr_panel.columns:
+        seen = atr_panel[ticker].loc[:day].dropna()
+        atr = float(seen.iloc[-1]) if len(seen) else None
+    trail = trailing_level(book.high, atr, ecfg)
+    if trail is not None:
+        book.stop = max(book.stop, trail)
+
+
+def _apply_cooldown(target: Dict[str, float], holdings: Dict[str, float],
+                    last_sale: Dict[str, pd.Timestamp], today,
+                    sessions: pd.DatetimeIndex, ecfg) -> Dict[str, float]:
+    """
+    Refuse to increase anything sold too recently.
+
+    Any increase, not only a re-entry into something fully closed. Blocking only
+    the closed ones leaves the ladder undoing itself -- trim 4 lots at +1R, and the
+    next rebalance tops the position straight back up to target, paying the sell
+    fee, the stamp and the buy fee to end where it started. This is the same rule
+    `build_orders` applies live, and the simulation has to run it or it is
+    measuring a different strategy.
+    """
+    if ecfg.cooldown_sessions <= 0 or not last_sale:
+        return target
+
+    now = pd.Timestamp(today)
+    out = dict(target)
+    for ticker, want in target.items():
+        sold = last_sale.get(ticker)
+        if sold is None:
+            continue
+        elapsed = int(((sessions > sold) & (sessions <= now)).sum())
+        if elapsed < ecfg.cooldown_sessions:
+            out[ticker] = min(want, holdings.get(ticker, 0.0))
+    return out
+
+
+def _sync_books(books: Dict[str, _Book], holdings: Dict[str, float],
+                target: Dict[str, float], prices: pd.Series,
+                atr_panel, day, ecfg, fee_cfg: FeeConfig) -> None:
+    """
+    Rebuild the plan for anything the rebalance changed.
+
+    A position whose size went UP gets a fresh entry price and a fresh ladder,
+    because the average cost moved and the old rungs were sized for a smaller
+    position. One that shrank keeps its plan -- the rebalance took some off, which
+    is what a trim is, and rebuilding would hand back rungs already used.
+    """
+    for ticker, want in target.items():
+        have = holdings.get(ticker, 0.0)
+        price = prices.get(ticker)
+        if want <= 0 or price is None or pd.isna(price):
+            continue
+
+        book = books.get(ticker)
+        if book is not None and want <= have:
+            continue
+
+        atr = None
+        if atr_panel is not None and ticker in atr_panel.columns:
+            seen = atr_panel[ticker].loc[:day].dropna()
+            atr = float(seen.iloc[-1]) if len(seen) else None
+
+        if book is None:
+            entry = float(price)
+        else:
+            # Weighted average, the same basis `journal.average_cost` uses live.
+            added = want - have
+            entry = (book.entry * have + float(price) * added) / want
+
+        fresh = _open_book(want, entry, atr, ecfg, fee_cfg)
+        if fresh is None:
+            books.pop(ticker, None)
+        else:
+            books[ticker] = fresh
+
+    for ticker in list(books):
+        if holdings.get(ticker, 0.0) <= 0:
+            books.pop(ticker, None)
+
+
 # ------------------------------------------------------------------ the run loop
 def run_backtest(
     panel: pd.DataFrame,
@@ -189,6 +451,7 @@ def run_backtest(
     fx: Optional[pd.Series] = None,
     trend_ma: int = 200,
     deploy_ladder: Sequence[float] = (0.30, 0.60, 1.00),
+    atr_panel: Optional[pd.DataFrame] = None,
 ) -> BacktestResult:
     result = BacktestResult(config=cfg)
     if panel is None or panel.empty:
@@ -207,6 +470,19 @@ def run_backtest(
     equity_points, turnover_points, names_seen, undeployed = [], [], [], []
     total_fees = total_stamp = 0.0
     sell_days = 0
+
+    ecfg = cfg.exits
+    books: Dict[str, _Book] = {}
+    # When each name was last sold, so the rebalance cannot immediately undo an
+    # exit. Without it the simulation measures a rule nobody would run: stop out on
+    # Tuesday, buy the whole position back at Friday's rebalance, pay both sides.
+    last_sale: Dict[str, pd.Timestamp] = {}
+    sessions = pd.DatetimeIndex(panel.index)
+    # Dates the stamp has already been charged for. It is levied once per DAY that
+    # contains a sale, not once per order, so a stop firing on a rebalance date
+    # must not pay it twice -- and the whole reason the exit ladder is affordable
+    # at Rp10 juta is that sales sharing a day share the stamp.
+    charged: set = set()
 
     for t, t_next in zip(dates[:-1], dates[1:]):
         hist = panel[panel.index < t]
@@ -236,6 +512,9 @@ def run_backtest(
             target = _target_shares(
                 candidates, value, deploy, cfg, fee_cfg,
             )
+            if ecfg is not None:
+                target = _apply_cooldown(target, holdings, last_sale, t,
+                                         sessions, ecfg)
 
             intended = value * deploy
             placed = sum(sh * float(prices_t.get(tk, 0.0)) for tk, sh in target.items())
@@ -253,14 +532,42 @@ def run_backtest(
             turnover_points.append(traded / value if value else 0.0)
 
             cash = cash + proceeds - spend - cost
+            if ecfg is not None:
+                _sync_books(books, holdings, target, prices_t, atr_panel, t,
+                            ecfg, fee_cfg)
             holdings = {tk: sh for tk, sh in target.items() if sh > 0}
             total_fees += cost
             total_stamp += fees.stamp_duty if fees else 0.0
             if any(o["action"] == "SELL" for o in orders):
                 sell_days += 1
+                charged.add(t)
+            for o in orders:
+                if o["action"] == "SELL":
+                    last_sale[o["ticker"]] = t
             result.n_rebalances += 1
         else:
             turnover_points.append(0.0)
+
+        # Between one rebalance and the next, the stops and the ladder are the only
+        # thing that can move the book. This is the whole difference the feature
+        # makes to the simulation: before it, a position bought in January was held
+        # untouched until February whatever it did in between.
+        if ecfg is not None and books:
+            got, spent_fees, hit = _apply_exits(
+                books, holdings, panel, atr_panel, t, t_next, ecfg, fee_cfg,
+                cfg.charge_fees, last_sale)
+            cash += got - spent_fees
+            total_fees += spent_fees
+            if cfg.charge_fees:
+                for day in hit:
+                    if day in charged:
+                        continue
+                    charged.add(day)
+                    cash -= fee_cfg.stamp_duty_rp
+                    total_fees += fee_cfg.stamp_duty_rp
+                    total_stamp += fee_cfg.stamp_duty_rp
+                    sell_days += 1
+            result.n_exit_sales += len(hit)
 
         prices_next = panel.loc[t_next]
         # Carry the last known price for a name that stops trading, rather than
@@ -385,7 +692,17 @@ def max_drawdown(equity: pd.Series) -> float:
 
 
 def summarize(equity: pd.Series, returns: pd.Series, turnover: pd.Series,
-              periods_per_year: int) -> Dict[str, Optional[float]]:
+              periods_per_year: int,
+              risk_free_pct: float = 0.0) -> Dict[str, Optional[float]]:
+    """
+    Return, risk, and the ratio between them.
+
+    `risk_free_pct` is subtracted before the Sharpe. Return divided by volatility
+    with no risk-free term is not a Sharpe ratio, and in a market with a 5%+
+    policy rate the difference is most of the number: 25.2/24.5 = 1.03 becomes
+    (25.2-5.5)/24.5 = 0.80. It defaults to 0.0 so a caller that has no view gets
+    the old arithmetic explicitly rather than by omission.
+    """
     if equity is None or len(equity) < 2:
         return {}
 
@@ -395,7 +712,8 @@ def summarize(equity: pd.Series, returns: pd.Series, turnover: pd.Series,
 
     vol = float(returns.std() * np.sqrt(periods_per_year) * 100) if len(returns) > 1 else None
     ann_ret = cagr
-    sharpe = (ann_ret / vol) if (vol and vol > 0 and ann_ret is not None) else None
+    excess = None if ann_ret is None else ann_ret - float(risk_free_pct or 0.0)
+    sharpe = (excess / vol) if (vol and vol > 0 and excess is not None) else None
 
     def clean(v):
         return None if v is None or not np.isfinite(v) else round(float(v), 2)
@@ -406,6 +724,7 @@ def summarize(equity: pd.Series, returns: pd.Series, turnover: pd.Series,
         "ann_vol": clean(vol),
         "sharpe": clean(sharpe),
         "max_drawdown": clean(max_drawdown(equity)),
+        "risk_free_pct": clean(float(risk_free_pct or 0.0)),
         "hit_rate": clean(float((returns > 0).mean() * 100)) if len(returns) else None,
         "avg_turnover": clean(float(turnover.mean() * 100)) if len(turnover) else None,
         "periods": len(equity),

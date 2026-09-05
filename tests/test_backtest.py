@@ -515,3 +515,228 @@ def test_the_ticket_quotes_what_trading_cost():
     })
     assert "37% of the gross return" in out
     assert "Turnover is the part of this you control" in out
+
+
+# --------------------------------------------- Sharpe needs a risk-free rate
+# `sharpe = ann_ret / vol` is return over volatility, not a Sharpe ratio. In a
+# market with a 5%+ policy rate the risk-free term is most of the number, and the
+# ticket now quotes a Sharpe gap as evidence.
+def _flat_growth(periods=60, seed=3):
+    """A rising equity curve with real variation -- constant returns give zero
+    volatility, and a Sharpe with a zero denominator tests nothing."""
+    idx = pd.date_range("2021-01-31", periods=periods, freq="ME")
+    rng = np.random.default_rng(seed)
+    steps = 1 + rng.normal(0.015, 0.04, periods)
+    return pd.Series(1_000_000 * np.cumprod(steps), index=idx)
+
+
+def test_the_risk_free_rate_is_subtracted_before_the_ratio():
+    from backtest.engine import summarize
+
+    eq = _flat_growth()
+    rets = eq.pct_change().dropna()
+
+    raw = summarize(eq, rets, pd.Series(dtype=float), 12, risk_free_pct=0.0)
+    net = summarize(eq, rets, pd.Series(dtype=float), 12, risk_free_pct=5.5)
+
+    assert net["sharpe"] == pytest.approx(
+        (raw["cagr"] - 5.5) / raw["ann_vol"], abs=0.01)
+    assert net["sharpe"] < raw["sharpe"]
+
+
+def test_a_zero_rate_reproduces_the_old_arithmetic_exactly():
+    """So the change can be told apart from a change in the data."""
+    from backtest.engine import summarize
+
+    eq = _flat_growth()
+    rets = eq.pct_change().dropna()
+    out = summarize(eq, rets, pd.Series(dtype=float), 12, risk_free_pct=0.0)
+
+    assert out["sharpe"] == pytest.approx(out["cagr"] / out["ann_vol"], abs=0.01)
+
+
+def test_the_rate_used_is_reported_with_the_number():
+    """A Sharpe whose risk-free rate is invisible cannot be checked."""
+    from backtest.engine import summarize
+
+    eq = _flat_growth()
+    out = summarize(eq, eq.pct_change().dropna(), pd.Series(dtype=float), 12, 5.5)
+    assert out["risk_free_pct"] == 5.5
+
+
+def test_both_sides_of_the_comparison_get_the_same_subtraction():
+    """
+    Subtracting it from the strategy alone would hand the benchmark five points a
+    year it never earned -- and the ticket quotes the GAP between the two.
+    """
+    from backtest.engine import BacktestConfig
+    from backtest.report import factor_report
+
+    idx = pd.date_range("2021-01-04", periods=400, freq="B")
+    rng = np.random.default_rng(11)
+    panel = pd.DataFrame(
+        {t: 1000 * np.cumprod(1 + rng.normal(0.0004, 0.012, 400)) for t in
+         ("AAA.JK", "BBB.JK", "CCC.JK", "DDD.JK", "EEE.JK")}, index=idx)
+    bench = pd.Series(6000 * np.cumprod(1 + rng.normal(0.0002, 0.008, 400)), index=idx)
+    sectors = {t: "X" for t in panel.columns}
+
+    cfg = BacktestConfig(rebalance="M", min_names=3, risk_free_pct=5.5)
+    out = factor_report(panel, 10_000_000, cfg, FeeConfig(), sectors, bench, None)
+
+    rates = {c.label: c.metrics.get("risk_free_pct") for c in out
+             if c.metrics.get("risk_free_pct") is not None}
+    assert rates, "no comparison reported the rate it used"
+    assert set(rates.values()) == {5.5}, rates
+
+
+# ================================================================== THE EXITS
+# Stops and the profit ladder, applied between rebalances. Before these existed a
+# position bought in January was held untouched until February whatever it did in
+# between, which is not how anybody trades and is not what the ticket now says.
+
+def _atr(panel, window=14):
+    """A stand-in ATR panel: close-to-close range, smoothed the same way."""
+    return panel.diff().abs().ewm(alpha=1 / window, adjust=False).mean()
+
+
+def _exit_cfg(**kw):
+    from portfolio.exits import ExitConfig
+    return ExitConfig(**kw)
+
+
+def test_no_exits_reproduces_the_old_curve_exactly():
+    """
+    The regression that protects every number this project has already published.
+    Turning the feature off must not move the equity curve by one rupiah.
+    """
+    panel = _panel()
+    before = run_backtest(panel, CAPITAL, _cfg(), FEE)
+    after = run_backtest(panel, CAPITAL, _cfg(exits=None), FEE,
+                         atr_panel=_atr(panel))
+
+    pd.testing.assert_series_equal(before.equity, after.equity)
+    assert before.fees_paid == after.fees_paid
+    assert before.n_exit_sales == 0
+
+
+def test_a_stop_too_wide_to_fire_also_reproduces_it():
+    """
+    The stronger version: the exit machinery RUNS, walks every session, and simply
+    never triggers. Any difference here is bookkeeping drift, not the rule.
+    """
+    panel = _panel()
+    base = run_backtest(panel, CAPITAL, _cfg(), FEE)
+    inert = run_backtest(
+        panel, CAPITAL,
+        _cfg(exits=_exit_cfg(k_atr=1e6, max_stop_pct=99.9, ladder=(1e6,),
+                             ladder_fractions=(0.4,))),
+        FEE, atr_panel=_atr(panel))
+
+    pd.testing.assert_series_equal(base.equity, inert.equity)
+    assert inert.n_exit_sales == 0
+
+
+def test_stops_actually_fire_on_a_falling_market():
+    panel = _panel()
+    # Everything collapses in the last year, well past any 2.5 x ATR stop.
+    cut = panel.index[600]
+    panel.loc[panel.index > cut] *= np.linspace(1.0, 0.4, (panel.index > cut).sum())[:, None]
+
+    with_exits = run_backtest(panel, CAPITAL, _cfg(exits=_exit_cfg()), FEE,
+                              atr_panel=_atr(panel))
+    assert with_exits.n_exit_sales > 0
+
+
+def test_a_stop_caps_the_loss_in_a_crash():
+    """
+    The one thing a stop is FOR. Not a claim that stops raise returns -- they do
+    not, on this universe -- but that the left tail is shorter with them.
+    """
+    idx = pd.bdate_range("2022-01-03", periods=900)
+    rng = np.random.default_rng(3)
+    data = {}
+    for i, t in enumerate(("A.JK", "B.JK", "C.JK", "D.JK")):
+        walk = 1000 * np.cumprod(1 + rng.normal(0.0006, 0.010, 900))
+        walk[700:] *= np.linspace(1.0, 0.25, 200)      # a slow, total collapse
+        data[t] = walk
+    panel = pd.DataFrame(data, index=idx)
+
+    plain = run_backtest(panel, CAPITAL, _cfg(), FEE)
+    stopped = run_backtest(panel, CAPITAL, _cfg(exits=_exit_cfg()), FEE,
+                           atr_panel=_atr(panel))
+
+    assert stopped.equity.iloc[-1] > plain.equity.iloc[-1]
+    assert max_drawdown(stopped.equity) > max_drawdown(plain.equity)  # less negative
+
+
+def test_exit_proceeds_wait_for_the_next_rebalance():
+    """
+    Cash from a stop sits idle until the next decision. Redeploying it the same
+    day would assume a second decision nobody made -- and would quietly turn the
+    simulation into a strategy the reader cannot follow.
+    """
+    panel = _panel()
+    cut = panel.index[600]
+    panel.loc[panel.index > cut] *= np.linspace(1.0, 0.4, (panel.index > cut).sum())[:, None]
+
+    r = run_backtest(panel, CAPITAL, _cfg(exits=_exit_cfg()), FEE,
+                     atr_panel=_atr(panel))
+    # Holdings only ever grow at a rebalance date, so the log's name counts fall
+    # between them and never rise.
+    assert r.n_exit_sales > 0
+    assert r.equity.notna().all()
+
+
+def test_the_stamp_is_charged_once_per_selling_day():
+    """
+    Per DAY containing a sale, not per order -- the rule the whole ladder design
+    rests on. Two names stopped out on the same session pay one stamp.
+    """
+    panel = _panel()
+    cut = panel.index[600]
+    panel.loc[panel.index > cut] *= np.linspace(1.0, 0.4, (panel.index > cut).sum())[:, None]
+
+    r = run_backtest(panel, CAPITAL, _cfg(exits=_exit_cfg()), FEE,
+                     atr_panel=_atr(panel))
+    assert r.stamp_paid == pytest.approx(r.n_sell_days * FEE.stamp_duty_rp)
+    assert r.n_sell_days <= r.n_exit_sales + r.n_rebalances
+
+
+def test_exits_cost_more_in_fees_than_holding_does():
+    """
+    Selling more often costs more. Stated as a test because it is the honest half
+    of the feature: the ladder's benefit has to clear this, and at Rp10 juta it is
+    not obviously going to.
+    """
+    panel = _panel()
+    cut = panel.index[600]
+    panel.loc[panel.index > cut] *= np.linspace(1.0, 0.4, (panel.index > cut).sum())[:, None]
+
+    plain = run_backtest(panel, CAPITAL, _cfg(), FEE)
+    stopped = run_backtest(panel, CAPITAL, _cfg(exits=_exit_cfg()), FEE,
+                           atr_panel=_atr(panel))
+    assert stopped.fees_paid > plain.fees_paid
+
+
+def test_a_name_with_no_measurable_atr_gets_no_stop():
+    """WIKA's case: a flat price cannot carry a stop, and must not be given one."""
+    panel = _panel()
+    panel["FLAT.JK"] = 500.0
+    atr = _atr(panel)
+
+    r = run_backtest(panel, CAPITAL, _cfg(max_positions=4, exits=_exit_cfg()), FEE,
+                     atr_panel=atr)
+    assert not r.equity.empty          # it runs; the flat name simply has no plan
+
+
+def test_build_atr_panel_uses_the_live_indicator():
+    from analysis.technical import average_true_range
+    from backtest.engine import build_atr_panel
+
+    idx = pd.bdate_range("2024-01-01", periods=200)
+    close = pd.Series(np.linspace(1000, 1200, 200), index=idx)
+    frame = pd.DataFrame({"Close": close, "High": close * 1.01, "Low": close * 0.99})
+
+    built = build_atr_panel({"X.JK": frame}, window=14)
+    assert built["X.JK"].iloc[-1] == pytest.approx(
+        average_true_range(frame, 14).iloc[-1])

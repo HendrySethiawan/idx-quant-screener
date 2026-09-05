@@ -32,8 +32,9 @@ and never open the other four:
 | Section | What it answers |
 |---|---|
 | Market right now | Risk-on or risk-off, and what share of capital to deploy today |
-| **Do this today** | The ticket: BUY/SELL/HOLD, exact lots, exact rupiah, estimated fees |
-| What you hold | Current positions, P&L, and a health flag per name |
+| **Do this today** | The ticket: BUY/TRIM/SELL/HOLD, exact lots, exact rupiah, the stop each one sits under, and estimated fees |
+| **What you hold → Exit plan** | Where each position gets sold: a stop, the trim levels, and what runs |
+| What you hold → Worth & health | Current positions, P&L, peer multiples and a health flag per name |
 | Best candidates you can afford | Ranked, each with a fair-price range and a plain-English reason |
 | **Worth vs peers** | Below / in line / above the price peer multiples imply — on candidates *and* on what you already hold |
 | Skipped | Names that ranked well but failed the liquidity or lot-size gate |
@@ -293,6 +294,102 @@ your own discretionary calls.
 
 ---
 
+## When to get out
+
+Until recently this tool decided what to **buy** and never decided what to **sell**:
+the ticket proposed a sale for exactly one reason, that a name had fallen out of the
+target book on a re-rank. A position could halve with nothing on the page mentioning
+it.
+
+Every open position now carries three things, on the **Exit plan** tab and in the
+ticket:
+
+| | |
+|---|---|
+| **A stop** | `entry − 2.5 × ATR(14)`, where the trade is wrong |
+| **A ladder** | Trims at +1R and +2R, in whole lots, where `R = entry − stop` |
+| **A runner** | What is left, on a trailing stop, until that is hit — which is how you end up fully out |
+
+**The distance is the stock's own daily range, never a percentage.** Across this
+universe a 2.5 × ATR stop runs from **3.0% on BBSI to 16.8% on INET** — a 5.6×
+spread. One percentage cannot serve both: it is an ordinary fortnight for one name
+and a coin flip for the other. It is also what makes the rule adapt without a
+setting to change — when the market turns violent the daily range grows and every
+stop widens with it.
+
+**Only the runner trails, and that is a cost decision.** Measured over 1,705
+simulated entries on a 42-session horizon:
+
+| rule | stopped out within 2 months | median sessions held |
+|---|---|---|
+| 2.5 × ATR fixed at entry | 44% | 27 |
+| 2.5 × ATR trailing from entry | 74% | 16 |
+| 2.0 × ATR trailing from entry | 82% | 13 |
+
+At Rp10 juta each firing costs about Rp22,000 once the stamp, the sell fee and the
+buy fee to get back in are counted — near Rp700,000 a year across four slots, 7% of
+the account. So the stop is fixed until the first trim banks a gain; after that the
+stop moves to break-even (entry **plus** the round trip, not entry) and the
+remainder trails.
+
+**Some positions cannot be staged, and the page says so.** A trim has to clear its
+own cost, and the Rp10,000 stamp puts the smallest viable one at about Rp452,000.
+A position too small to slice comes back as *"this is one decision, not a ladder"*
+rather than instructions you cannot follow.
+
+**A stop beats the ranking, then a cooldown blocks the re-buy.** Without the
+cooldown the loop closes on itself — the stop sells today, tomorrow's re-rank puts
+the name straight back in the target book, and you pay both sides to end up exactly
+where you started. It blocks any *increase*, not just a re-entry, so the ladder
+cannot undo itself by topping a trimmed position back up.
+
+### What the ladder measured, which is not what you would hope
+
+From a random entry, +1R arrived 38.6% of the time and the stop first 37.4% — near a
+coin flip, which is what a random walk implies. The ladder narrows the spread of
+outcomes; it does not create return. `--backtest` measures what it actually did:
+
+| Monthly rebalance | CAGR | Max drawdown | Sharpe | Fees | Selling days |
+|---|---|---|---|---|---|
+| Hold to the rebalance | +25.1% | −16.3% | 0.81 | Rp1,162,256 | 41 |
+| **Stop only, 2.5 × ATR** | **+28.1%** | −16.4% | **0.87** | Rp1,408,815 | 55 |
+| Stop + ladder (shipped) | +11.8% | −16.7% | 0.40 | Rp1,868,858 | 107 |
+
+Weekly is the same shape. **The stop earns its place; the ladder does not.** On this
+universe a stop with no profit-taking beat holding on return *and* Sharpe for
+Rp250,000 of extra fees, while adding the ladder cost 13 percentage points a year and
+did not even buy a shallower trough.
+
+That is not surprising in hindsight. The backtestable part of this strategy is
+momentum, and momentum lives in its right tail — a rule that systematically sells the
+names that are running removes exactly the outcomes it depends on.
+
+**The ladder ships on anyway, because it is what was asked for, and one line turns it
+off.** In `configs/user.yaml`:
+
+```yaml
+risk:
+  ladder: []            # stop only: no profit-taking, no trailing
+  ladder_fractions: []
+```
+
+Caveats that cut the other way: the backtest reconstructs only 3.0 of the 9.0 factor
+weight, on a survivorship-biased universe, over one regime — and it rebalances on a
+fixed calendar, which is not how anyone actually trades. It disqualifies; it does not
+validate. But a 13-point gap is large enough to want a reason to ignore, and the page
+says so wherever it quotes an exit level.
+
+**It cannot watch these levels for you.** The tool reads daily closes and has no
+live feed, so a level is checked once per session against the close — never
+intraday. Place the stop in Indopremier if you want it to act while you are not
+looking. Triggering on the close is also the less churn-prone choice: 2.0 × ATR
+survived 13 sessions on closes against 10 on intraday lows.
+
+Everything above is in `configs/default.yaml` under `risk:`, with the measured basis
+in the comments.
+
+---
+
 ## How performance is measured
 
 `python main.py --journal` answers one question: **would the same money, moved on the
@@ -328,7 +425,7 @@ So a good result means *the price component was not obviously broken on one flat
 window*. It does not mean the tool works. **A backtest disqualifies; it does not
 validate.**
 
-It answers three questions separately:
+It answers four questions separately:
 
 1. **Did the price factors beat the alternatives?** Against IHSG *and* against an
    equal-weight universe — the second separates "the ranking added something" from
@@ -340,12 +437,20 @@ It answers three questions separately:
    left in cash) is ~0.2%.
 3. **Does the risk-off ladder help?** Compared on CAGR *and* drawdown, since trading
    return for a smaller drawdown is a legitimate choice.
+4. **Do the stops and the profit ladder help?** Holding to the next rebalance against
+   stopping out, with and without staged trims, at three stop widths — reported
+   beside **fees paid** and **selling days**, because selling more often costs more
+   and that has to clear before anything was gained. See
+   [When to get out](#when-to-get-out).
 
 Then it stresses the result: momentum weights ±50%, position count 3–6, and each half
 of the window independently. An edge that appears at only one setting is not an edge.
 
-The backtest calls the same `choose_allocation`, `estimate_fees` and `assess_regime`
-the daily brief uses, so it tests the strategy you actually run.
+The backtest calls the same `choose_allocation`, `estimate_fees`, `assess_regime`,
+`stop_level` and `build_ladder` the daily brief uses, so it tests the strategy you
+actually run — including the cooldown that stops a rebalance buying back what an
+exit just sold. Exits are off in questions 1–3, so those keep answering exactly what
+they answered before.
 
 ---
 
@@ -481,6 +586,18 @@ factor does at this account size:
 10. **`gross_margin` is not reported for banks.** yfinance returns a literal `0.0`, which
     the scorer used to read as a real observation — every bank scoring worst-in-class on
     a factor that does not apply to them. It is now treated as missing and scored neutral.
+11. **A stop is checked once a session, against the close.** There is no live feed, so
+    the tool cannot see an intraday print and cannot act while you are away. It also
+    cannot model a gap through a level: on IDX a limit-down open fills below the stop,
+    not at it, so the rupiah-at-risk figure is a floor rather than a worst case.
+12. **A capped stop understates its own risk.** Past `max_stop_pct` the level is the
+    cap rather than 2.5 × ATR, which makes the wildest names look like the safest.
+    Those rows are flagged `capped` wherever the risk is shown.
+13. **The ladder did not pay for itself in the backtest.** A stop with no
+    profit-taking beat both holding and the ladder, on return and on Sharpe, at both
+    cadences. The ladder ships because it was asked for and because the simulation
+    tests a third of the score on a rigid calendar — but it is one config line to
+    turn off, and the page says so. See [When to get out](#when-to-get-out).
 
 ---
 

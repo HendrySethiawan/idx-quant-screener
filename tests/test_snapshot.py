@@ -172,3 +172,70 @@ def test_the_universe_key_ignores_ticker_order(settings):
     first = universe_key(settings)
     settings.stock_tickers = dict(reversed(list(settings.stock_tickers.items())))
     assert universe_key(settings) == first
+
+
+# ------------------------------------------------------- the exits' price tail
+# `price_data` is still left out of the snapshot -- 49 OHLCV frames would be the
+# largest thing in the file. But a stop compares today's close against an entry
+# made weeks ago and a trailing stop needs the high since that entry, and neither
+# survives in `df`, which holds one row per ticker. So a trimmed Close/High panel
+# goes in, and `render` stays off the network where the whole split requires it.
+
+def _risk_panel():
+    idx = pd.bdate_range("2026-08-03", periods=25)
+    close = pd.DataFrame({"BBRI.JK": range(4000, 4025),
+                          "TLKM.JK": range(2600, 2625)}, index=idx).astype(float)
+    return {"Close": close, "High": close * 1.01}
+
+
+def test_the_price_tail_survives_a_round_trip(settings):
+    panel = _risk_panel()
+    save_snapshot(_ctx(settings, risk_panel=panel))
+    back = load_snapshot(settings, args=None)
+
+    assert set(back.risk_panel) == {"Close", "High"}
+    pd.testing.assert_frame_equal(back.risk_panel["Close"], panel["Close"])
+    pd.testing.assert_frame_equal(back.risk_panel["High"], panel["High"])
+
+
+def test_an_older_snapshot_is_ignored_rather_than_read_without_it(settings, tmp_path):
+    """
+    A v1 file carries no price series, so every position would come back with no
+    stop and no trailing level -- the exit panel would read "cannot measure" for a
+    book that is perfectly measurable. Refetching once is the right answer;
+    rendering a confident wrong one is not.
+    """
+    import joblib
+
+    import runner
+
+    save_snapshot(_ctx(settings, risk_panel=_risk_panel()))
+    path = tmp_path / "run.joblib"
+    blob = joblib.load(path)
+    blob["version"] = runner.SNAPSHOT_VERSION - 1
+    blob.pop("risk_panel", None)
+    joblib.dump(blob, path)
+
+    assert load_snapshot(settings, args=None) is None
+
+
+def test_a_snapshot_without_a_price_tail_still_loads(settings):
+    """Degrade to no exit plans, never to a crash."""
+    save_snapshot(_ctx(settings))
+    back = load_snapshot(settings, args=None)
+    assert back is not None
+    assert back.risk_panel == {}
+
+
+def test_risk_panel_keeps_only_what_the_exits_read():
+    from fetchers.data_fetcher import risk_panel
+
+    idx = pd.bdate_range("2025-01-01", periods=400)
+    frame = pd.DataFrame({
+        "Open": 1.0, "High": 2.0, "Low": 0.5, "Close": 1.5, "Volume": 1e6,
+    }, index=idx)
+
+    out = risk_panel({"BBRI.JK": frame}, sessions=300)
+    assert set(out) == {"Close", "High"}          # Open, Low and Volume dropped
+    assert len(out["Close"]) == 300               # trimmed to the recent window
+    assert out["Close"].index[-1] == idx[-1]

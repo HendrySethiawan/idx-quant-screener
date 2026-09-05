@@ -167,7 +167,11 @@ def test_the_spec_declares_the_function_level_imports(spec_text):
     hidden = spec_text.split("hiddenimports = [")[1].split("]")[0]
     for module in ("cli", "desktop", "api", "runner", "first_run", "report.advanced",
                    "report.steps", "analysis.valuation", "analysis.trace", "portfolio.journal",
-                   "portfolio.ledger", "core.paths"):
+                   "portfolio.ledger", "core.paths",
+                   # Reached only from inside functions -- `assemble`, the backtest
+                   # engine and the API all import exits lazily, so nothing at
+                   # module scope points at it for static analysis to follow.
+                   "portfolio.exits", "portfolio.cash", "portfolio.dividends"):
         assert f'"{module}"' in hidden
 
 

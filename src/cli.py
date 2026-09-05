@@ -260,18 +260,27 @@ def cmd_mark(settings, on_date=None, logger=None) -> int:
 def cmd_backtest(settings, logger=None) -> int:
     """Run every cadence, write one HTML page, print each to the console."""
     from backtest import report as R
-    from backtest.engine import BacktestConfig, build_price_panel, run_backtest
+    from backtest.engine import (BacktestConfig, build_atr_panel, build_price_panel,
+                                 run_backtest)
     from fetchers.data_fetcher import DataFetcher
+    from portfolio.exits import ExitConfig
 
     bt = getattr(settings, "backtest", None) or {}
     period = bt.get("history_period", "5y")
     fetcher = DataFetcher(settings)
 
     print(f"\n  Fetching {period} of history for {len(settings.stock_tickers)} tickers...")
-    panel = build_price_panel(fetcher.fetch_technical_data(settings.stock_tickers, period=period))
+    price_data = fetcher.fetch_technical_data(settings.stock_tickers, period=period)
+    panel = build_price_panel(price_data)
     if panel.empty:
         print("  No price data available.")
         return 1
+
+    # Built from the full OHLC frames with the live indicator, not from the Close
+    # panel: a close-to-close range understates a real one, and a stop derived from
+    # it would be measuring a tighter rule than the terminal actually sets.
+    exit_cfg = ExitConfig.from_settings(settings)
+    atr_panel = build_atr_panel(price_data, exit_cfg.atr_window)
 
     regime_cfg = getattr(settings, "regime", None) or {}
     bench_ticker = regime_cfg.get("benchmark", "^JKSE")
@@ -299,6 +308,7 @@ def cmd_backtest(settings, logger=None) -> int:
             min_position_rp=float(account.get("min_position_rp", 1_000_000)),
             max_per_sector=int(getattr(settings, "max_per_sector", 2)),
             min_names=int(bt.get("min_names", 10)),
+            risk_free_pct=float(getattr(settings, "risk_free_pct", 0.0) or 0.0),
         )
         args = (panel, settings.capital_rp, cfg, fee_cfg, settings.sectors,
                 benchmark, fx, int(regime_cfg.get("trend_ma", 200)),
@@ -311,21 +321,26 @@ def cmd_backtest(settings, logger=None) -> int:
         factors = R.factor_report(*args)
         costs = R.cost_report(*args)
         regimes = R.regime_report(*args)
+        # `cfg.exits` stays None for every report above, so questions 1-3 keep
+        # answering exactly what they answered before. The exits get their own
+        # comparison rather than silently changing the others' baseline.
+        exits = R.exit_report(*args, atr_panel=atr_panel)
         robustness = R.robustness_report(*args)
         verdict = R.robustness_verdict(robustness)
 
         label = {"M": "Monthly", "W": "Weekly"}.get(rule, rule)
         sections[label] = {
             "factors": factors, "costs": costs, "regimes": regimes,
-            "robustness": robustness, "verdict": verdict,
+            "exits": exits, "robustness": robustness, "verdict": verdict,
             "n_rebalances": base.n_rebalances, "avg_names": base.avg_names_available,
             "fees_paid": base.fees_paid,
         }
         print(R.console_block(factors, costs, regimes, robustness, verdict,
-                              label, base.avg_names_available, surv))
+                              label, base.avg_names_available, surv, exits))
 
         out = Path(settings.output_dir)
         costs.to_csv(out / f"backtest_costs_{rule}.csv", index=False)
+        exits.to_csv(out / f"backtest_exits_{rule}.csv", index=False)
         robustness.to_csv(out / f"backtest_robustness_{rule}.csv", index=False)
         pd.DataFrame({c.label: c.equity for c in factors}).to_csv(
             out / f"backtest_equity_{rule}.csv")
@@ -336,7 +351,7 @@ def cmd_backtest(settings, logger=None) -> int:
     # this the page recommending the trades carried none of the evidence about
     # what the ranking is worth.
     verdict_path = R.write_verdict(
-        R.verdict_payload(factors, robustness, surv, label, costs),
+        R.verdict_payload(factors, robustness, surv, label, costs, exits),
         settings.output_dir)
 
     print(f"\n  Full report: {path}")

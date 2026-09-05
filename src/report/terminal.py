@@ -306,6 +306,10 @@ tr:last-child td{border-bottom:none}
 .note{color:var(--muted);font-size:11px}
 .act{font-weight:800;font-size:11px;letter-spacing:.04em}
 .act.buy{color:var(--good)} .act.sell{color:var(--bad)} .act.hold{color:var(--muted)}
+/* TRIM is a sale, but a good one -- taking profit is not the same event as being
+   stopped out, and colouring both red would read as two failures. WAIT is an
+   instruction NOT to act, so it gets the muted treatment HOLD has. */
+.act.trim{color:var(--warn)} .act.wait{color:var(--muted)}
 .empty{color:var(--muted);font-style:italic;padding:7px 0;font-size:11.5px}
 .card{background:transparent;border:0;padding:0;margin:0 0 10px}
 .card p,.card .note,.callout{max-width:78ch}

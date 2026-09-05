@@ -29,14 +29,21 @@ def build_technical_frame(settings, fetcher: DataFetcher, logger=None) -> pd.Dat
     tech_cfg = settings.technical if isinstance(settings.technical, dict) else {}
     vol_window = int(tech_cfg.get("vol_window", 60))
     liq_window = int(tech_cfg.get("liquidity_window", 20))
+    # The ATR window lives under `risk` with the rest of the exit settings, since
+    # it is the stop's lookback rather than a scoring choice.
+    atr_window = int((getattr(settings, "risk", None) or {}).get("atr_window", 14))
 
     price_data = fetcher.fetch_technical_data(settings.stock_tickers)
     records = []
     for ticker, raw in price_data.items():
         if ticker not in settings.stock_tickers:
             continue
-        indicators = compute_indicators(raw, vol_window=vol_window, liquidity_window=liq_window)
-        records.append({"ticker": ticker, **extract_latest_indicators(indicators)})
+        indicators = compute_indicators(raw, vol_window=vol_window,
+                                        liquidity_window=liq_window,
+                                        atr_window=atr_window)
+        records.append({"ticker": ticker, **extract_latest_indicators(
+            indicators, market=getattr(settings, "market", None),
+            vol_window=vol_window, atr_window=atr_window)})
 
     if logger:
         logger.info(f"Built technical features for {len(records)} tickers")

@@ -174,7 +174,83 @@ def evidence_note(verdict: Optional[dict]) -> str:
     if not bits:
         return ""
     return ('<div class="callout" style="border-left-color:var(--warn)">'
-            "<strong>What this ranking is worth.</strong> " + " ".join(bits) + "</div>")
+            "<strong>What this ranking is worth.</strong> " + " ".join(bits) + "</div>"
+            + exits_note(verdict))
+
+
+def exits_note(verdict: Optional[dict]) -> str:
+    """
+    What the stops and the ladder did over the backtest window.
+
+    The exit panel puts a level to sell at on every position you hold, stated as
+    plainly as the ranking states its picks. Every other confident output in this
+    tool has had its evidence attached to it; this one does not get to be the
+    exception because it happens to be new.
+    """
+    ex = (verdict or {}).get("exits") or {}
+    if ex.get("cagr_gap_pp") is None:
+        return ""
+
+    cagr, dd = ex["cagr_gap_pp"], ex.get("drawdown_gap_pp")
+    fees, days = ex.get("extra_fees_rp"), ex.get("extra_sell_days")
+    # Named, because it changes the answer. Measured on this universe the ladder
+    # cut the worst drawdown from -16.3% to -10.5% on a monthly rebalance and did
+    # nothing at all on a weekly one -- so a figure with no cadence attached to it
+    # is not a finding, it is a number.
+    cadence = str(verdict.get("cadence") or "").lower()
+    held = f"holding to the next {cadence} rebalance" if cadence else "holding to the next rebalance"
+
+    bits = [
+        f"Against simply {held}, the stop and ladder "
+        f"<strong>{'added' if cagr >= 0 else 'cost'} {abs(cagr):.1f}pp a year</strong> "
+        f"of return"
+    ]
+    if dd is not None:
+        # A positive gap means a SHALLOWER trough: both figures are negative and
+        # the stopped one is closer to zero. Said in words, because "+5.8pp of
+        # drawdown" reads like more drawdown to most people.
+        bits.append(
+            f"and made the worst drawdown "
+            f"<strong>{abs(dd):.1f}pp {'shallower' if dd >= 0 else 'deeper'}</strong>")
+    line = " ".join(bits) + "."
+
+    # The sign is not decoration. Turnover can fall as well as rise: the cooldown
+    # stops the rebalance buying back what an exit just sold, and on this universe
+    # that saved more than the extra selling days cost.
+    if fees:
+        line += (f" It {'paid' if fees > 0 else 'saved'} {rp(abs(fees))} "
+                 f"{'more ' if fees > 0 else ''}in fees")
+        if days:
+            line += (f" across {abs(int(days))} "
+                     f"{'more' if days > 0 else 'fewer'} selling days")
+        line += (" &mdash; the stamp is charged once per day containing a sale, so "
+                 "batching is worth real money.")
+    # The row that decides whether the ladder should be on at all. Measured on this
+    # universe a stop with no profit-taking beat both holding and the ladder, and
+    # burying that under the aggregate gap would be the same overclaim this project
+    # has spent every other session removing.
+    solo = ex.get("stop_only_cagr_gap_pp")
+    if solo is not None:
+        line += (
+            f" A stop with <strong>no profit-taking at all</strong> came out "
+            f"{'ahead of' if solo >= 0 else 'behind'} holding by "
+            f"<strong>{abs(solo):.1f}pp a year</strong> over the same window.")
+        # Two independent facts, and the conclusion follows the arithmetic rather
+        # than the hope: whether a stop beats holding, and whether the trims cost
+        # anything on top of it. On this universe the second has been true at both
+        # cadences even where the first was not.
+        if solo > cagr:
+            line += (
+                f" The <strong>{solo - cagr:.1f}pp between them is the ladder's own "
+                f"cost</strong>. Setting <code>risk.ladder: []</code> in "
+                f"<code>configs/user.yaml</code> keeps every stop and drops the "
+                f"trims.")
+    line += (" A stop is not a return generator; what it does is shorten the losing "
+             "tail. <code>backtest.html</code> carries the full table for every "
+             "rebalance frequency.")
+
+    return ('<div class="callout" style="border-left-color:var(--warn)">'
+            "<strong>What the exit rules are worth.</strong> " + line + "</div>")
 
 
 def _kpi(label: str, value: str) -> str:
@@ -294,14 +370,52 @@ def _verdict_card(regime) -> str:
 </div>"""
 
 
-def _ticket_section(orders: List[dict], fees, capital: float) -> str:
+def _stop_cell(o: dict) -> str:
+    """
+    The level, and what kind of level it is.
+
+    Present on every row that has one, including HOLD: a position at target weight
+    is not a blank decision, and how far away its stop sits IS the answer to
+    "should I keep this". BUY rows show the stop the position would be opened
+    under, plus what being wrong about it costs -- which is the difference between
+    "Rp1.3 juta of INET" and "Rp220,000 at risk, 2.2% of everything you have".
+    """
+    stop = o.get("stop_rp")
+    if not stop:
+        return '<span class="note">-</span>'
+
+    out = f'<span class="money">{rp(stop)}</span>'
+    if o.get("stop_kind"):
+        out += f'<br><span class="note">{_e(o["stop_kind"])}</span>'
+
+    pct = o.get("risk_pct")
+    if pct is not None:
+        cls = "pill warn" if o.get("risk_over") else "note"
+        out += (f'<br><span class="{cls}">risk {rp(o.get("risk_rp"))} '
+                f'&middot; {pct:.1f}%</span>')
+    if o.get("risk_capped"):
+        out += '<br><span class="pill warn">capped</span>'
+    return out
+
+
+def _ticket_section(orders: List[dict], fees, capital: float,
+                    open_risk: Optional[dict] = None,
+                    exit_cfg=None) -> str:
     from portfolio.fees import FeeConfig, round_trip_cost
 
-    order_by = {"SELL": 0, "BUY": 1, "HOLD": 2}
+    # SELL first because a breached stop is the most urgent thing on the page,
+    # TRIM next because it is still a sale and shares the day's stamp with one,
+    # then the buys, then what needs no action at all.
+    order_by = {"SELL": 0, "TRIM": 1, "BUY": 2, "HOLD": 3, "WAIT": 4}
     rows = []
     for o in sorted(orders, key=lambda x: order_by.get(x["action"], 9)):
         action = o["action"]
-        cls = action.lower()
+        # An exit-driven sale is recorded as a SELL because that is what you place
+        # with the broker, but it is labelled TRIM when it is a partial one -- the
+        # two are different decisions and reading "SELL 4 lot" next to "SELL 10
+        # lot" gives no clue which is taking profit and which is being wrong.
+        label = "TRIM" if o.get("exit_kind") == "TRIM" else action
+        cls = label.lower()
         lots = o.get("lots")
         detail = (
             f'{lots} lot ({o.get("shares", 0):,} shares) @ {rp(o.get("price"))}'
@@ -316,14 +430,16 @@ def _ticket_section(orders: List[dict], fees, capital: float) -> str:
         elif state == "unknown":
             why += f'<br><span class="note">— {_e(ev_note)}</span>'
         rows.append([
-            f'<span class="act {cls}">{action}</span>',
+            f'<span class="act {cls}">{label}</span>',
             f'<span class="tick">{_e(o["ticker"])}</span>',
             detail,
             f'<span class="money">{rp(o.get("rupiah"))}</span>',
+            _stop_cell(o),
             why,
         ])
 
-    table = _table(["Do", "Ticker", "How much", "Value", "Why"], rows, num_cols={3})
+    table = _table(["Do", "Ticker", "How much", "Value", "Stop", "Why"],
+                   rows, num_cols={3, 4})
 
     fee_bits = (
         f'Estimated cost {rp(fees.total)} ({fees.pct_of(capital):.2f}% of capital) '
@@ -346,9 +462,174 @@ def _ticket_section(orders: List[dict], fees, capital: float) -> str:
             f'<strong>{round_trip / deployed * 100:.2f}%</strong> together before '
             f'you are square. Below that a winning trade still loses money.</div>'
         )
+    # What the whole book loses if every stop fills at once. Per-position risk is
+    # the number that sizes a trade; this is the one that decides whether you
+    # survive a bad week, and four comfortable 1.5% positions is 6% of capital.
+    if open_risk and open_risk.get("n_positions"):
+        pct = open_risk["pct_of_capital"]
+        heavy = exit_cfg is not None and pct > exit_cfg.max_position_risk_pct * 2
+        callouts += (
+            f'<div class="callout"'
+            f'{" style=border-left-color:var(--warn)" if heavy else ""}>'
+            f'<strong>If every stop below filled, you would lose '
+            f'{rp(open_risk["total_rp"])}</strong> &mdash; {pct:.1f}% of your '
+            f'capital, across {open_risk["n_positions"]} position'
+            f'{"s" if open_risk["n_positions"] > 1 else ""}. That is the number '
+            f'a bad week costs, and it is not the same as any one position looking '
+            f'comfortable.'
+            + (f' {open_risk["n_without_stop"]} position'
+               f'{"s have" if open_risk["n_without_stop"] > 1 else " has"} no '
+               f'measurable stop and {"are" if open_risk["n_without_stop"] > 1 else "is"} '
+               f'not counted here.' if open_risk.get("n_without_stop") else "")
+            + "</div>"
+        )
+
+    # Stamp is per DAY containing a sell, not per order. The exit ladder is the
+    # one thing in this tool that deliberately creates extra sell events, so the
+    # advice to batch them belongs next to it rather than in a footnote.
+    sells = [o for o in orders if o["action"] == "SELL"]
+    if len(sells) > 1:
+        callouts += (
+            '<div class="callout save"><strong>Sell these on the same day.</strong> '
+            f'The Rp10,000 stamp is charged once per day containing a sale, not per '
+            f'order, so putting all {len(sells)} through together costs one stamp '
+            f'instead of {len(sells)} &mdash; '
+            f'{rp((len(sells) - 1) * 10_000)} saved for doing nothing differently '
+            f'except the timing.</div>'
+        )
+
     for note in fees.notes:
         callouts += f'<div class="callout save"><strong>Fee tip.</strong> {_e(note)}</div>'
     return table + callouts
+
+
+_EXIT_PILL = {"EXIT": "bad", "TRIM": "warn", "HOLD": "", "NO STOP": "warn"}
+
+
+def _ladder_cell(plan) -> str:
+    """
+    The whole plan, rungs and runner, in one cell.
+
+    Shown in full rather than only the next step: the point of a staged exit is
+    that it is a plan you can see through to the end, and "trim 4 lot at 2,077"
+    on its own does not tell you what happens to the other six.
+
+    Each rung carries the cost of taking it ALONE, because that is the number the
+    stamp makes surprising -- a Rp665,000 trim that costs Rp1,928 sharing a sell
+    day costs Rp11,928 on its own.
+    """
+    if not plan.stages:
+        return '<span class="note">-</span>'
+    if not plan.staged:
+        s = plan.stages[0]
+        return (f'<span class="note">{plan.lots} lot is too small to stage &mdash; '
+                f'one decision, at {rp(s.level_rp)}</span>')
+
+    out = ""
+    for s in plan.stages:
+        mark = "&#10003; " if s.done else ""
+        cls = "note" if s.done else "money"
+        out += (f'<div><span class="{cls}">{mark}+{s.r_multiple:g}R {rp(s.level_rp)}'
+                f'</span> <span class="note">trim {s.lots} lot, '
+                f'costs {rp(s.cost_alone_rp)} alone</span></div>')
+    if plan.runner_lots:
+        out += (f'<div><span class="note">then {plan.runner_lots} lot runs on the '
+                f'trailing stop until it is hit &mdash; that is how you get fully '
+                f'out</span></div>')
+    return out
+
+
+def _exit_section(plans: Dict[str, object], exit_cfg=None) -> str:
+    """
+    What would take you out of everything you hold.
+
+    This is the panel the tool did not have. `build_orders` only ever proposed a
+    sale when a name fell out of the target book on a re-rank, so a position could
+    halve in value with nothing on the page mentioning it.
+    """
+    k = getattr(exit_cfg, "k_atr", 2.5)
+    how = (
+        '<div class="callout"><strong>How these levels are set.</strong> Every stop '
+        f'is {k:g} &times; that name\'s own average daily range, never a fixed '
+        f'percentage &mdash; the same {k * 2.7:.0f}% stop is an ordinary fortnight '
+        f'for one IDX stock and a coin flip for another. It is also what makes this '
+        f'adapt: when the market turns violent the daily range grows and every stop '
+        f'widens with it, without a setting to change.</div>'
+        '<div class="callout"><strong>This tool cannot watch these for you.</strong> '
+        'It reads daily closing prices and has no live feed, so a level is checked '
+        'once per session against the close &mdash; not intraday. Place the stop in '
+        'Indopremier if you want it to act while you are not looking.</div>'
+    )
+
+    # The explanation stays even with nothing held, because the ticket's BUY rows
+    # already carry stops computed the same way -- and that is exactly when a
+    # reader wants to know where the number came from.
+    if not plans:
+        return ('<div class="empty">Nothing open. Exit levels appear here once you '
+                "record a purchase &mdash; until then the stops on the buy rows in "
+                "<strong>Do this today</strong> are what these rules would set."
+                "</div>" + how)
+
+    rows = []
+    for plan in sorted(plans.values(), key=lambda p: (p.action != "EXIT",
+                                                      p.action != "TRIM",
+                                                      p.ticker)):
+        pill = _EXIT_PILL.get(plan.action, "")
+        verb = plan.action
+        if plan.action == "TRIM":
+            verb = f"TRIM {plan.action_lots} lot"
+        elif plan.action == "EXIT":
+            verb = f"SELL all {plan.action_lots}"
+
+        stop = '<span class="note">none</span>'
+        if plan.stop_rp:
+            stop = (f'<span class="money">{rp(plan.stop_rp)}</span>'
+                    f'<br><span class="note">{_e(plan.stop_kind)}'
+                    + (f", {plan.to_stop_pct:+.1f}% away" if plan.to_stop_pct is not None
+                       else "") + "</span>")
+            if plan.stop_capped:
+                stop += '<br><span class="pill warn">capped</span>'
+
+        risk = '<span class="note">-</span>'
+        if plan.risk_rp is not None:
+            risk = (f'<span class="money">{rp(plan.risk_rp)}</span>'
+                    + (f'<br><span class="note">{plan.risk_pct_of_capital:.2f}% of '
+                       f'capital</span>' if plan.risk_pct_of_capital is not None else ""))
+
+        held = f'{plan.lots} lot'
+        if plan.original_lots > plan.lots:
+            held += f'<br><span class="note">of {plan.original_lots} bought</span>'
+
+        rows.append([
+            f'<span class="tick">{_e(plan.ticker)}</span>',
+            held,
+            f'<span class="money">{rp(plan.price_rp)}</span>'
+            + (f'<br><span style="color:var(--{"good" if plan.unrealized_pct >= 0 else "bad"})">'
+               f'{plan.unrealized_pct:+.1f}%</span>' if plan.unrealized_pct is not None else ""),
+            stop,
+            risk,
+            _ladder_cell(plan),
+            f'<span class="pill {pill}">{_e(verb)}</span>'
+            f'<br><span class="note">{_e(plan.reason)}</span>'
+            + "".join(f'<br><span class="pill warn">{_e(n)}</span>' for n in plan.notes),
+        ])
+
+    table = _table(["Ticker", "Held", "Now", "Stop", "At risk", "The plan", "Today"],
+                   rows, num_cols={2, 3, 4})
+
+    return table + how + (
+        '<div class="callout" style="border-left-color:var(--warn)">'
+        '<strong>What the ladder does and does not do.</strong> Measured over 1,705 '
+        'simulated entries on this universe, a target one risk-unit above entry '
+        'arrived 38.6% of the time and the stop first 37.4% &mdash; close to a coin '
+        'flip, which is what a random walk implies. Trimming in stages narrows the '
+        'spread of outcomes; it does not create return. In the backtest it did worse '
+        'than that: a stop with <strong>no profit-taking at all</strong> beat both '
+        'holding and this ladder, on return and on Sharpe. Setting '
+        '<code>risk.ladder: []</code> in <code>configs/user.yaml</code> keeps every '
+        'stop below and drops the trims. Run <code>python main.py --backtest</code> '
+        'to see the table on your own data.</div>'
+    )
 
 
 def _holdings_section(holdings_rows: List[dict]) -> str:
@@ -548,6 +829,9 @@ def render_brief(
     sessions: Optional[dict] = None,
     verdict: Optional[dict] = None,
     book_correlation: Optional[float] = None,
+    exit_plans: Optional[Dict[str, object]] = None,
+    open_risk: Optional[dict] = None,
+    exit_cfg=None,
 ) -> str:
     """
     The terminal. One document, five destinations, nothing scrolls but panels.
@@ -639,6 +923,22 @@ def render_brief(
             + "</div>"
         )
 
+    # Names asked for and never received. Every score is cross-sectional, so a
+    # name dropping out silently changes the peer group every other name is
+    # measured against -- and the page would go on naming a universe it did not
+    # actually screen.
+    missing_note = ""
+    missing = sessions.get("missing") or []
+    if missing:
+        missing_note = (
+            '<div class="callout" style="border-left-color:var(--warn)">'
+            f"<strong>{len(missing)} name"
+            f"{'s' if len(missing) > 1 else ''} could not be fetched</strong> and "
+            f"{'are' if len(missing) > 1 else 'is'} absent from the ranking below: "
+            f"{_e(', '.join(missing))}. Every score here is a comparison against "
+            f"peers, so the rest were ranked against a smaller group than usual."
+        ) + "</div>"
+
     granularity = ""
     if allocation and allocation.positions:
         granularity = (
@@ -662,8 +962,9 @@ def render_brief(
         T.column([
             T.panel("Do this today",
                     stale_note + placeholder_note
-                    + _ticket_section(orders, fees, capital)
-                    + granularity + concentration + evidence_note(verdict),
+                    + _ticket_section(orders, fees, capital, open_risk, exit_cfg)
+                    + granularity + missing_note + concentration
+                    + evidence_note(verdict),
                     pid="panel-ticket", cls="print", grow=True),
             T.panel(f"Events, next {event_horizon} days",
                     _events_section(events or [], blind_n, universe_n, event_horizon)),
@@ -674,7 +975,17 @@ def render_brief(
             T.panel("Regime and capital",
                     _verdict_card(regime) + f'<div class="kpis">{kpis}</div>'
                     + (f'<div class="callout">{_e(seasonality)}</div>' if seasonality else "")),
-            T.panel("What you hold", _holdings_section(holdings_rows), grow=True),
+            # Two questions about the same rows, and they are never asked at the
+            # same moment. "When do I get out" is the standing plan you check
+            # every day; "is this still worth owning" is a monthly thought. The
+            # exit plan is the active tab because it is the one with a level on it
+            # that today's price can already have passed.
+            T.panel("What you hold",
+                    layout.tabbed(
+                        [("Exit plan", _exit_section(exit_plans or {}, exit_cfg)),
+                         ("Worth & health", _holdings_section(holdings_rows))],
+                        group="holdings"),
+                    grow=True),
         ]),
         T.column([
             T.panel("Best candidates you can afford",

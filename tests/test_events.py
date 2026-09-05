@@ -199,7 +199,10 @@ def test_attach_events_marks_each_state():
     events = [_ev(4, "ADRO.JK"), _ev(60, "BBCA.JK")]
     blind = earnings_coverage([i["ticker"] for i in items], events)
 
-    attach_events(items, events, blind, horizon_days=14)
+    # `today=` pinned, or this asserts against the real clock: the events are
+    # built relative to a frozen TODAY, so without it the test passes in August
+    # and fails in September.
+    attach_events(items, events, blind, horizon_days=14, today=TODAY)
     states = {i["ticker"]: i["event_state"] for i in items}
 
     assert states["ADRO.JK"] == KNOWN

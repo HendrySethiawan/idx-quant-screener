@@ -46,7 +46,9 @@ def console_block(perf) -> str:
         if perf.shadow.shortfall:
             add("       (your sells exceeded what the shadow index held)")
         add("    IHSG is not directly buyable; a real index position would be an")
-        add("    ETF with its own costs.")
+        add("    ETF with its own costs. It is also a PRICE index and pays no")
+        add("    dividends, so this comparison leaves out what an index investor")
+        add("    would have received.")
     add("")
 
     if perf.vs_watchlist_rp is not None:
@@ -56,7 +58,8 @@ def console_block(perf) -> str:
         add(f"    -> {verb} by        {rp(abs(perf.vs_watchlist_rp)):>16}   "
             f"{_pct(perf.vs_watchlist_pct, 2)}")
         add("    This is the comparison that tests your picking; beating the index")
-        add("    says little when the list itself beat it by a wide margin.")
+        add("    says little when the list itself beat it by a wide margin. Total")
+        add("    return, dividends included - the same basis as your own total.")
         add("")
 
     add(f"  Fees paid            {rp(perf.total_fees):>16}   {perf.fee_drag_pct:.2f}% of capital")
@@ -150,7 +153,10 @@ def brief_section(perf) -> str:
             f'You actually have {html.escape(rp(perf.total_value))} &mdash; '
             f'{"ahead by" if ahead else "behind by"} {html.escape(rp(abs(perf.vs_ihsg_rp)))} '
             f'({_pct(perf.vs_ihsg_pct, 2)}). IHSG is not directly buyable; a real index '
-            f'position would be an ETF with its own costs.</div>'
+            f'position would be an ETF with its own costs. It is also a PRICE '
+            f'index &mdash; it pays no dividends, so this comparison leaves out '
+            f'what an index investor would actually have received, and flatters '
+            f'you by that much.</div>'
         )
 
     # The harder benchmark, said second so it lands last. Beating IHSG proves
@@ -171,7 +177,9 @@ def brief_section(perf) -> str:
             f"({_pct(perf.vs_watchlist_pct, 2)}). <strong>This is the one that "
             f"tests your picking.</strong> Beating the index says little here: the "
             f"list itself beat the index by a wide margin over the backtest window, "
-            f"because it was drawn knowing which companies survived.</div>"
+            f"because it was drawn knowing which companies survived. Measured on "
+            f"total return, dividends included, which is the same basis as your "
+            f"own total &mdash; unlike the IHSG line above.</div>"
         )
 
     stamp = ""
@@ -262,10 +270,42 @@ def monthly_table(monthly, totals) -> str:
     )
 
 
-def open_positions_table(positions) -> str:
+def _exit_cells(plan) -> str:
+    """
+    The stop and the next step, for a table that is otherwise about the past.
+
+    Two columns rather than the full ladder: this page is where you REVIEW
+    positions, and the whole plan lives on the Markets page where you act on it.
+    What is needed here is enough to notice that something wants attention.
+    """
+    if plan is None:
+        return ('<td class="num"><span class="note">-</span></td>'
+                '<td><span class="note">-</span></td>')
+
+    stop = '<span class="note">none</span>'
+    if plan.stop_rp:
+        stop = (f'{rp(plan.stop_rp)}<br><span class="note">{_e(plan.stop_kind)}'
+                + (f", {plan.to_stop_pct:+.1f}%" if plan.to_stop_pct is not None else "")
+                + "</span>")
+
+    cls = {"EXIT": "bad", "TRIM": "warn"}.get(plan.action, "")
+    verb = plan.action
+    if plan.action == "TRIM":
+        verb = f"trim {plan.action_lots} lot"
+    elif plan.action == "EXIT":
+        verb = f"sell all {plan.action_lots}"
+    elif plan.action == "HOLD" and plan.next_stage is not None:
+        verb = f"hold &rarr; trim at {rp(plan.next_stage.level_rp)}"
+
+    return (f'<td class="num">{stop}</td>'
+            f'<td><span class="pill {cls}">{verb}</span></td>')
+
+
+def open_positions_table(positions, exit_plans=None) -> str:
     if positions is None or getattr(positions, "empty", True):
         return '<div class="empty">Nothing open.</div>'
 
+    exit_plans = exit_plans or {}
     body = ""
     for _, r in positions.iterrows():
         pct = r["unrealized_pct"]
@@ -277,7 +317,9 @@ def open_positions_table(positions) -> str:
             f'<td class="num">{rp(r["value_now"])}</td>'
             f'<td class="num">{_signed(r["unrealized_pnl"])}</td>'
             f'<td class="num">{"-" if pct is None else _signed(pct, lambda v: f"{v:+.1f}%")}'
-            f"</td></tr>"
+            "</td>"
+            + _exit_cells(exit_plans.get(r["ticker"]))
+            + "</tr>"
         )
 
     return (
@@ -285,10 +327,13 @@ def open_positions_table(positions) -> str:
         '<th>Ticker</th><th class="num">Size</th><th class="num">YOUR avg cost</th>'
         '<th class="num">Cost basis</th><th class="num">Value now</th>'
         '<th class="num">Unrealised</th><th class="num">%</th>'
+        '<th class="num">Stop</th><th>Next step</th>'
         f"</tr></thead><tbody>{body}</tbody></table></div>"
         '<div class="note">Average cost includes the buy fee you actually paid, so '
         "this is the price the position has to beat to be genuinely ahead. Prices are "
-        "from the last run, not live.</div>"
+        "from the last run, not live &mdash; and so is the stop, which is checked "
+        "against the last close rather than watched. The full ladder for each "
+        "position is on the <strong>Markets</strong> page.</div>"
     )
 
 
@@ -604,7 +649,8 @@ python main.py --mark                     # snapshot value vs IHSG
 python main.py --event ADRO earnings 2026-08-27</pre>"""
 
 
-def journal_panels(settings, prices: Optional[Dict[str, float]] = None) -> str:
+def journal_panels(settings, prices: Optional[Dict[str, float]] = None,
+                   exit_plans: Optional[Dict[str, object]] = None) -> str:
     """
     Every panel that depends on the journal alone.
 
@@ -630,7 +676,7 @@ def journal_panels(settings, prices: Optional[Dict[str, float]] = None) -> str:
 
     return (
         f'<h2>Realised, by month</h2>{monthly_table(monthly, totals)}'
-        f'<h2>Still open</h2>{open_positions_table(positions)}'
+        f'<h2>Still open</h2>{open_positions_table(positions, exit_plans)}'
         f'<h2>Every completed round-trip</h2>{closed_trades_table(closed)}'
         f'<h2>Everything you recorded</h2>{trade_log_table(journal)}'
         f'<h2>Money in and out</h2><div id="cash-log">{cash_table(cash)}</div>'

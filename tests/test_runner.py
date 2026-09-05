@@ -205,3 +205,76 @@ def test_the_summary_survives_a_closed_round_trip(ctx):
     render(ctx)
     assert ctx.perf.n_closed > 0
     assert "Closed trades" in console_summary(ctx)
+
+
+# ------------------------------------------------------- exits, still offline
+# The exit plans need a price SERIES where the rest of the render needs one row,
+# so a price tail rides along in the snapshot. If that ever stopped working the
+# obvious fix would be to fetch it -- which is the forty seconds the whole split
+# exists to avoid. These pin both halves.
+
+def _with_position(ctx):
+    """One open position and the price history the exit rules read."""
+    from portfolio.journal import append_trade, build_trade
+    from portfolio.fees import FeeConfig
+
+    ticker = ctx.df["ticker"].iloc[0]
+    price = float(ctx.df["last_close"].iloc[0])
+    journal_path = ctx.settings.account["journal_path"]
+    append_trade(
+        build_trade("BUY", ticker.replace(".JK", ""), 5, price * 1.20,
+                    FeeConfig(), on_date="2026-08-03"),
+        journal_path)
+
+    idx = pd.bdate_range("2026-08-03", periods=25)
+    close = pd.DataFrame(
+        {t: np.linspace(float(ctx.df["last_close"].iloc[i]) * 1.2,
+                        float(ctx.df["last_close"].iloc[i]), len(idx))
+         for i, t in enumerate(ctx.df["ticker"])}, index=idx)
+    ctx.risk_panel = {"Close": close, "High": close * 1.01}
+    return ctx
+
+
+def test_render_builds_exit_plans_from_the_snapshot(ctx):
+    _with_position(ctx)
+    render(ctx)
+
+    plans = ctx.plan["exit_plans"]
+    assert plans, "an open position must get an exit plan"
+    plan = next(iter(plans.values()))
+    assert plan.stop_rp and plan.stop_rp > 0
+    assert plan.risk_rp and plan.risk_rp > 0
+    assert ctx.plan["open_risk"]["n_positions"] == 1
+
+
+def test_the_exit_plans_cost_no_network_either(ctx, monkeypatch):
+    """
+    The same tripwire as the launch test, with a position open. A stop needs price
+    history, and reaching for it over the wire is exactly the regression that
+    would hide behind this feature.
+    """
+    import fetchers.data_fetcher as fetcher_mod
+
+    class Tripwire:
+        def __init__(self, *a, **k):
+            raise AssertionError("render() fetched something")
+
+    _with_position(ctx)
+    monkeypatch.setattr(fetcher_mod, "DataFetcher", Tripwire)
+    assert render(ctx).exists()
+    assert ctx.plan["exit_plans"]
+
+
+def test_no_price_tail_degrades_to_no_plan_not_to_a_crash(ctx):
+    """A snapshot written before exits existed must still render a page."""
+    _with_position(ctx)
+    ctx.risk_panel = {}
+    assert render(ctx).exists()
+
+
+def test_the_decision_trail_records_the_exit_stage(ctx):
+    """Getting out is a decision, so the Why page has to show it like the others."""
+    _with_position(ctx)
+    render(ctx)
+    keys = [s.key for s in ctx.plan["trail"].stages]
+    assert "exits" in keys

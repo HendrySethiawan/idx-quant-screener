@@ -219,6 +219,74 @@ account:
   marks_path: data/journal_marks.csv
   min_trades_for_verdict: 30   # below this the report refuses to name a winner
 
+# IDX market rules. BEI changes these; that is why they are here and not in code.
+# The minimum tradable price is moving Rp50 -> Rp1 (tested 22 & 29 Aug 2026,
+# targeted 7 Sept 2026). When it lands, change min_price_rp and nothing else.
+#
+# A price pinned at the floor cannot fall, and a suspended one cannot move at all.
+# Neither is "calm", but both measure as zero volatility -- and realized_vol is
+# scored at -0.5, "prefer calmer names". Above these thresholds the affected
+# factors are scored neutral instead of favourable.
+market:
+  min_price_rp: 50
+  max_flat_pct: 0.60      # share of sessions with no price change
+  max_floor_pct: 0.20     # share of sessions at the minimum price
+
+# Subtracted before every Sharpe. Roughly the BI 7-day reverse repo rate.
+risk_free_pct: 5.5
+
+# ---------------------------------------------------------------------- exits
+# When to get out, and in how many pieces. Measured on the cached universe --
+# 1,705 simulated entries across 46 tradable names, 42-session horizon:
+#
+#   rule                     stopped out within 2 months   median sessions held
+#   2.0 x ATR fixed at entry            51%                        23
+#   2.5 x ATR fixed at entry            44%                        27
+#   3.0 x ATR fixed at entry            39%                        31
+#   2.0 x ATR trailing                  82%                        13
+#   2.5 x ATR trailing                  74%                        16
+#   3.0 x ATR trailing                  66%                        20
+#
+# Trailing the WHOLE position from entry fires on two thirds to four fifths of
+# entries within two months. Each firing costs about Rp22,000 at Rp10 juta (stamp
+# + 0.29% out + 0.19% back in) -- roughly Rp700,000 a year across four slots. So
+# the stop is fixed until the first trim banks a gain, and only the runner trails.
+#
+# A stop distance cannot be a percentage here: 2.5 x ATR is 3.0% on BBSI and
+# 16.8% on INET. Scaling by the name's own ATR is also what makes this adapt --
+# when the market turns violent the ATR rises and the stop widens by itself.
+#
+# THE LADDER DID NOT PAY FOR ITSELF IN THE BACKTEST. Over 5 years, monthly:
+#
+#   Hold to the rebalance      +25.1% CAGR   -16.3% maxDD   0.81 Sharpe
+#   Stop only, 2.5 x ATR       +28.1%        -16.4%         0.87
+#   Stop + ladder (shipped)    +11.8%        -16.7%         0.40
+#
+# A stop with no profit-taking beat both. That is not surprising: the testable part
+# of this strategy is momentum, which lives in its right tail, and a rule that
+# systematically sells what is running removes the outcomes it depends on. The
+# ladder ships because it was asked for, and because the backtest reconstructs only
+# a third of the score on a rigid calendar -- it disqualifies, it does not validate.
+#
+# To keep the stop and drop the trims, put this in configs/user.yaml:
+#     risk:
+#       ladder: []
+#       ladder_fractions: []
+risk:
+  atr_window: 14
+  k_atr: 2.5
+  ladder: [1.0, 2.0]          # trim levels in multiples of R = entry - stop
+  ladder_fractions: [0.4, 0.3]  # share of the ORIGINAL position sold at each
+  trail_after_stage: 1        # the runner trails once stage 1 has banked
+  trigger: close              # never the intraday low; there is no live feed
+  max_stop_pct: 15.0          # wider than this is a shrug, not a stop
+  # Set by the stamp, not by taste: 10,000 / (0.025 - 0.0029) puts the smallest
+  # viable trim at about Rp452,000. Below that the Rp10,000 dominates -- one lot
+  # of a Rp179,500 position costs Rp10,520 to sell alone, 5.9% of what it returns.
+  max_trim_cost_pct: 2.5
+  max_position_risk_pct: 2.0  # warned about, not enforced -- sizing is unchanged
+  cooldown_sessions: 10       # no re-buy this soon after selling
+
 # A position must be exitable in roughly one session.
 liquidity:
   max_position_pct_of_daily_value: 0.01
