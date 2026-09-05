@@ -678,11 +678,17 @@ class TerminalAPI:
         ("broker.stamp_duty_rp", "Stamp duty", "int"),
         ("liquidity.min_median_daily_value_rp", "Liquidity floor", "int"),
         ("event_horizon_days", "Event horizon (days)", "int"),
+        # Written by the top-bar buttons rather than typed here, but it goes
+        # through the same validate-then-save path as everything else.
+        ("ui.density", "Text size", "str"),
     )
 
     # Changing these changes the ranking, which the page in front of you was built
     # from. It cannot be re-ranked without another run, so the UI says so.
     _RERANK = ("max_per_sector", "top_picks_n", "liquidity.min_median_daily_value_rp")
+
+    # Settings whose value is a choice rather than a number.
+    _CHOICES = {"ui.density": ("compact", "normal", "large")}
 
     @staticmethod
     def _dig(obj, dotted: str):
@@ -732,6 +738,15 @@ class TerminalAPI:
                          "or a withdrawal on the Portfolio page instead.")
 
         value = self._coerce(raw, allowed[dotted], dotted)
+
+        # A free-text setting needs its options checked here, not downstream. The
+        # renderer falls back to `normal` on anything it does not recognise, so a
+        # typo would be saved, silently ignored on every future launch, and look
+        # like the control was broken.
+        options = self._CHOICES.get(dotted)
+        if options and value not in options:
+            return _fail(f"{value!r} is not one of {', '.join(options)}.")
+
         parts = dotted.split(".")
         payload: Dict[str, Any] = {}
         node = payload

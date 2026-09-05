@@ -375,6 +375,13 @@ risk:
   max_position_risk_pct: 2.0  # warned about, not enforced -- sizing is unchanged
   cooldown_sessions: 10       # no re-buy this soon after selling
 
+# ------------------------------------------------------------------ interface
+# How large the terminal draws its text. Every font size on the page is a multiple
+# of one root value, so this moves the whole thing in proportion. The buttons in
+# the top bar write this file; you can also set it here.
+ui:
+  density: normal        # compact (11.5px) | normal (12.5px) | large (14px)
+
 # A position must be exitable in roughly one session.
 liquidity:
   max_position_pct_of_daily_value: 0.01

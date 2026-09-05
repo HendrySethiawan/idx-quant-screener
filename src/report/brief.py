@@ -24,31 +24,51 @@ from report.terminal import SHELL_JS, THEME_CSS
 # Styling that belongs to content this module renders, not to the shell.
 _EXTRA_CSS = """
 .mkt-head{display:flex;align-items:baseline;gap:11px;flex-wrap:wrap;margin-bottom:4px}
-.mkt-last{font-size:23px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
-.mkt-chg{font-size:12.5px;font-weight:700;font-variant-numeric:tabular-nums}
+.mkt-last{font-size:1.84rem;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.mkt-chg{font-size:1rem;font-weight:700;font-variant-numeric:tabular-nums}
 .mkt-chg.good{color:var(--good)} .mkt-chg.bad{color:var(--bad)}
 .verdict{display:flex;align-items:center;gap:11px;flex-wrap:wrap;margin-bottom:6px}
-.verdict .big{font-size:17px;font-weight:800;letter-spacing:-.01em}
-.verdict .why{color:var(--muted);font-size:11.5px;flex:1;min-width:160px}
+.verdict .big{font-size:1.36rem;font-weight:800;letter-spacing:-.01em}
+.verdict .why{color:var(--muted);font-size:0.92rem;flex:1;min-width:160px}
+/* --- the ticket, as stacked orders ------------------------------------- */
+/* One block per instruction. Nothing here can scroll sideways and nothing wraps
+   mid-number, which a six-column table in a 360px panel did on every row. The
+   left border replaces the DO column for scanning: you find the sells by colour
+   down the edge rather than by reading the first cell of each row. */
+.ord{padding:7px 0 8px 10px;border-left:2px solid var(--line);
+  border-bottom:1px solid var(--line);margin-bottom:2px}
+.ord:last-child{border-bottom:none;margin-bottom:0}
+.ord.sell{border-left-color:var(--bad)}
+.ord.trim{border-left-color:var(--warn)}
+.ord.buy{border-left-color:var(--good)}
+.ord.hold,.ord.wait{border-left-color:var(--line)}
+.ord-hd{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
+.ord-hd .tick{font-size:1.04rem}
+/* The one figure worth aligning down the page, so the column of rupiah reads as
+   a column even though the rest of the block does not. */
+.ord-val{margin-left:auto;font-weight:700;font-size:1.04rem}
+.ord-sub{color:var(--ink-dim);font-size:0.92rem;margin-top:3px;line-height:1.5}
+.ord-why{color:var(--muted);font-size:0.88rem;margin-top:2px;line-height:1.45;
+  max-width:70ch}
 .setgrp{margin-bottom:14px}
-.setgrp h3{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.setgrp h3{font-size:0.96rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
 
 /* --- input ------------------------------------------------------------- */
 .trade-form{display:flex;flex-direction:column;gap:8px}
 .tf-row{display:flex;gap:9px;flex-wrap:wrap;align-items:flex-end}
-.tf-row label{display:flex;flex-direction:column;gap:3px;font-size:10.5px;
+.tf-row label{display:flex;flex-direction:column;gap:3px;font-size:0.84rem;
   text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
-.tf-row input,.tf-row select{font:inherit;font-size:12.5px;padding:5px 8px;
+.tf-row input,.tf-row select{font:inherit;font-size:1rem;padding:5px 8px;
   border-radius:5px;border:1px solid var(--line);background:var(--surface-3);
   color:var(--ink);text-transform:none;letter-spacing:normal;max-width:150px}
 .tf-row input[type=radio]{max-width:none;margin-right:5px}
 .tf-row label:has(input[type=radio]){flex-direction:row;align-items:center;
-  font-size:12.5px;text-transform:none;letter-spacing:normal;color:var(--ink)}
-.tf-go{font:inherit;font-size:12.5px;font-weight:700;cursor:pointer;padding:7px 16px;
+  font-size:1rem;text-transform:none;letter-spacing:normal;color:var(--ink)}
+.tf-go{font:inherit;font-size:1rem;font-weight:700;cursor:pointer;padding:7px 16px;
   border-radius:6px;border:1px solid transparent;background:var(--accent);color:#fff}
 .tf-go:hover{filter:brightness(1.1)}
 .tf-go:disabled{opacity:.5;cursor:default}
-.tf-preview{font-size:11.5px;font-variant-numeric:tabular-nums;
+.tf-preview{font-size:0.92rem;font-variant-numeric:tabular-nums;
   background:var(--surface-3);border:1px solid var(--line);border-radius:6px;
   padding:8px 11px;min-height:34px}
 .tf-preview .row{display:flex;justify-content:space-between;gap:14px}
@@ -59,31 +79,31 @@ _EXTRA_CSS = """
   border:1px solid color-mix(in srgb,var(--bad) 40%,transparent);
   color:var(--bad);line-height:1.45}
 .tf-preview .note{margin-top:5px;color:var(--muted);line-height:1.45}
-.rm-trade{font:inherit;font-size:10.5px;padding:2px 8px;border-radius:5px;cursor:pointer;
+.rm-trade{font:inherit;font-size:0.84rem;padding:2px 8px;border-radius:5px;cursor:pointer;
   border:1px solid var(--line);background:var(--surface);color:var(--muted)}
 .rm-trade:hover:not(:disabled){color:var(--bad);border-color:var(--bad)}
 .rm-trade:disabled{opacity:.5;cursor:default}
-.rm-why{max-width:230px;white-space:normal;font-size:10.5px;margin-top:4px}
+.rm-why{max-width:230px;white-space:normal;font-size:0.84rem;margin-top:4px}
 .pill.warn{background:color-mix(in srgb,var(--bad) 16%,transparent);color:var(--bad);
   border:1px solid color-mix(in srgb,var(--bad) 38%,transparent);
   white-space:normal;display:inline-block;margin-top:3px;text-align:left}
 pre.cli{background:var(--surface-3);border:1px solid var(--line);border-radius:6px;
-  padding:9px 11px;font-size:11.5px;overflow-x:auto;margin:8px 0;
+  padding:9px 11px;font-size:0.92rem;overflow-x:auto;margin:8px 0;
   font-family:Consolas,"Courier New",monospace}
 .set-row{display:flex;align-items:center;gap:9px;padding:6px 0;
   border-bottom:1px solid var(--line);flex-wrap:wrap}
 .set-row:last-child{border-bottom:none}
-.set-row .lbl{flex:1;min-width:130px;font-size:12px}
-.set-row input{font:inherit;font-size:12px;padding:4px 7px;border-radius:5px;
+.set-row .lbl{flex:1;min-width:130px;font-size:0.96rem}
+.set-row input{font:inherit;font-size:0.96rem;padding:4px 7px;border-radius:5px;
   border:1px solid var(--line);background:var(--surface-3);color:var(--ink);width:130px;
   text-align:right;font-variant-numeric:tabular-nums}
-.set-row .dflt{font-size:10.5px;color:var(--muted);min-width:96px}
-.set-row button{font:inherit;font-size:11px;padding:3px 9px;border-radius:5px;
+.set-row .dflt{font-size:0.84rem;color:var(--muted);min-width:96px}
+.set-row button{font:inherit;font-size:0.88rem;padding:3px 9px;border-radius:5px;
   border:1px solid var(--line);background:var(--surface);color:var(--muted);cursor:pointer}
 .set-row button:hover{color:var(--ink)}
 .set-row.changed .lbl::after{content:" \\2022";color:var(--accent)}
 .undo-row{display:flex;align-items:center;gap:9px;margin-top:9px;flex-wrap:wrap}
-.undo-row button{font:inherit;font-size:11.5px;font-weight:600;cursor:pointer;
+.undo-row button{font:inherit;font-size:0.92rem;font-weight:600;cursor:pointer;
   padding:5px 12px;border-radius:6px;border:1px solid var(--line);
   background:var(--surface-3);color:var(--ink-dim)}
 .undo-row button:hover:not(:disabled){color:var(--bad);border-color:var(--bad)}
@@ -379,31 +399,37 @@ def _verdict_card(regime) -> str:
 </div>"""
 
 
-def _stop_cell(o: dict) -> str:
+def _stop_phrase(o: dict) -> str:
     """
-    The level, and what kind of level it is.
+    The level, what kind of level it is, and what being wrong costs.
 
-    Present on every row that has one, including HOLD: a position at target weight
-    is not a blank decision, and how far away its stop sits IS the answer to
-    "should I keep this". BUY rows show the stop the position would be opened
-    under, plus what being wrong about it costs -- which is the difference between
-    "Rp1.3 juta of INET" and "Rp220,000 at risk, 2.2% of everything you have".
+    Present on every order that has one, including HOLD: a position at target
+    weight is not a blank decision, and how far away its stop sits IS the answer
+    to "should I keep this". BUY rows show the stop the position would be opened
+    under plus its risk, which is the difference between "Rp1.3 juta of INET" and
+    "Rp220,000 at risk, 2.2% of everything you have".
+
+    Returns a phrase for the order's detail line rather than a table cell. As a
+    cell it was the fifth of six columns in a 360px panel, which put it off the
+    right-hand edge where nobody ever saw it.
     """
     stop = o.get("stop_rp")
     if not stop:
-        return '<span class="note">-</span>'
+        return ""
 
-    out = f'<span class="money">{rp(stop)}</span>'
-    if o.get("stop_kind"):
-        out += f'<br><span class="note">{_e(o["stop_kind"])}</span>'
+    # "initial stop Rp787", not "stop Rp787 initial". As a column header plus a
+    # cell the kind read fine underneath the word; inline it has to be an
+    # adjective or it lands as a stray word after the number.
+    kind = f'{_e(o["stop_kind"])} ' if o.get("stop_kind") else ""
+    out = f'<span class="note">{kind}</span>stop <span class="money">{rp(stop)}</span>'
 
     pct = o.get("risk_pct")
     if pct is not None:
         cls = "pill warn" if o.get("risk_over") else "note"
-        out += (f'<br><span class="{cls}">risk {rp(o.get("risk_rp"))} '
+        out += (f' <span class="{cls}">risk {rp(o.get("risk_rp"))} '
                 f'&middot; {pct:.1f}%</span>')
     if o.get("risk_capped"):
-        out += '<br><span class="pill warn">capped</span>'
+        out += ' <span class="pill warn">capped</span>'
     return out
 
 
@@ -416,7 +442,14 @@ def _ticket_section(orders: List[dict], fees, capital: float,
     # TRIM next because it is still a sale and shares the day's stamp with one,
     # then the buys, then what needs no action at all.
     order_by = {"SELL": 0, "TRIM": 1, "BUY": 2, "HOLD": 3, "WAIT": 4}
-    rows = []
+
+    # Stacked blocks, not a table. Six columns carrying ~155 characters into a
+    # 360px panel wrapped "53 lot (5,300 shares) @ Rp196" over six lines and
+    # pushed Stop and Why off the right edge behind a scrollbar nobody finds. A
+    # table is the wrong primitive for "here are three to eight instructions":
+    # the fields differ in length by an order of magnitude and only the rupiah
+    # figure benefits from lining up.
+    blocks = []
     for o in sorted(orders, key=lambda x: order_by.get(x["action"], 9)):
         action = o["action"]
         # An exit-driven sale is recorded as a SELL because that is what you place
@@ -425,30 +458,36 @@ def _ticket_section(orders: List[dict], fees, capital: float,
         # lot" gives no clue which is taking profit and which is being wrong.
         label = "TRIM" if o.get("exit_kind") == "TRIM" else action
         cls = label.lower()
+
         lots = o.get("lots")
         detail = (
             f'{lots} lot ({o.get("shares", 0):,} shares) @ {rp(o.get("price"))}'
-            if lots else "-"
+            if lots else ""
         )
-        why = f'<span class="note">{_e(o.get("note", ""))}</span>'
+        stop = _stop_phrase(o)
+        sub = " &middot; ".join(p for p in (detail, stop) if p)
+
+        why = f'<div class="ord-why">{_e(o.get("note", ""))}</div>' if o.get("note") else ""
         # An UNKNOWN event state is shown as prominently as a KNOWN one. Rendering
         # "we have no data" quietly would let it read as "nothing is coming".
         state, ev_note = o.get("event_state"), o.get("event_note")
         if state == "known":
-            why += f'<br><span class="pill warn">⚠ {_e(ev_note)}</span>'
+            why += f'<div class="ord-why"><span class="pill warn">⚠ {_e(ev_note)}</span></div>'
         elif state == "unknown":
-            why += f'<br><span class="note">— {_e(ev_note)}</span>'
-        rows.append([
-            f'<span class="act {cls}">{label}</span>',
-            f'<span class="tick">{_e(o["ticker"])}</span>',
-            detail,
-            f'<span class="money">{rp(o.get("rupiah"))}</span>',
-            _stop_cell(o),
-            why,
-        ])
+            why += f'<div class="ord-why note">— {_e(ev_note)}</div>'
 
-    table = _table(["Do", "Ticker", "How much", "Value", "Stop", "Why"],
-                   rows, num_cols={3, 4})
+        blocks.append(
+            f'<div class="ord {cls}">'
+            f'<div class="ord-hd"><span class="act {cls}">{label}</span>'
+            f'<span class="tick">{_e(o["ticker"])}</span>'
+            f'<span class="ord-val money">{rp(o.get("rupiah"))}</span></div>'
+            + (f'<div class="ord-sub">{sub}</div>' if sub else "")
+            + why
+            + "</div>"
+        )
+
+    table = ("".join(blocks) if blocks
+             else '<div class="empty">Nothing here today.</div>')
 
     fee_bits = (
         f'Estimated cost {rp(fees.total)} ({fees.pct_of(capital):.2f}% of capital) '
@@ -867,6 +906,7 @@ def render_brief(
     exit_cfg=None,
     tie_groups: Optional[List[List[str]]] = None,
     score_floor: float = 0.0,
+    density: str = "normal",
 ) -> str:
     """
     The terminal. One document, five destinations, nothing scrolls but panels.
@@ -1005,12 +1045,12 @@ def render_brief(
             T.panel(f"Events, next {event_horizon} days",
                     _events_section(events or [], blind_n, universe_n, event_horizon)),
         ]),
+        # The second ACTION panel, beside the first. These two are what you act
+        # on; everything in the third column is what you consult. "What you hold"
+        # carries a seven-column table and used to share a column with the chart
+        # and the regime card, so it was the shortest panel on the page as well as
+        # one of the most crowded.
         T.column([
-            T.panel((market or {}).get("name", "IHSG") + " &middot; daily",
-                    _market_panel(market)),
-            T.panel("Regime and capital",
-                    _verdict_card(regime) + f'<div class="kpis">{kpis}</div>'
-                    + (f'<div class="callout">{_e(seasonality)}</div>' if seasonality else "")),
             # Two questions about the same rows, and they are never asked at the
             # same moment. "When do I get out" is the standing plan you check
             # every day; "is this still worth owning" is a monthly thought. The
@@ -1022,8 +1062,17 @@ def render_brief(
                          ("Worth & health", _holdings_section(holdings_rows))],
                         group="holdings"),
                     grow=True),
+            T.panel("Regime and capital",
+                    _verdict_card(regime) + f'<div class="kpis">{kpis}</div>'
+                    + (f'<div class="callout">{_e(seasonality)}</div>' if seasonality else "")),
         ]),
+        # Context, in the narrow column. The chart is a 190px sparkline against a
+        # long-run mean -- it does not need the widest track on the page, which is
+        # what it had. The character, not `&middot;`: `T.panel` escapes its title,
+        # so an entity there is escaped twice and the reader sees the markup.
         T.column([
+            T.panel((market or {}).get("name", "IHSG") + " · daily",
+                    _market_panel(market)),
             T.panel("Best candidates you can afford",
                     mixed_note + _candidates_section(candidates), grow=True),
             T.panel("Skipped", _rejected_section(rejected, capped, compact=True)),
@@ -1145,6 +1194,7 @@ def render_brief(
     return T.document(
         title="IDX Terminal",
         head="markets",
+        density=density,
         rail_html=T.rail(pages, "markets"),
         top_html=top,
         body_html=T.pages_html(pages, "markets"),

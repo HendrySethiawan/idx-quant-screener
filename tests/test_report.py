@@ -704,16 +704,50 @@ def test_every_buy_carries_its_stop_and_what_it_risks(scored_df, settings_mock,
             o["risk_rp"] / settings_mock.capital_rp * 100, abs=1e-6)
 
 
-def test_the_ticket_shows_the_stop_column():
+def test_the_ticket_carries_every_field_the_six_columns_did():
+    """
+    The ticket is stacked blocks now, not a table. Six columns holding ~155
+    characters in a 360px panel wrapped the size over six lines and pushed Stop
+    and Why off the right edge, where they were never seen. The shape changed;
+    what it must show did not.
+    """
     out = _render(orders=[{
         "action": "BUY", "ticker": "BBRI.JK", "lots": 3, "shares": 300,
         "price": 4150.0, "rupiah": 1_245_000, "note": "target weight 33%",
         "stop_rp": 3950.0, "risk_rp": 60_000.0, "risk_pct": 0.6,
         "risk_over": False, "risk_capped": False,
     }])
-    assert ">Stop<" in out
-    assert "Rp3,950" in out
-    assert "risk Rp60,000" in out
+    for fragment in ("BUY", "BBRI.JK", "3 lot", "300 shares", "Rp4,150",
+                     "Rp1,245,000", "Rp3,950", "risk Rp60,000",
+                     "target weight 33%"):
+        assert fragment in out, f"the ticket lost {fragment!r}"
+
+
+def test_the_ticket_never_scrolls_sideways():
+    """
+    The failure this replaced: `.scroll` is `overflow:auto`, so the two columns
+    added most recently sat behind a horizontal scrollbar inside a narrow panel.
+    """
+    import re
+
+    out = _render(orders=[{
+        "action": "SELL", "ticker": "ADMR.JK", "lots": 1, "shares": 100,
+        "price": 1655.0, "rupiah": 165_500, "note": "no longer in the target book",
+        "stop_rp": 1462.0, "stop_kind": "initial",
+    }])
+    ticket = re.search(r'id="panel-ticket".*?</section>', out, re.S).group(0)
+    assert 'class="scroll"' not in ticket
+    assert "<table" not in ticket
+
+
+def test_a_trim_still_reads_as_a_trim():
+    out = _render(orders=[{
+        "action": "SELL", "ticker": "AMRT.JK", "lots": 28, "shares": 2800,
+        "price": 1310.0, "rupiah": 3_668_000, "exit_kind": "TRIM",
+        "note": "1,310 has reached the +2R level of 1,131",
+    }])
+    assert "TRIM" in out
+    assert '<div class="ord trim">' in out
 
 
 def test_a_position_over_the_risk_budget_is_flagged():

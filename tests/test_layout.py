@@ -150,6 +150,54 @@ def test_there_is_a_middle_breakpoint_so_nothing_is_squashed():
         assert f"@media (max-width:{width})" in css
 
 
+def test_no_column_is_pinned_to_a_pixel_width():
+    """
+    The panel you act on was the narrowest thing on the page: 360px of fixed
+    track for "Do this today" while a sparkline had 727px. Every track is a
+    share of the width now, at every breakpoint above the phone, so the ticket
+    grows with the window instead of staying the width of a phone on a 1920
+    monitor.
+    """
+    css = _brief().split("<style>")[1].split("</style>")[0]
+    above_phone = css.split("@media (max-width:900px)")[0]
+    for sel, tracks in re.findall(
+            r"(\.grid[^{]*)\{[^}]*grid-template-columns:([^;}]*)", above_phone):
+        # `.grid.cols-2` is the Portfolio and Settings pages, which put a form
+        # beside a ledger and want the form to stop growing. The three-column
+        # markets grid is the one this rule is about.
+        if "cols-2" in sel:
+            continue
+        assert "px" not in tracks, f"fixed track on {sel.strip()}: {tracks.strip()}"
+
+
+def test_the_two_panels_you_act_on_get_the_wide_columns():
+    """
+    Ordering, not just width. The ticket and your holdings come first; the
+    chart, the candidate list and the skipped names are what you read after
+    deciding, so they share the narrow column.
+    """
+    out = _full_brief()
+    markets = out.split('id="page-markets"')[1].split('id="page-portfolio"')[0]
+    titles = [t for _, _, ts in _columns(markets) for t in ts[:1]]
+    assert titles[0] == "Do this today"
+    assert titles[1] == "What you hold"
+    # Whatever else there is, the ranked list is not competing with the ticket.
+    assert "Do this today" not in titles[2:]
+
+
+def test_no_panel_title_prints_a_raw_html_entity():
+    """
+    `T.panel` escapes its title, so an entity passed in is escaped twice and the
+    reader sees `IHSG &middot; daily`. Pass the character.
+    """
+    out = _brief()
+    titles = re.findall(r'<div class="pnl-hd"[^>]*>(.*?)</div>', out)
+    for title in titles:
+        # A real ampersand in a title is fine and escapes to `&amp;`. What is
+        # wrong is `&amp;middot;` -- an entity that was already an entity.
+        assert not re.search(r"&amp;\w+;", title), f"double-escaped: {title!r}"
+
+
 def test_the_ticket_is_the_first_panel_of_the_first_page():
     """
     Ten panels of z-scores can make it feel as though something must be done today.
