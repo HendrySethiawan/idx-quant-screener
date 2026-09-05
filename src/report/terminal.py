@@ -662,7 +662,10 @@ SHELL_JS = """
     }
     rb.addEventListener("click",function(){ run(API.rebuild,"Rebuilding\\u2026"); });
     rr.addEventListener("click",function(){
-      run(API.rerun,"Fetching 49 tickers\\u2026 this takes about 40 seconds");
+      // No ticker count and no exact duration: both were literals here, both went
+      // stale the moment the universe changed, and a progress message that lies
+      // about the wait is worse than one that is vague about it.
+      run(API.rerun,"Fetching fresh prices and fundamentals\\u2026 about a minute");
     });
   });
 

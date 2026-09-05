@@ -762,6 +762,7 @@ def test_the_exit_evidence_is_quoted_from_the_backtest():
     assert "0.4pp deeper" in note
     assert "monthly rebalance" in note
     assert "paid Rp706,602 more in fees" in note
+    assert "-0.41 of Sharpe" in note
 
 
 def test_the_stop_without_the_ladder_is_reported_on_its_own():
@@ -824,3 +825,20 @@ def test_no_backtest_means_no_exit_claim():
     from report.brief import exits_note
     assert exits_note(None) == ""
     assert exits_note({"cadence": "Monthly"}) == ""
+
+
+def test_giving_up_return_for_a_smaller_worst_case_is_reported_as_such():
+    """
+    The live weekly result on the 74-name universe: the ladder costs 3.4pp of
+    return and cuts the worst drawdown by 20.9pp. Quoting only the cost would
+    argue one side of a trade the Sharpe figure settles.
+    """
+    from report.brief import exits_note
+
+    note = exits_note({"cadence": "Weekly", "exits": {
+        "cagr_gap_pp": -3.42, "drawdown_gap_pp": 20.88, "sharpe_gap": 0.45,
+        "extra_fees_rp": 131_580.0, "extra_sell_days": 88,
+        "stop_only_cagr_gap_pp": -0.71}})
+    assert "cost 3.4pp a year" in note
+    assert "20.9pp shallower" in note
+    assert "+0.45 of Sharpe" in note

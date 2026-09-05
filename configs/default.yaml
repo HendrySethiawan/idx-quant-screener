@@ -5,56 +5,108 @@
 # stay intact.
 
 # --------------------------------------------------------------------- universe
+# 74 IDX names. Nothing outside this list can ever be suggested, so what defines
+# it matters as much as what is in it.
+#
+# THE RULE, and it is deliberately blind to what a price did:
+#
+#   * traded at least Rp250 juta a day (the `liquidity` gate below -- can you get
+#     back out?)
+#   * one lot costs at most Rp1,000,000, which is the slot at Rp10 juta capital in
+#     a RISK-OFF regime. ITMG and UNTR fail this and are kept anyway: they are real
+#     large caps, reachable at full deploy.
+#   * at least 273 sessions of history -- 252 + 21, the minimum for 12-month
+#     momentum
+#   * a measurable ATR, or no stop can be set for it
+#   * at least 5 names per sector, so `min_sector_size` below is reachable and the
+#     sector-neutral factors are scored against peers instead of silently falling
+#     back to the whole universe
+#   * ties broken by traded value, never by return
+#
+# NOT used: past return, momentum, market cap, or an opinion of the business. The
+# backtest already reports that holding these names equally beat the index by ~28
+# points a year, and that gap is an artifact of the list having been drawn in 2026
+# knowing who survived. Choosing the universe on performance would inflate that
+# artifact and call it skill. See README, "The universe and how it was chosen".
+#
+# Removed in this revision, all for failing the liquidity gate on every run:
+#   WIKA (Rp0/day traded, 98% flat sessions, no ATR), ADHI (Rp0/day),
+#   BBSI (Rp2.3 juta/day), BTPN (Rp56 juta/day), BNLI (Rp116 juta/day).
 stock_tickers:
-  ADHI.JK: "Adhi Karya"
   ADMR.JK: "Alamtri Minerals Indonesia"
   ADRO.JK: "Alamtri Resources"
   AMMN.JK: "Amman Mineral International"
   AMRT.JK: "Alfamart"
   ANTM.JK: "Aneka Tambang"
   ASII.JK: "Astra International"
+  ASSA.JK: "Adi Sarana Armada"
   BBCA.JK: "Bank Central Asia"
   BBKP.JK: "Bank Bukopin"
   BBNI.JK: "Bank Negara Indonesia"
   BBRI.JK: "Bank Rakyat Indonesia"
-  BBSI.JK: "Krom Bank Indonesia"
+  BIRD.JK: "Blue Bird"
   BMRI.JK: "Bank Mandiri"
-  BNLI.JK: "Bank Permata"
+  BREN.JK: "Barito Renewables Energy"
   BRIS.JK: "Bank Rakyat Indonesia Syariah"
   BRMS.JK: "Bumi Resources Minerals"
   BRPT.JK: "Barito Pacific"
-  BTPN.JK: "Bank Tabungan Pensiunan Nasional"
+  BSDE.JK: "Bumi Serpong Damai"
+  BUKA.JK: "Bukalapak.com"
   BUMI.JK: "Bumi Resources"
   BUVA.JK: "Bukit Uluwatu Villa"
+  CPIN.JK: "Charoen Pokphand Indonesia"
+  CUAN.JK: "Petrindo Jaya Kreasi"
+  DMAS.JK: "Puradelta Lestari"
   DSNG.JK: "Dharma Satya Nusantara"
   DSSA.JK: "Dian Swastatika Sentosa"
   ELSA.JK: "Elnusa"
   EMAS.JK: "Merdeka Gold Resources"
+  EMTK.JK: "Elang Mahkota Teknologi"
   ENRG.JK: "Energi Mega Persada"
+  ERAA.JK: "Erajaya Swasembada"
+  ESSA.JK: "ESSA Industries Indonesia"
   EXCL.JK: "XL Axiata"
   GOTO.JK: "GoTo Gojek Tokopedia"
+  HEAL.JK: "Medikaloka Hermina"
+  HEXA.JK: "Hexindo Adiperkasa"
+  IMPC.JK: "Impack Pratama Industri"
   INCO.JK: "Vale Indonesia"
   INDF.JK: "Indofood Sukses Makmur"
+  INDY.JK: "Indika Energy"
   INET.JK: "Sinergi Inti Andalan Prima"
+  IPCC.JK: "Indonesia Kendaraan Terminal"
   ISAT.JK: "Indosat Ooredoo"
   ITMG.JK: "Indo Tambangraya Megah"
   KLBF.JK: "Kalbe Farma"
+  LPKR.JK: "Lippo Karawaci"
+  MAPA.JK: "Map Aktif Adiperkasa"
   MAPI.JK: "Mitra Adiperkasa"
-  MEDC.JK: "Medco Energi Internasional"
+  MARK.JK: "Mark Dynamics Indonesia"
+  MBMA.JK: "Merdeka Battery Materials"
   MDKA.JK: "Merdeka Copper Gold"
+  MEDC.JK: "Medco Energi Internasional"
+  MIKA.JK: "Mitra Keluarga Karyasehat"
   MMIX.JK: "Multi Medika"
+  PANI.JK: "Pantai Indah Kapuk Dua"
   PGAS.JK: "Perusahaan Gas Negara"
   PNLF.JK: "Panin Financial"
   PTRO.JK: "Petrosea"
+  PWON.JK: "Pakuwon Jati"
   RAJA.JK: "Rukun Raharja"
   RMKE.JK: "RMK Energy"
+  SCMA.JK: "Surya Citra Media"
+  SIDO.JK: "Sido Muncul"
+  SMDR.JK: "Samudera Indonesia"
   SRTG.JK: "Saratoga Investama Sedaya"
   TAPG.JK: "Triputra Agro Persada"
   TINS.JK: "Timah"
   TLKM.JK: "Telkom Indonesia"
+  TMAS.JK: "Temas"
+  TOWR.JK: "Sarana Menara Nusantara"
+  TPIA.JK: "Chandra Asri Pacific"
   UNTR.JK: "United Tractors"
   UNVR.JK: "Unilever Indonesia"
-  WIKA.JK: "Wijaya Karya"
+  WIFI.JK: "Solusi Sinergi Digital"
 
 benchmarks:
   ^JKSE: "Jakarta Composite Index"
@@ -63,55 +115,80 @@ benchmarks:
 # neither sector-neutral scoring nor the diversification cap could function.
 # Broadly follows the IDX-IC classification.
 sectors:
-  ADHI.JK: Infrastructure
   ADMR.JK: Energy
   ADRO.JK: Energy
   AMMN.JK: Basic Materials
   AMRT.JK: Consumer Non-Cyclicals
   ANTM.JK: Basic Materials
   ASII.JK: Industrials
+  ASSA.JK: Transportation
   BBCA.JK: Financials
   BBKP.JK: Financials
   BBNI.JK: Financials
   BBRI.JK: Financials
-  BBSI.JK: Financials
+  BIRD.JK: Transportation
   BMRI.JK: Financials
-  BNLI.JK: Financials
+  BREN.JK: Infrastructure
   BRIS.JK: Financials
   BRMS.JK: Basic Materials
   BRPT.JK: Basic Materials
-  BTPN.JK: Financials
+  BSDE.JK: Properties
+  BUKA.JK: Technology
   BUMI.JK: Energy
   BUVA.JK: Consumer Cyclicals
+  CPIN.JK: Consumer Non-Cyclicals
+  CUAN.JK: Energy
+  DMAS.JK: Properties
   DSNG.JK: Consumer Non-Cyclicals
   DSSA.JK: Energy
   ELSA.JK: Energy
   EMAS.JK: Basic Materials
+  EMTK.JK: Technology
   ENRG.JK: Energy
+  ERAA.JK: Consumer Cyclicals
+  ESSA.JK: Basic Materials
   EXCL.JK: Infrastructure
   GOTO.JK: Technology
+  HEAL.JK: Healthcare
+  HEXA.JK: Industrials
+  IMPC.JK: Industrials
   INCO.JK: Basic Materials
   INDF.JK: Consumer Non-Cyclicals
+  INDY.JK: Energy
   INET.JK: Technology
+  IPCC.JK: Transportation
   ISAT.JK: Infrastructure
   ITMG.JK: Energy
   KLBF.JK: Healthcare
+  LPKR.JK: Properties
+  MAPA.JK: Consumer Cyclicals
   MAPI.JK: Consumer Cyclicals
-  MEDC.JK: Energy
+  MARK.JK: Industrials
+  MBMA.JK: Basic Materials
   MDKA.JK: Basic Materials
+  MEDC.JK: Energy
+  MIKA.JK: Healthcare
   MMIX.JK: Healthcare
+  PANI.JK: Properties
   PGAS.JK: Energy
   PNLF.JK: Financials
   PTRO.JK: Energy
+  PWON.JK: Properties
   RAJA.JK: Energy
   RMKE.JK: Energy
+  SCMA.JK: Consumer Cyclicals
+  SIDO.JK: Healthcare
+  SMDR.JK: Transportation
   SRTG.JK: Financials
   TAPG.JK: Consumer Non-Cyclicals
   TINS.JK: Basic Materials
   TLKM.JK: Infrastructure
+  TMAS.JK: Transportation
+  TOWR.JK: Infrastructure
+  TPIA.JK: Basic Materials
   UNTR.JK: Industrials
   UNVR.JK: Consumer Non-Cyclicals
-  WIKA.JK: Infrastructure
+  WIFI.JK: Technology
 
 # ------------------------------------------------------------------------- data
 # Needs to exceed 13 months so 12-month momentum has history. The old code used
@@ -256,17 +333,26 @@ risk_free_pct: 5.5
 # 16.8% on INET. Scaling by the name's own ATR is also what makes this adapt --
 # when the market turns violent the ATR rises and the stop widens by itself.
 #
-# THE LADDER DID NOT PAY FOR ITSELF IN THE BACKTEST. Over 5 years, monthly:
+# WHETHER THE LADDER PAYS FOR ITSELF DEPENDS ON HOW OFTEN YOU RE-RANK. Over 5
+# years on the 74-name universe:
 #
-#   Hold to the rebalance      +25.1% CAGR   -16.3% maxDD   0.81 Sharpe
-#   Stop only, 2.5 x ATR       +28.1%        -16.4%         0.87
-#   Stop + ladder (shipped)    +11.8%        -16.7%         0.40
+#   WEEKLY                      CAGR      maxDD    Sharpe
+#     Hold to the rebalance    +34.5%    -31.6%     1.16
+#     Stop only, 2.5 x ATR     +33.8%    -19.5%     1.30
+#     Stop + ladder (shipped)  +31.1%    -10.7%     1.61   <- best risk-adjusted
 #
-# A stop with no profit-taking beat both. That is not surprising: the testable part
-# of this strategy is momentum, which lives in its right tail, and a rule that
-# systematically sells what is running removes the outcomes it depends on. The
-# ladder ships because it was asked for, and because the backtest reconstructs only
-# a third of the score on a rigid calendar -- it disqualifies, it does not validate.
+#   MONTHLY
+#     Hold to the rebalance    +31.7%    -30.7%     0.98
+#     Stop only, 2.5 x ATR     +37.9%    -25.8%     1.09   <- best risk-adjusted
+#     Stop + ladder (shipped)  +21.3%    -16.7%     0.80
+#
+# At 1-2 trades a week the weekly row is the one that describes this account, and
+# there the ladder gives up 3.4 points of return for a drawdown a third the size.
+#
+# This reversed when the universe grew from 49 names to 74: on the narrower list
+# the ladder lost at both cadences. More sectors means more independent trends, so
+# trimming one winner no longer removes the whole edge. Re-run --backtest after any
+# universe change -- these are measurements, not constants.
 #
 # To keep the stop and drop the trims, put this in configs/user.yaml:
 #     risk:
