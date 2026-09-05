@@ -18,7 +18,7 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
-from report import layout, terminal as T
+from report import guide, layout, terminal as T
 from report.terminal import SHELL_JS, THEME_CSS
 
 # Styling that belongs to content this module renders, not to the shell.
@@ -1149,6 +1149,15 @@ def render_brief(
             T.grid([T.column([T.panel("How today's picks were chosen",
                                       steps_html, grow=True)])]),
             "The decision, stage by stage"))
+    # Before Settings, after Why: it is the thing a new reader needs, and the
+    # thing an old one comes back to when a word on the ticket is unfamiliar.
+    # Takes no argument from the run -- the Guide reads the same with no data,
+    # which is exactly when somebody opens it.
+    pages.append(T.Page(
+        "guide", "Guide", "guide",
+        T.grid([T.column([T.panel("How to read this terminal",
+                                  guide.render_guide(), grow=True)])]),
+        "What everything here means"))
     pages.append(T.Page(
         "settings", "Settings", "settings",
         T.grid([
@@ -1225,7 +1234,7 @@ def render_brief(
         top_html=top,
         body_html=T.pages_html(pages, "markets"),
         tick_html=T.tickerbar(ticks),
-        css=THEME_CSS + _EXTRA_CSS,
+        css=THEME_CSS + _EXTRA_CSS + guide.GUIDE_CSS,
         js=SHELL_JS,
     )
 
