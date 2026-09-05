@@ -293,6 +293,13 @@ class Settings(BaseSettings):
 
     events_path: str = "configs/events.yaml"
     event_horizon_days: int = Field(default=14, ge=1)
+    # An index review goes on mattering after it lands; see market.events.
+    review_lookback_days: int = Field(default=21, ge=0)
+
+    # Index review dates that ship WITH the build, so they refresh when a new one
+    # is installed. The reader's own calendar lives in the git-ignored
+    # configs/events.yaml and is never overwritten by an upgrade.
+    market_calendar: List[Dict[str, Any]] = Field(default_factory=list)
 
     # ---- ML (off by design) -----------------------------------------------
     use_ml: bool = False

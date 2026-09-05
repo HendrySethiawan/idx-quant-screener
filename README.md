@@ -179,7 +179,7 @@ leave your machine:
 | `data/journal_marks.csv` | portfolio value over time |
 | `current_holdings.yaml` | your positions and average cost |
 | `configs/user.yaml` | your capital and universe edits |
-| `configs/events.yaml` | your event calendar |
+| `configs/events.yaml` | your event calendar (index review dates ship in `default.yaml` and are merged in) |
 | `data/output/` | every brief, ticket and backtest you generate |
 
 `current_holdings.example.yaml` and `configs/events.example.yaml` show the format.
@@ -264,7 +264,7 @@ python main.py --mark                               # snapshot value vs IHSG
 
 ```bash
 python main.py --event ADRO earnings 2026-08-27
-python main.py --event MSCI review 2026-08-28 --note "Aug index review"
+python main.py --event BREN ex_dividend 2026-09-18
 python main.py --events                             # what's coming, and what we can't see
 ```
 
@@ -284,6 +284,42 @@ the third is the important one:
 Events **warn but never filter**. A blocking rule could only fire on the third of the
 universe we can see, so it would quietly tilt the portfolio toward the two thirds we
 can't — a bias you'd never notice.
+
+### Index reviews are the one event whose past still counts
+
+Every other kind is forward-looking: a result already out is priced, so it drops off
+the ticket the day after. A review does not. Passive money takes weeks to finish
+rebalancing and the liquidity a deleted name loses does not come back, so a `review`
+stays on the affected ticket line for `review_lookback_days` (21) **after** it takes
+effect:
+
+```
+BUY   ESSA.JK                                        Rp99,450,000
+225 lot (22,500 shares) @ Rp4,420 · stop Rp4,020
+⚠ index review 4 days ago - dropped from MSCI Global Small Cap
+```
+
+Without it, a name that had just lost its passive bid rendered identically to one with
+nothing happening — the same silent failure the coverage rule exists to refuse.
+
+Review dates come from two places, and the split is the one `core/paths.py` draws
+between app-owned and user-owned files:
+
+| | Where | Refreshes | Shown as |
+|---|---|---|---|
+| **Index calendar** | `market_calendar` in `configs/default.yaml` | with every build | `built in` |
+| **Your own notes** | `configs/events.yaml` (git-ignored) | never touched | `you` |
+
+Seeding your file with index dates would have frozen them at install — the same bug as
+a build shipping 74 tickers while the reader went on analysing the 49 seeded at first
+run. Recording a review yourself overrides the shipped row for the same date, scope and
+kind, which is how you correct one you have checked.
+
+The dates currently shipped are the MSCI **August 2026** review (effective 1 Sep:
+Standard dropped GOTO and CPIN with no additions, Small Cap dropped nine, of which
+BUKA, ESSA and HEAL are in this universe) and the **November 2026** review dates.
+They were read off press coverage, not a primary constituent file — check MSCI before
+you act on one.
 
 Each `--log` prints the fee it computed so you can check it against the broker's
 confirmation, and rewrites `current_holdings.yaml` to match — so the next brief always

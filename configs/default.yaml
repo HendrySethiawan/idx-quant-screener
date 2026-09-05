@@ -405,6 +405,69 @@ backtest:
 
 events_path: configs/events.yaml
 event_horizon_days: 14
+# How long a *past* index review stays on a ticket line. Earnings are forward-only
+# -- a result already out is priced -- but a deletion keeps draining passive money
+# for weeks, and the name goes on being ranked as though nothing happened.
+review_lookback_days: 21
+
+# ------------------------------------------------------------- index calendar
+# Ships WITH the build and refreshes when a new one is installed, which is why it
+# is here and not in configs/events.yaml -- that file is your own notebook, is
+# git-ignored, and is never overwritten. Seeding it with these dates would freeze
+# them at install: the same failure as a build shipping 74 tickers while the
+# reader went on analysing the 49 seeded at first install.
+#
+# Dated to the day a change takes EFFECT, not the day it was announced, because
+# that is when the money moves. `review_lookback_days` above keeps each one on the
+# affected ticket line for three weeks afterwards.
+#
+# A ticker scope attaches the warning to that name's ticket line; the MSCI scope
+# is the market-wide note in the Events panel and attaches to nothing.
+#
+# Verify against MSCI before acting -- this was read from press coverage of the
+# August review, not from a primary constituent file.
+market_calendar:
+  # -- MSCI August 2026 review. Announced 12 Aug, changes at the close of 31 Aug,
+  #    effective 1 Sep. No Indonesian additions; Standard went from 11 names to 9.
+  - date: '2026-09-01'
+    scope: MSCI
+    kind: review
+    note: >-
+      Aug 2026 review effective - Standard dropped GOTO and CPIN with no
+      additions, Small Cap dropped 9. Indonesia Standard is 9 names.
+  - date: '2026-09-01'
+    scope: GOTO.JK
+    kind: review
+    note: dropped from MSCI Global Standard - trackers were forced sellers
+  - date: '2026-09-01'
+    scope: CPIN.JK
+    kind: review
+    note: dropped from MSCI Global Standard, moved down to Small Cap
+  # Small Cap deletions. The other six (ARTO, FILM, KPIG, RATU, SMGR, TCPI) are
+  # not in this universe.
+  - date: '2026-09-01'
+    scope: BUKA.JK
+    kind: review
+    note: dropped from MSCI Global Small Cap
+  - date: '2026-09-01'
+    scope: ESSA.JK
+    kind: review
+    note: dropped from MSCI Global Small Cap
+  - date: '2026-09-01'
+    scope: HEAL.JK
+    kind: review
+    note: dropped from MSCI Global Small Cap
+
+  # -- next one on the calendar. Record the Indonesia additions and deletions in
+  #    configs/events.yaml when they are announced.
+  - date: '2026-11-11'
+    scope: MSCI
+    kind: review
+    note: MSCI November 2026 review announced - check Indonesia adds and deletes
+  - date: '2026-12-01'
+    scope: MSCI
+    kind: review
+    note: MSCI November 2026 review takes effect (changes at the close of 30 Nov)
 
 # ----------------------------------------------------------------------- ml off
 # The ranker labels y = (score > median of that same score), then overwrites the
