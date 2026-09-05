@@ -192,6 +192,56 @@ def test_the_document_names_its_landing_page():
     assert '<body data-page="markets">' in out
 
 
+# ----------------------------------------------------------------- density
+def test_every_size_in_the_shell_is_proportional():
+    """
+    One control moves the whole page only if nothing is nailed to a pixel. A
+    single `font-size:11px` left behind would sit unchanged while everything
+    around it grew, which reads as a bug in the element, not in the control.
+
+    Two exceptions. The `:root` rules are the base itself -- the one place a
+    pixel belongs. The density buttons are a sample of the three sizes, so they
+    have to show their own size rather than the current one.
+    """
+    css = re.sub(r":root(\[data-density=\"\w+\"\])?\{[^}]*\}", "", T.THEME_CSS)
+    css = re.sub(r"\.density button\[data-density[^}]*\}", "", css)
+    stuck = re.findall(r"font-size:\s*[\d.]+px", css)
+    assert stuck == [], f"not proportional: {stuck}"
+
+
+def test_the_root_carries_the_base_size_every_other_size_is_measured_from():
+    assert re.search(r":root\{[^}]*font-size:[\d.]+px", T.THEME_CSS)
+
+
+def test_each_density_is_a_different_size_and_normal_needs_no_override():
+    sizes = dict(re.findall(r':root\[data-density="(\w+)"\]\{font-size:([\d.]+)px',
+                            T.THEME_CSS))
+    assert set(sizes) == {"compact", "large"}, sizes
+    base = re.search(r":root\{[^}]*font-size:([\d.]+)px", T.THEME_CSS).group(1)
+    assert float(sizes["compact"]) < float(base) < float(sizes["large"])
+
+
+def test_the_document_stamps_the_density_on_the_html_element():
+    for want in T.DENSITIES:
+        out = T.document(title="T", head="markets", rail_html="", top_html="",
+                         body_html="", tick_html="", css="", js="", density=want)
+        assert f'<html lang="en" data-density="{want}">' in out
+
+
+def test_an_unknown_density_falls_back_to_normal_not_to_nothing():
+    """A stale user.yaml must not leave the page with no base size at all."""
+    out = T.document(title="T", head="markets", rail_html="", top_html="",
+                     body_html="", tick_html="", css="", js="", density="huge")
+    assert '<html lang="en" data-density="normal">' in out
+
+
+def test_the_density_control_offers_every_density_and_marks_the_current_one():
+    bar = T.topbar("T", "now", [])
+    for key in T.DENSITIES:
+        assert f'data-density="{key}"' in bar
+    assert 'id="density-controls"' in bar
+
+
 def test_the_standalone_document_theme_restores_scrolling():
     """The backtest is a report you read top to bottom, not a terminal."""
     assert "html,body{overflow:auto;height:auto}" in T.DOC_CSS

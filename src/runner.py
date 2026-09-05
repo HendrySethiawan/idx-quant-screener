@@ -542,6 +542,7 @@ def render(ctx: RunContext) -> Path:
             exit_plans=plan.get("exit_plans"), open_risk=plan.get("open_risk"),
             exit_cfg=ExitConfig.from_settings(settings),
             tie_groups=plan.get("tie_groups"), score_floor=plan.get("score_floor", 0.0),
+            density=str((getattr(settings, "ui", None) or {}).get("density", "normal")),
         ),
         settings.output_dir,
     )

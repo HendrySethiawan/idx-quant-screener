@@ -155,11 +155,24 @@ def topbar(title: str, subtitle: str, stats: Sequence[Tuple[str, str, str]] = ()
         warn = ('<span class="capwarn" title="Set it in Settings, or in '
                 'configs/user.yaml">PLACEHOLDER CAPITAL &mdash; every figure here is '
                 "sized for money that is not yours</span>")
+    # Not hidden behind the bridge, unlike Rebuild. Text size is the one control
+    # that must work when the page is opened as a plain file, because that is
+    # exactly when nobody can go and edit a config to fix it.
+    sizes = "".join(
+        f'<button type="button" data-density="{key}" title="{_e(hint)}">{_e(label)}</button>'
+        for key, label, hint in (
+            ("compact", "A", "Compact - more rows on screen"),
+            ("normal", "A", "Normal"),
+            ("large", "A", "Large - easier to read"),
+        )
+    )
+    density = f'<div class="density" id="density-controls" role="group" ' \
+              f'aria-label="Text size">{sizes}</div>'
     return (
         '<header class="topbar">'
         f'<div class="brand"><strong>{_e(title)}</strong>'
         f'<span class="asof">{_e(subtitle)}</span></div>'
-        f"{warn}{refresh}"
+        f"{warn}{refresh}{density}"
         f'<div class="topstats">{chips}</div>'
         "</header>"
     )
@@ -189,10 +202,24 @@ def pages_html(pages: Sequence[Page], active: str = "") -> str:
     return out
 
 
+DENSITIES = ("compact", "normal", "large")
+
+
 def document(*, title: str, head: str, rail_html: str, top_html: str,
-             body_html: str, tick_html: str, css: str, js: str) -> str:
-    """The whole file. One `<body data-page>` decides which destination is showing."""
+             body_html: str, tick_html: str, css: str, js: str,
+             density: str = "normal") -> str:
+    """
+    The whole file. One `<body data-page>` decides which destination is showing.
+
+    `<html>` is explicit now, and carries `data-density`. It has to be in the
+    markup rather than set by script on load: `:root`'s font-size drives every
+    size on the page through `rem`, so applying it in JS would paint the whole
+    terminal at one size and then reflow it at another.
+    """
+    if density not in DENSITIES:
+        density = "normal"
     return f"""<!doctype html>
+<html lang="en" data-density="{_e(density)}">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{_e(title)}</title>
@@ -208,6 +235,7 @@ def document(*, title: str, head: str, rail_html: str, top_html: str,
 </div>
 <script>{js}</script>
 </body>
+</html>
 """
 
 
@@ -228,9 +256,20 @@ THEME_CSS = """
   --good-bg:#e6f4ec; --bad-bg:#fbe9e7; --warn-bg:#fdf3e0;
 }
 *{box-sizing:border-box}
+/* One number sets the whole page. Every font-size below is expressed in `rem`
+   against this root, so changing it moves the type in proportion and nothing is
+   left behind at its old size -- which is what would happen with 57 separate px
+   values and a control that only knew about some of them.
+
+   The default was 11.5px in practice, because every element overrode the 12.5px
+   body down to it. 12.5 is the honest default now, and the reader can move it. */
+:root{font-size:12.5px}
+:root[data-density="compact"]{font-size:11.5px}
+:root[data-density="large"]{font-size:14px}
+
 html,body{height:100%;margin:0;overflow:hidden}
 body{background:var(--bg);color:var(--ink);
-  font:12.5px/1.45 "Segoe UI",-apple-system,BlinkMacSystemFont,Roboto,sans-serif;
+  font:1rem/1.5 "Segoe UI",-apple-system,BlinkMacSystemFont,Roboto,sans-serif;
   -webkit-font-smoothing:antialiased}
 
 /* ---- shell ---- */
@@ -241,39 +280,60 @@ body{background:var(--bg);color:var(--ink);
   display:flex;flex-direction:column;gap:2px;padding:8px 5px;overflow:auto}
 .rail-item{display:flex;flex-direction:column;align-items:center;gap:4px;width:100%;
   padding:9px 2px;border:0;border-radius:7px;background:transparent;color:var(--muted);
-  font:inherit;font-size:9.5px;font-weight:600;letter-spacing:.02em;cursor:pointer}
+  font:inherit;font-size:0.76rem;font-weight:600;letter-spacing:.02em;cursor:pointer}
 .rail-item:hover{background:var(--surface-3);color:var(--ink)}
 .rail-item.on{background:var(--surface-3);color:var(--accent)}
 
 .topbar{display:flex;align-items:center;gap:16px;flex-wrap:wrap;
   padding:8px 13px;border-bottom:1px solid var(--line);background:var(--surface-2)}
-.brand strong{font-size:13.5px;letter-spacing:-.01em}
-.brand .asof{margin-left:9px;color:var(--muted);font-size:11px}
+.brand strong{font-size:1.08rem;letter-spacing:-.01em}
+.brand .asof{margin-left:9px;color:var(--muted);font-size:0.88rem}
 .topstats{display:flex;gap:7px;flex-wrap:wrap;margin-left:auto}
 .chip{display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:6px;
-  background:var(--surface-3);border:1px solid var(--line);font-size:11.5px}
-.chip-k{color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-size:9.5px}
+  background:var(--surface-3);border:1px solid var(--line);font-size:0.92rem}
+.chip-k{color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-size:0.76rem}
 .chip-v{font-weight:700;font-variant-numeric:tabular-nums}
 .chip.good .chip-v{color:var(--good)} .chip.bad .chip-v{color:var(--bad)}
 .chip.warn .chip-v{color:var(--warn)}
 .refresh{display:flex;align-items:center;gap:6px;margin-left:18px}
-.refresh button{font:inherit;font-size:11.5px;font-weight:600;cursor:pointer;
+.refresh button{font:inherit;font-size:0.92rem;font-weight:600;cursor:pointer;
   padding:5px 11px;border-radius:6px;border:1px solid var(--line);
   background:var(--surface-3);color:var(--ink-dim);white-space:nowrap}
 .refresh button:hover:not(:disabled){color:var(--ink);border-color:var(--accent)}
 .refresh button:disabled{opacity:.45;cursor:default}
-.refresh .cost{color:var(--muted);font-weight:400;font-size:10.5px;margin-left:3px}
-.capwarn{margin-left:14px;padding:4px 11px;border-radius:6px;font-size:11.5px;
+.refresh .cost{color:var(--muted);font-weight:400;font-size:0.84rem;margin-left:3px}
+/* Text size. Three buttons showing the letter A at the size they set, which needs
+   no label and no legend. Fixed px on purpose: a control for changing the type
+   size must not change size with it, or the target moves as you click. */
+.density{display:flex;align-items:center;gap:2px;margin-left:12px}
+.density button{font:inherit;font-family:inherit;cursor:pointer;padding:2px 8px;
+  border:1px solid var(--line);background:var(--surface-3);color:var(--muted);
+  line-height:1;border-radius:0}
+.density button:first-child{border-radius:6px 0 0 6px}
+.density button:last-child{border-radius:0 6px 6px 0}
+.density button:hover{color:var(--ink)}
+.density button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);
+  color:#fff}
+.density button[data-density="compact"]{font-size:10px}
+.density button[data-density="normal"]{font-size:12px}
+.density button[data-density="large"]{font-size:14px}
+.capwarn{margin-left:14px;padding:4px 11px;border-radius:6px;font-size:0.92rem;
   font-weight:700;color:var(--bad);background:var(--bad-bg);border:1px solid var(--bad)}
-.flash{margin-left:14px;padding:4px 11px;border-radius:6px;font-size:11.5px;
+.flash{margin-left:14px;padding:4px 11px;border-radius:6px;font-size:0.92rem;
   font-weight:600;color:var(--good);background:var(--good-bg);
   transition:opacity 1.2s ease}
 
 .page{display:none;min-height:0;overflow:hidden}
 .page.on{display:block;min-height:0}
 
+/* Proportional tracks, not a pixel cap on the first one. Column 1 was pinned at
+   360px while the sparkline took 727 -- so the panel you act on was the narrowest
+   thing on screen and its Stop and Why columns fell off the right edge entirely.
+   The two ACTION panels now sit in the two wide tracks; the chart, the candidate
+   list and the skipped names share the narrow one, because you read those after
+   deciding rather than while deciding. */
 .grid{display:grid;gap:8px;padding:8px;height:100%;min-height:0;
-  grid-template-columns:minmax(0,360px) minmax(0,1fr) minmax(0,1fr)}
+  grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,.85fr)}
 .grid.cols-1{grid-template-columns:minmax(0,1fr)}
 .grid.cols-2{grid-template-columns:minmax(0,420px) minmax(0,1fr)}
 .col{display:flex;flex-direction:column;gap:8px;min-height:0;min-width:0;overflow:hidden}
@@ -284,18 +344,18 @@ body{background:var(--bg);color:var(--ink);
 .pnl.grow{flex:1 1 auto}
 .pnl-hd{display:flex;align-items:center;gap:10px;flex:none;
   padding:7px 11px;border-bottom:1px solid var(--line);background:var(--surface-2)}
-.pnl-ttl{font-size:12px;font-weight:700;letter-spacing:.01em;white-space:nowrap}
-.pnl-tools{margin-left:auto;color:var(--muted);font-size:11px}
+.pnl-ttl{font-size:0.96rem;font-weight:700;letter-spacing:.01em;white-space:nowrap}
+.pnl-tools{margin-left:auto;color:var(--muted);font-size:0.88rem}
 .pnl-bd{padding:9px 11px;overflow:auto;min-height:0;flex:1 1 auto}
 .pnl-bd>h2:first-child,.pnl-bd>h3:first-child{margin-top:0}
 
 /* ---- dense data ---- */
-h2{font-size:11.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);
+h2{font-size:0.92rem;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);
   margin:14px 0 7px;font-weight:700}
-h3{font-size:13px;margin:0 0 6px}
-table{border-collapse:collapse;width:100%;font-size:11.5px}
+h3{font-size:1.04rem;margin:0 0 6px}
+table{border-collapse:collapse;width:100%;font-size:0.92rem}
 th,td{text-align:left;padding:4px 8px;border-bottom:1px solid var(--line);vertical-align:top}
-th{font-size:9.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);
+th{font-size:0.76rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);
   font-weight:700;position:sticky;top:0;background:var(--surface);z-index:1}
 tbody tr:hover{background:var(--surface-3)}
 td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
@@ -303,35 +363,35 @@ tr:last-child td{border-bottom:none}
 .scroll{overflow:auto}
 .money,.tick{font-variant-numeric:tabular-nums;white-space:nowrap}
 .tick{font-weight:700}
-.note{color:var(--muted);font-size:11px}
-.act{font-weight:800;font-size:11px;letter-spacing:.04em}
+.note{color:var(--muted);font-size:0.88rem}
+.act{font-weight:800;font-size:0.88rem;letter-spacing:.04em}
 .act.buy{color:var(--good)} .act.sell{color:var(--bad)} .act.hold{color:var(--muted)}
 /* TRIM is a sale, but a good one -- taking profit is not the same event as being
    stopped out, and colouring both red would read as two failures. WAIT is an
    instruction NOT to act, so it gets the muted treatment HOLD has. */
 .act.trim{color:var(--warn)} .act.wait{color:var(--muted)}
-.empty{color:var(--muted);font-style:italic;padding:7px 0;font-size:11.5px}
+.empty{color:var(--muted);font-style:italic;padding:7px 0;font-size:0.92rem}
 .card{background:transparent;border:0;padding:0;margin:0 0 10px}
 .card p,.card .note,.callout{max-width:78ch}
 
-.pill{display:inline-block;padding:1px 7px;border-radius:999px;font-size:10px;
+.pill{display:inline-block;padding:1px 7px;border-radius:999px;font-size:0.8rem;
   font-weight:700;border:1px solid var(--line);background:var(--surface-3);color:var(--ink-dim)}
 .pill.good{color:var(--good);background:var(--good-bg);border-color:transparent}
 .pill.bad{color:var(--bad);background:var(--bad-bg);border-color:transparent}
 .pill.warn{color:var(--warn);background:var(--warn-bg);border-color:transparent}
 .callout{border-left:2px solid var(--accent);padding:7px 11px;background:var(--surface-3);
-  border-radius:0 5px 5px 0;margin:8px 0;font-size:11.5px}
+  border-radius:0 5px 5px 0;margin:8px 0;font-size:0.92rem}
 .callout.save{border-left-color:var(--good)}
 
 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:7px}
 .kpi{background:var(--surface-3);border:1px solid var(--line);border-radius:6px;padding:8px 10px}
-.kpi .k{font-size:9.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
-.kpi .v{font-size:16px;font-weight:700;font-variant-numeric:tabular-nums;margin-top:1px}
+.kpi .k{font-size:0.76rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+.kpi .v{font-size:1.28rem;font-weight:700;font-variant-numeric:tabular-nums;margin-top:1px}
 .chart{width:100%;height:auto;display:block;margin:4px 0}
 
 /* ---- sub-tabs inside a panel header ---- */
 .tabs{display:flex;gap:3px;flex-wrap:wrap;margin-left:6px}
-button.tab{font:inherit;font-size:11px;font-weight:600;cursor:pointer;padding:3px 9px;
+button.tab{font:inherit;font-size:0.88rem;font-weight:600;cursor:pointer;padding:3px 9px;
   border-radius:5px;border:1px solid transparent;background:transparent;color:var(--muted)}
 button.tab:hover{color:var(--ink)}
 button.tab.on{background:var(--surface-3);border-color:var(--line);color:var(--ink)}
@@ -341,7 +401,7 @@ button.tab.on{background:var(--surface-3);border-color:var(--line);color:var(--i
 /* ---- bottom ticker ---- */
 .tickbar{display:flex;align-items:center;gap:20px;flex:none;height:29px;padding:0 13px;
   border-top:1px solid var(--line);background:var(--surface-2);overflow:hidden;
-  font-size:11.5px;white-space:nowrap}
+  font-size:0.92rem;white-space:nowrap}
 .tk{display:flex;align-items:center;gap:6px}
 .tk-n{font-weight:700}
 .tk-v{font-variant-numeric:tabular-nums;color:var(--ink-dim)}
@@ -351,22 +411,22 @@ button.tab.on{background:var(--surface-3);border-color:var(--line);color:var(--i
 .funnel{display:flex;flex-direction:column;gap:2px;margin:8px 0}
 .funnel-row{display:grid;grid-template-columns:20px minmax(84px,1.1fr) 3fr 30px 30px;
   gap:8px;align-items:center;padding:4px 7px;border-radius:5px;border:0;width:100%;
-  background:transparent;color:var(--ink);font:inherit;font-size:11.5px;
+  background:transparent;color:var(--ink);font:inherit;font-size:0.92rem;
   cursor:pointer;text-align:left}
 .funnel-row:hover{background:var(--surface-3)}
 .funnel-row.on{background:var(--surface-3)}
-.funnel-n{font-size:10px;font-weight:700;color:var(--muted);text-align:center}
+.funnel-n{font-size:0.8rem;font-weight:700;color:var(--muted);text-align:center}
 .funnel-bar{background:var(--surface-3);border-radius:999px;height:9px;overflow:hidden}
 .funnel-bar>span{display:block;height:100%;background:var(--accent);border-radius:999px;min-width:2px}
 .funnel-out{font-weight:700;font-variant-numeric:tabular-nums;text-align:right}
-.funnel-drop{color:var(--bad);font-size:10.5px;text-align:right;font-variant-numeric:tabular-nums}
+.funnel-drop{color:var(--bad);font-size:0.84rem;text-align:right;font-variant-numeric:tabular-nums}
 .step-head{display:flex;align-items:center;gap:9px;margin-bottom:5px}
 .step-n{display:flex;align-items:center;justify-content:center;flex:none;width:21px;height:21px;
-  border-radius:999px;background:var(--accent);color:#fff;font-size:11px;font-weight:700}
-.step-count{margin:9px 0;font-size:13px;font-variant-numeric:tabular-nums}
-.step-count strong{font-size:16px}
+  border-radius:999px;background:var(--accent);color:#fff;font-size:0.88rem;font-weight:700}
+.step-count{margin:9px 0;font-size:1.04rem;font-variant-numeric:tabular-nums}
+.step-count strong{font-size:1.28rem}
 .trace-box{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:4px 0 10px}
-.trace-box input{font:inherit;font-size:12px;padding:6px 9px;border-radius:6px;
+.trace-box input{font:inherit;font-size:0.96rem;padding:6px 9px;border-radius:6px;
   border:1px solid var(--line);background:var(--surface-3);color:var(--ink);min-width:190px}
 .trace-step{display:grid;grid-template-columns:20px 1fr;gap:9px;padding:5px 0;
   border-bottom:1px solid var(--line)}
@@ -374,10 +434,10 @@ button.tab.on{background:var(--surface-3);border-color:var(--line);color:var(--i
 .trace-mark{font-weight:700;text-align:center}
 .trace-mark.pass{color:var(--good)} .trace-mark.stop{color:var(--bad)} .trace-mark.na{color:var(--muted)}
 .whatif-controls{display:flex;gap:11px;flex-wrap:wrap;margin:2px 0 10px}
-.whatif-controls label{font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:5px}
-.whatif-controls select,.pnl-tools select{font:inherit;font-size:11.5px;padding:3px 7px;
+.whatif-controls label{font-size:0.92rem;color:var(--muted);display:flex;align-items:center;gap:5px}
+.whatif-controls select,.pnl-tools select{font:inherit;font-size:0.92rem;padding:3px 7px;
   border-radius:5px;border:1px solid var(--line);background:var(--surface-3);color:var(--ink)}
-.fold>summary{cursor:pointer;font-size:11.5px;font-weight:700;color:var(--muted);
+.fold>summary{cursor:pointer;font-size:0.92rem;font-weight:700;color:var(--muted);
   padding:5px 0;list-style:none}
 .fold>summary::-webkit-details-marker{display:none}
 .fold>summary::before{content:"\\25B8 "}
@@ -391,13 +451,19 @@ th.sortable[data-dir="asc"]::after{content:" \\2191"}
    A single jump from three columns to one leaves the 900-1200px band showing
    three squeezed columns, which is worse than either end. */
 @media (max-width:1400px){
-  .grid{grid-template-columns:minmax(0,340px) minmax(0,1fr)}
+  /* Take the space out of the reference column, not out of the two you act on.
+     The first track used to be pinned at 340px here, which put the ticket back
+     into the width this layout exists to get it out of. */
+  .grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,.65fr);gap:6px;padding:6px}
   .grid.cols-1{grid-template-columns:minmax(0,1fr)}
 }
 @media (max-width:1100px){
   .app{grid-template-columns:56px minmax(0,1fr)}
   .rail-item span{display:none}
-  .grid{grid-template-columns:minmax(0,300px) minmax(0,1fr)}
+  /* Three no longer fit. The reference column wraps below rather than the
+     ticket getting thin; the two rows share the height instead of the second
+     being clipped by `.col{overflow:hidden}`. */
+  .grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-auto-rows:minmax(0,1fr)}
 }
 @media (max-width:900px){
   /* A phone has no room for panels. Give the page its scrollbar back. */
@@ -436,17 +502,17 @@ html,body{overflow:auto;height:auto}
 body{padding:0 18px 56px}
 .wrap{max-width:900px;margin:0 auto}
 header{padding:26px 0 6px}
-h1{font-size:22px;margin:0 0 4px;letter-spacing:-.01em}
-.sub{color:var(--muted);font-size:12.5px}
+h1{font-size:1.76rem;margin:0 0 4px;letter-spacing:-.01em}
+.sub{color:var(--muted);font-size:1rem}
 h2{margin:26px 0 9px}
-h3{font-size:14.5px;margin:0 0 9px}
+h3{font-size:1.16rem;margin:0 0 9px}
 .card{background:var(--surface);border:1px solid var(--line);border-radius:9px;
   padding:15px 17px;margin-bottom:12px}
-table{font-size:12.5px}
+table{font-size:1rem}
 th,td{padding:7px 9px}
 th{position:static}
 footer{margin-top:34px;padding-top:15px;border-top:1px solid var(--line);
-  color:var(--muted);font-size:11.5px;line-height:1.6}
+  color:var(--muted);font-size:0.92rem;line-height:1.6}
 """
 
 
@@ -640,6 +706,34 @@ SHELL_JS = """
     var ed=document.getElementById("settings-editor");
     if(ed) ed.innerHTML='<div class="empty">Could not reach Python; settings cannot be'+
       ' changed from here. Edit configs/user.yaml instead.</div>';
+  }
+
+  // ---- text size ----------------------------------------------------------
+  // Applied to <html> immediately, because :root's font-size drives every size on
+  // the page through rem -- one attribute moves the whole terminal in proportion.
+  // Saving is a separate, optional step: without Python behind the page the size
+  // still changes for this session, which is exactly when nobody can go and edit
+  // a config file to fix it.
+  var densityBar=document.getElementById("density-controls");
+  if(densityBar){
+    var mark=function(value){
+      var buttons=densityBar.querySelectorAll("button");
+      for(var i=0;i<buttons.length;i++){
+        buttons[i].setAttribute("aria-pressed",
+          String(buttons[i].dataset.density===value));
+      }
+    };
+    mark(document.documentElement.dataset.density||"normal");
+    densityBar.addEventListener("click",function(ev){
+      var btn=ev.target.closest("button[data-density]");
+      if(!btn) return;
+      var value=btn.dataset.density;
+      document.documentElement.dataset.density=value;
+      mark(value);
+      // Best effort. A failure here costs the setting on the next launch, not the
+      // change you just made and can see.
+      withApi(function(API){ API.save_setting("ui.density", value); });
+    });
   }
 
   // ---- rebuild / re-run ---------------------------------------------------

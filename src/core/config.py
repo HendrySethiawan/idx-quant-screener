@@ -219,6 +219,18 @@ class Settings(BaseSettings):
         "cooldown_sessions": 10,
     })
 
+    # ---- Interface ---------------------------------------------------------
+    # How large the terminal draws its text. Every font size on the page is a
+    # multiple of one root value, so this moves the whole thing in proportion
+    # rather than leaving some elements behind at their old size.
+    #
+    # `normal` is 12.5px. The page used to be 11.5 everywhere in practice, because
+    # each element overrode the 12.5px body downward -- which nobody chose, it was
+    # just what the individual rules happened to say.
+    ui: Dict[str, Any] = Field(default_factory=lambda: {
+        "density": "normal",       # compact | normal | large
+    })
+
     # ---- Liquidity ---------------------------------------------------------
     liquidity: Dict[str, Any] = Field(default_factory=lambda: {
         # A position may not exceed this share of median daily traded value,
