@@ -9,6 +9,8 @@ So the screen is saved and reopened, and fetching is what the Update data button
 for. The test that carries this is test_a_launch_never_touches_the_network: the
 fetcher is replaced with one that raises, and the page must still be produced.
 """
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
@@ -239,3 +241,79 @@ def test_risk_panel_keeps_only_what_the_exits_read():
     assert set(out) == {"Close", "High"}          # Open, Low and Volume dropped
     assert len(out["Close"]) == 300               # trimmed to the recent window
     assert out["Close"].index[-1] == idx[-1]
+
+
+# ------------------------------------ a snapshot is stale when the CODE moved too
+# `SNAPSHOT_VERSION` catches a change somebody remembered to declare. The dividend
+# fix altered what `undervaluation_score` MEANS without touching a single field
+# name, so the saved screen stayed perfectly loadable and went on showing scores
+# computed under a bug -- the shipped exe rendered BREN at a 12% yield on a stock
+# that pays Rp0, from a file written by the previous binary. Only pressing Update
+# would have cleared it, and nothing on the page suggested it needed clearing.
+
+def test_a_snapshot_written_before_a_code_change_is_refused(settings, tmp_path,
+                                                            monkeypatch):
+    import os
+    import time
+
+    save_snapshot(_ctx(settings))
+    path = tmp_path / "run.joblib"
+    assert load_snapshot(settings, args=None) is not None, "sanity: it loads first"
+
+    # Age the snapshot so every source file is newer than it.
+    old = time.time() - 3600
+    os.utime(path, (old, old))
+
+    assert load_snapshot(settings, args=None) is None
+
+
+def test_an_up_to_date_snapshot_still_loads(settings):
+    """The guard must not make the saved screen useless -- that is its whole point."""
+    save_snapshot(_ctx(settings))
+    assert load_snapshot(settings, args=None) is not None
+
+
+def test_a_frozen_build_compares_against_its_own_executable(tmp_path, monkeypatch):
+    """
+    A new binary is new logic by definition, so its timestamp is the right clock
+    when there is no source tree to look at.
+    """
+    import os
+    import sys
+    import time
+
+    import runner
+
+    exe = tmp_path / "IDX Terminal.exe"
+    exe.write_bytes(b"x")
+    snap = tmp_path / "run.joblib"
+    snap.write_bytes(b"y")
+
+    monkeypatch.setattr("core.paths.is_frozen", lambda: True)
+    monkeypatch.setattr(sys, "executable", str(exe), raising=False)
+
+    old = time.time() - 3600
+    os.utime(snap, (old, old))
+    assert runner._code_changed_since(snap) is True
+
+    os.utime(exe, (old - 60, old - 60))
+    assert runner._code_changed_since(snap) is False
+
+
+def test_an_unreadable_timestamp_does_not_refuse_the_snapshot():
+    """
+    Refetching costs a minute; refusing to refetch when the maths moved costs the
+    wrong trade. But a missing file is not evidence either way, and crashing the
+    launch over it would be worse than both.
+    """
+    import runner
+    assert runner._code_changed_since(Path("does/not/exist.joblib")) is False
+
+
+def test_the_version_was_bumped_for_the_scoring_change():
+    """
+    Belt as well as braces. The timestamp guard is automatic; the version is the
+    declaration, and this pins that someone made it.
+    """
+    import runner
+    assert runner.SNAPSHOT_VERSION >= 3

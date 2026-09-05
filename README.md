@@ -499,6 +499,22 @@ with the price history at no extra request. A list of dates and rupiah amounts c
 be misread, and every name now has a real figure — **74 of 74, where 23 used to be
 imputed**.
 
+### The fix that nearly did not reach you
+
+Fixing the maths was not enough. The app opens from a **saved screen** so a launch
+costs two seconds instead of a minute — and that screen holds the scores as they
+were computed, not the inputs. The dividend fix changed what
+`undervaluation_score` *means* without changing a single field name, so the file
+stayed perfectly loadable and the rebuilt exe went on showing BREN at a 12% yield
+on a stock that pays Rp0. Only pressing **Update data** would have cleared it, and
+nothing on the page suggested it needed clearing.
+
+A saved screen is now discarded when the code that produced it has been replaced —
+compared against the executable's own timestamp in a build, or the newest file
+under `src/` from source, which is the rule `verify_bridge.py` already used to
+refuse a stale brief. That is automatic. The version stamp beside it is the
+declaration, and it is bumped whenever the scoring changes meaning.
+
 ### What the audit checked and found correct
 
 Worth recording, because an audit that only reports faults tells you nothing about

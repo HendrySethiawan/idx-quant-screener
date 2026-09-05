@@ -176,7 +176,11 @@ SNAPSHOT_REL = Path("data/snapshot/run.joblib")
 #      would come back with no stop and no trailing level -- the exit panel would
 #      read "cannot measure" for a book that is perfectly measurable. Refetching
 #      once is the right answer; rendering a wrong one is not.
-SNAPSHOT_VERSION = 2
+#   3  the dividend yield changed source and the sanity bounds changed behaviour,
+#      so `undervaluation_score` no longer means what a v2 file's does. Nothing
+#      about the SHAPE changed, which is the point: a snapshot is stale when the
+#      code that computed it is gone, not only when its fields move.
+SNAPSHOT_VERSION = 3
 
 
 def universe_key(settings) -> str:
@@ -186,6 +190,36 @@ def universe_key(settings) -> str:
     tickers = ",".join(sorted(settings.stock_tickers or {}))
     raw = f"{tickers}|{getattr(settings, 'history_period', '')}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _code_changed_since(path: Path) -> bool:
+    """
+    Was this snapshot written by code that has since been replaced?
+
+    `SNAPSHOT_VERSION` catches a change somebody remembered to declare. This
+    catches the rest, and it is the more dangerous half: the dividend fix altered
+    what `undervaluation_score` MEANS without touching a single field name, so a
+    saved screen stayed loadable and quietly kept showing scores computed under a
+    bug. The version bump fixes that one occurrence; this stops the next.
+
+    Frozen: the executable's own timestamp -- a new binary is new logic by
+    definition. From source: the newest file under `src/`, the same rule
+    `packaging/verify_bridge.py` already uses to refuse a stale brief.
+
+    Any failure to read a timestamp answers False. Refetching unnecessarily costs
+    a minute; refusing to refetch when the maths moved costs the wrong trade.
+    """
+    from core.paths import is_frozen
+
+    try:
+        written = path.stat().st_mtime
+        if is_frozen():
+            import sys
+            return Path(sys.executable).stat().st_mtime > written
+        src = Path(__file__).resolve().parent
+        return any(f.stat().st_mtime > written for f in src.rglob("*.py"))
+    except OSError:
+        return False
 
 
 def _snapshot_path(settings) -> Path:
@@ -259,6 +293,12 @@ def load_snapshot(settings, args, logger=None) -> Optional[RunContext]:
         return None
 
     if not isinstance(blob, dict) or blob.get("version") != SNAPSHOT_VERSION:
+        return None
+
+    if _code_changed_since(path):
+        if logger:
+            logger.info("The saved screen was computed by code that has since "
+                        "changed; fetching fresh rather than showing it.")
         return None
 
     df = blob.get("df")
