@@ -267,3 +267,57 @@ def test_a_malformed_row_is_not_marked():
     from portfolio.ledger import implausible
     assert implausible({"return_pct": None, "buy_price": 1, "sell_price": 2}) == ""
     assert implausible({}) == ""
+
+
+# ------------------------------------------------- the stop, on the review page
+# The Markets page is where you ACT on an exit; this table is where you review
+# what you hold. Two columns are enough here -- the level, and whether it wants
+# attention -- and the full ladder stays on the page that has room for it.
+
+def _plan(price=1795.0, entry=1938.68, lots=10, atr=55.42):
+    import numpy as np
+
+    from portfolio.exits import ExitConfig, plan_for
+    from portfolio.fees import FeeConfig
+
+    idx = pd.bdate_range("2026-08-26", periods=8)
+    closes = pd.Series(np.linspace(entry, price, len(idx)), index=idx)
+    return plan_for("SRTG.JK", lots, entry, closes, ExitConfig(), FeeConfig(),
+                    atr_rp=atr, entry_date=idx[0], high=closes,
+                    capital_rp=10_000_000)
+
+
+def _positions():
+    return pd.DataFrame([{
+        "ticker": "SRTG.JK", "shares": 1000, "lots": 10, "avg_cost": 1938.68,
+        "cost_basis": 1_938_680.0, "price_now": 1795.0, "value_now": 1_795_000.0,
+        "unrealized_pnl": -143_680.0, "unrealized_pct": -7.41,
+    }])
+
+
+def test_the_open_table_carries_the_stop_and_the_next_step():
+    from report.journal_view import open_positions_table
+
+    out = open_positions_table(_positions(), {"SRTG.JK": _plan()})
+    assert ">Stop<" in out and ">Next step<" in out
+    assert "Rp1,800" in out
+    assert "sell all 10" in out
+
+
+def test_a_holding_shows_where_the_next_trim_sits():
+    from report.journal_view import open_positions_table
+
+    out = open_positions_table(_positions(), {"SRTG.JK": _plan(price=2000.0)})
+    assert "trim at Rp2,077" in out
+
+
+def test_the_columns_degrade_when_there_is_no_plan():
+    """
+    A missing plan must render as "-", never as a blank that reads like "no stop
+    needed". This is the state right after a snapshot written before exits existed.
+    """
+    from report.journal_view import open_positions_table
+
+    out = open_positions_table(_positions(), {})
+    assert ">Stop<" in out
+    assert out.count(">-<") >= 1

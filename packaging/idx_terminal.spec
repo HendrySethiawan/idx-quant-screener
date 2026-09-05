@@ -39,6 +39,7 @@ hiddenimports = [
     "analysis.trace", "analysis.valuation",
     "fetchers.data_fetcher",
     "market.events", "market.liquidity", "market.regime", "market.seasonality",
+    "portfolio.cash", "portfolio.dividends", "portfolio.exits",
     "portfolio.fees", "portfolio.holdings", "portfolio.journal",
     "portfolio.ledger", "portfolio.performance", "portfolio.sizing",
     "report.advanced", "report.assemble", "report.brief", "report.charts",

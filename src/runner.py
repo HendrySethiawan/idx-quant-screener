@@ -68,13 +68,18 @@ class RunContext:
     # Pairwise return correlations, so selection can cap the bet rather than the
     # label. Persisted for the same reason as the watchlist: `price_data` is not.
     correlations: Optional[pd.DataFrame] = None
+    # Close and High, trimmed, per ticker. The exit rules need a series where `df`
+    # only has a row: a stop compares the last close against an entry made weeks
+    # ago, and a trailing stop needs the high since that entry.
+    risk_panel: Dict[str, pd.DataFrame] = field(default_factory=dict)
 
 
 # --------------------------------------------------------------- needs network
 def full_run(settings, args, logger=None) -> RunContext:
     """Fetch, score and rank. The slow half."""
     from fetchers.data_fetcher import (DataFetcher, equal_weight_level,
-                                       return_correlations, session_report)
+                                       return_correlations, risk_panel,
+                                       session_report)
     from market import seasonality as S
 
     # One fetcher for the whole run. `run_screener` used to build its own, so the
@@ -132,7 +137,7 @@ def full_run(settings, args, logger=None) -> RunContext:
         regime=regime, season_table=season_table, season_line=season_line,
         fetched_at=pd.Timestamp.now(), universe_key=universe_key(settings),
         sessions=sessions, watchlist_level=watchlist_level,
-        correlations=correlations,
+        correlations=correlations, risk_panel=risk_panel(price_data),
     )
 
 
@@ -146,7 +151,12 @@ SNAPSHOT_REL = Path("data/snapshot/run.joblib")
 
 # Bumped when the shape below changes, so an old file is ignored rather than
 # unpacked into fields that no longer mean the same thing.
-SNAPSHOT_VERSION = 1
+#
+#   2  adds `risk_panel`. A v1 file has no price series in it, so every position
+#      would come back with no stop and no trailing level -- the exit panel would
+#      read "cannot measure" for a book that is perfectly measurable. Refetching
+#      once is the right answer; rendering a wrong one is not.
+SNAPSHOT_VERSION = 2
 
 
 def universe_key(settings) -> str:
@@ -167,9 +177,14 @@ def save_snapshot(ctx: RunContext) -> Optional[Path]:
     """
     Persist what a render needs. Returns the path, or None if it could not be saved.
 
-    `price_data` is deliberately left out: `full_run` fills it and nothing reads it
-    -- not `render`, not the console summary, not the API. Writing 49 frames nobody
-    opens would be the largest thing in the file.
+    `price_data` is still deliberately left out -- 49 OHLCV frames would be the
+    largest thing in the file. What goes in instead is `risk_panel`: Close and High
+    only, trimmed to the recent sessions, because the exit rules DO need a series
+    where the rest of the render only needs `df`'s one row per ticker. A stop
+    compares today's close against an entry made weeks ago, and a trailing stop
+    needs the high since that entry; neither survives in a snapshot of the latest
+    indicators. Roughly a tenth of the raw frames, and it keeps `render` off the
+    network, which is the rule the whole split rests on.
 
     Never raises. A snapshot that cannot be written costs the next launch forty
     seconds; an exception here would cost this one everything after it.
@@ -191,6 +206,7 @@ def save_snapshot(ctx: RunContext) -> Optional[Path]:
             "sessions": ctx.sessions or {},
             "watchlist_level": ctx.watchlist_level,
             "correlations": ctx.correlations,
+            "risk_panel": ctx.risk_panel or {},
         }, path)
         return path
     except Exception as e:
@@ -249,6 +265,7 @@ def load_snapshot(settings, args, logger=None) -> Optional[RunContext]:
         sessions=blob.get("sessions") or {},
         watchlist_level=blob.get("watchlist_level"),
         correlations=blob.get("correlations"),
+        risk_panel=blob.get("risk_panel") or {},
     )
 
 
@@ -350,7 +367,9 @@ def render(ctx: RunContext) -> Path:
     market has not moved because you recorded something.
     """
     settings, args, logger = ctx.settings, ctx.args, ctx.logger
-    from cli import build_performance, collect_events
+    from cli import _paths, build_performance, collect_events
+    from portfolio.exits import ExitConfig
+    from portfolio.journal import load_journal
     from report.journal_view import brief_section
 
     holdings = load_holdings(
@@ -360,9 +379,16 @@ def render(ctx: RunContext) -> Path:
     all_events, blind = collect_events(settings)
     horizon = int(getattr(settings, "event_horizon_days", 14))
 
+    # Re-read on every render, like holdings and events: recording a trade changes
+    # what the exit plans should say, and that is exactly the moment `render` runs
+    # without `full_run`.
+    journal_path, _, _ = _paths(settings)
+    journal = load_journal(journal_path)
+
     plan = assemble(settings, ctx.df, ctx.regime, holdings,
                     correlations=ctx.correlations,
-                    events=all_events, blind=blind)
+                    events=all_events, blind=blind,
+                    risk_panel=ctx.risk_panel, journal=journal)
     pd.DataFrame(plan["orders"]).to_csv(settings.output_dir / "ticket.csv", index=False)
 
     perf = build_performance(
@@ -414,7 +440,8 @@ def render(ctx: RunContext) -> Path:
         from report.journal_view import (cash_form, cli_fallback, dividend_form,
                                          journal_panels, trade_form)
 
-        ledger_html = journal_panels(settings, prices=plan["prices"])
+        ledger_html = journal_panels(settings, prices=plan["prices"],
+                                     exit_plans=plan.get("exit_plans"))
         live = _desktop_available() and not getattr(args, "browser", False)
         trade_form_html = trade_form() if live else cli_fallback()
         cash_form_html = cash_form() if live else ""
@@ -446,6 +473,8 @@ def render(ctx: RunContext) -> Path:
             perf=perf, fetched_at=ctx.fetched_at, sessions=ctx.sessions,
             verdict=_backtest_verdict(settings, logger),
             book_correlation=plan.get("book_correlation"),
+            exit_plans=plan.get("exit_plans"), open_risk=plan.get("open_risk"),
+            exit_cfg=ExitConfig.from_settings(settings),
         ),
         settings.output_dir,
     )

@@ -241,9 +241,102 @@ def regime_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
     return pd.DataFrame(rows)
 
 
+# -------------------------------------------------------- 3b. do the exits help?
+def exit_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
+                trend_ma=200, deploy_ladder=(0.30, 0.60, 1.00),
+                atr_panel=None) -> pd.DataFrame:
+    """
+    Holding to the next rebalance, against stopping out and taking profit in stages.
+
+    The question the exit feature has to answer for itself. It is not obviously
+    going to: selling more often costs more, and at Rp10 juta the Rp10,000 stamp
+    on every selling day is a large fraction of a Rp800,000 trim. So the table
+    reports **fees and selling days beside the return**, and the honest reading of
+    a small CAGR gain with a big fee bill is that nothing was gained.
+
+    Drawdown is the column to watch. A stop is not a return generator -- from a
+    random entry on this universe a +1R target arrived 38.6% of the time and the
+    stop first 37.4%, near enough a coin flip. What a stop does is shorten the
+    left tail, and that is a legitimate trade even when it costs return.
+    """
+    from portfolio.exits import ExitConfig
+
+    base = getattr(cfg, "exits", None) or ExitConfig()
+    variants = [
+        ("Hold to the rebalance (no stops)", None),
+        (f"Stop only, {base.k_atr:g}x ATR",
+         ExitConfig(**{**base.__dict__, "ladder": (), "ladder_fractions": ()})),
+        (f"Stop + ladder, {base.k_atr:g}x ATR (shipped)", base),
+        ("Stop + ladder, 2.0x ATR", ExitConfig(**{**base.__dict__, "k_atr": 2.0})),
+        ("Stop + ladder, 3.0x ATR", ExitConfig(**{**base.__dict__, "k_atr": 3.0})),
+    ]
+
+    rows = []
+    for label, ecfg in variants:
+        c = BacktestConfig(**{**cfg.__dict__, "exits": ecfg})
+        r = run_backtest(panel, capital, c, fee_cfg, sectors, benchmark, fx,
+                         trend_ma, deploy_ladder, atr_panel=atr_panel)
+        if r.equity.empty:
+            continue
+        m = r.metrics()
+        rows.append({
+            "variant": label,
+            "cagr_pct": m.get("cagr"),
+            "max_drawdown_pct": m.get("max_drawdown"),
+            "sharpe": m.get("sharpe"),
+            "fees_paid_rp": round(float(r.fees_paid)),
+            "sell_days": int(r.n_sell_days),
+            "exit_sales": int(r.n_exit_sales),
+        })
+    return pd.DataFrame(rows)
+
+
+def exit_verdict(exits: pd.DataFrame) -> Dict[str, Optional[float]]:
+    """
+    What the exits did, against holding, in the three numbers that decide it.
+
+    Read by the brief on every run, so the panel telling you to sell at Rp1,800
+    can say whether that rule has ever been worth following here.
+    """
+    out = {"cagr_gap_pp": None, "drawdown_gap_pp": None, "sharpe_gap": None,
+           "extra_fees_rp": None, "extra_sell_days": None, "shipped": None,
+           "stop_only_cagr_gap_pp": None, "stop_only_sharpe_gap": None}
+    if exits is None or exits.empty or len(exits) < 3:
+        return out
+
+    hold = exits.iloc[0]
+    shipped = exits[exits["variant"].str.contains("shipped")]
+    if shipped.empty:
+        return out
+    ship = shipped.iloc[0]
+
+    def gap(row, col):
+        a, b = hold.get(col), row.get(col)
+        return None if a is None or b is None or pd.isna(a) or pd.isna(b) else round(float(b - a), 2)
+
+    out.update({
+        "shipped": str(ship["variant"]),
+        "cagr_gap_pp": gap(ship, "cagr_pct"),
+        "drawdown_gap_pp": gap(ship, "max_drawdown_pct"),
+        "sharpe_gap": gap(ship, "sharpe"),
+        "extra_fees_rp": gap(ship, "fees_paid_rp"),
+        "extra_sell_days": gap(ship, "sell_days"),
+    })
+
+    # The row that decides whether the ladder should be on at all. On this universe
+    # a stop with no profit-taking beat both holding and the ladder, and reporting
+    # only the aggregate gap would let the ladder's cost read as the stop's.
+    solo = exits[exits["variant"].str.startswith("Stop only")]
+    if not solo.empty:
+        out["stop_only_cagr_gap_pp"] = gap(solo.iloc[0], "cagr_pct")
+        out["stop_only_sharpe_gap"] = gap(solo.iloc[0], "sharpe")
+    return out
+
+
 # ------------------------------------------------------------- 4. robustness
 def robustness_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
-                      trend_ma=200, deploy_ladder=(0.30, 0.60, 1.00)) -> pd.DataFrame:
+                      trend_ma=200, deploy_ladder=(0.30, 0.60, 1.00),
+                      atr_panel=None) -> pd.DataFrame:
     """
     Vary the settings and the window. An edge that survives only one configuration
     is not an edge.
@@ -253,7 +346,7 @@ def robustness_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
     def add(variant, over, start=None, end=None):
         c = BacktestConfig(**{**cfg.__dict__, **over, "start": start, "end": end})
         r = run_backtest(panel, capital, c, fee_cfg, sectors, benchmark, fx,
-                         trend_ma, deploy_ladder)
+                         trend_ma, deploy_ladder, atr_panel=atr_panel)
         if r.equity.empty:
             return
         m = r.metrics()
@@ -285,7 +378,8 @@ VERDICT_FILE = "backtest_verdict.json"
 
 def verdict_payload(factors: List[Comparison], robustness: pd.DataFrame,
                     survivorship: Dict[str, Optional[float]], cadence: str,
-                    costs: Optional[pd.DataFrame] = None) -> dict:
+                    costs: Optional[pd.DataFrame] = None,
+                    exits: Optional[pd.DataFrame] = None) -> dict:
     """
     What the backtest concluded, small enough for the brief to read on every run.
 
@@ -328,6 +422,10 @@ def verdict_payload(factors: List[Comparison], robustness: pd.DataFrame,
         # backtest ran on. At Rp10 juta this was the largest controllable effect in
         # the whole simulation and the ticket never mentioned it.
         "costs": _cost_summary(costs),
+        # What the stops and the ladder did against simply holding to the next
+        # rebalance. The exit panel puts a level to sell at on every position; this
+        # is what lets the page say whether following one has ever been worth it.
+        "exits": exit_verdict(exits),
     }
 
 
@@ -409,7 +507,7 @@ def robustness_verdict(table: pd.DataFrame) -> str:
 
 # ------------------------------------------------------------------- rendering
 def console_block(factors, costs, regimes, robustness, verdict, cadence, avg_names,
-                  survivorship=None) -> str:
+                  survivorship=None, exits=None) -> str:
     L = ["", "=" * 68, f"BACKTEST - {cadence} rebalance", "=" * 68, ""]
     for line in _wrap(CAVEAT, 66):
         L.append("  " + line)
@@ -450,7 +548,24 @@ def console_block(factors, costs, regimes, robustness, verdict, cadence, avg_nam
                  f"{_pct(r['max_drawdown_pct']):>8s}")
     L.append("")
 
-    L.append("4. DID IT SURVIVE BEING STRESSED?")
+    if exits is not None and not getattr(exits, "empty", True):
+        L.append("4. DO THE STOPS AND THE PROFIT LADDER HELP?")
+        L.append(f"   {'':34s} {'CAGR':>8s} {'maxDD':>8s} {'Sharpe':>7s} "
+                 f"{'fees':>11s} {'sell days':>10s}")
+        for _, r in exits.iterrows():
+            L.append(f"   {r['variant']:<34s} {_pct(r['cagr_pct']):>8s} "
+                     f"{_pct(r['max_drawdown_pct']):>8s} "
+                     f"{str(r['sharpe'] or '-'):>7s} {rp(r['fees_paid_rp']):>11s} "
+                     f"{int(r['sell_days']):>10d}")
+        for line in _wrap(
+            "Drawdown is the column to watch. A stop is not a return generator -- "
+            "from a random entry on this universe a +1R target arrived 38.6% of the "
+            "time and the stop first 37.4%. What it does is shorten the left tail, "
+            "and the fee column is what that costs.", 66):
+            L.append("     " + line)
+        L.append("")
+
+    L.append("5. DID IT SURVIVE BEING STRESSED?")
     for _, r in robustness.iterrows():
         L.append(f"   {r['variant']:<38s} {_pct(r['cagr_pct']):>8s} "
                  f"{_pct(r['max_drawdown_pct']):>8s}")
@@ -504,6 +619,27 @@ def render_html(sections: Dict[str, dict], survivorship: Optional[dict] = None) 
         rob_tbl = _table(["Variant", "CAGR", "Max drawdown", "Sharpe"], rob_rows,
                          num_cols={1, 2, 3})
 
+        exit_html = ""
+        exits = s.get("exits")
+        if exits is not None and not getattr(exits, "empty", True):
+            ex_rows = [[
+                _e(r["variant"]), _pct(r["cagr_pct"]), _pct(r["max_drawdown_pct"]),
+                str(r["sharpe"] or "-"), rp(r["fees_paid_rp"]), str(int(r["sell_days"])),
+            ] for _, r in exits.iterrows()]
+            exit_html = (
+                '<div class="card"><h3>4. Do the stops and the profit ladder help?'
+                "</h3>"
+                + _table(["Rule", "CAGR", "Max drawdown", "Sharpe", "Fees paid",
+                          "Selling days"], ex_rows, num_cols={1, 2, 3, 4, 5})
+                + '<div class="callout"><strong>Drawdown is the column to watch.'
+                  "</strong> A stop is not a return generator: measured over 1,705 "
+                  "simulated entries on this universe, a target one risk-unit above "
+                  "entry arrived 38.6% of the time and the stop first 37.4% &mdash; "
+                  "close to a coin flip, which is what a random walk implies. What a "
+                  "stop does is shorten the left tail. <strong>Fees paid</strong> and "
+                  "<strong>selling days</strong> are what that costs, and at Rp10 juta "
+                  "the Rp10,000 stamp on every selling day is most of it.</div></div>")
+
         body += f"""
 <h2>{_e(cadence)} rebalance</h2>
 <div class="kpis">{_kpi("Rebalances", str(s["n_rebalances"]))}
@@ -512,7 +648,8 @@ def render_html(sections: Dict[str, dict], survivorship: Optional[dict] = None) 
 <div class="card"><h3>1. Did the price factors beat the alternatives?</h3>{factor_tbl}</div>
 <div class="card"><h3>2. What does being small cost?</h3>{cost_tbl}</div>
 <div class="card"><h3>3. Does the risk-off ladder help?</h3>{reg_tbl}</div>
-<div class="card"><h3>4. Did it survive being stressed?</h3>{rob_tbl}
+{exit_html}
+<div class="card"><h3>5. Did it survive being stressed?</h3>{rob_tbl}
 <div class="callout">{_e(s["verdict"])}</div></div>"""
 
     return f"""<!doctype html>

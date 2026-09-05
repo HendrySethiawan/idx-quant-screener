@@ -214,6 +214,46 @@ def return_correlations(price_data: dict, window: int = 120) -> Optional[pd.Data
     return returns.corr(min_periods=20)
 
 
+# What the exit rules need from the price history, and nothing else. Close decides
+# whether a stop fired -- this tool has no live feed, so a rule triggering on an
+# intraday low would be describing prints it never sees -- and High carries the
+# water mark a trailing stop is measured down from.
+RISK_PANEL_FIELDS = ("Close", "High")
+RISK_PANEL_SESSIONS = 300
+
+
+def risk_panel(price_data: dict, sessions: int = RISK_PANEL_SESSIONS) -> dict:
+    """
+    A compact wide frame per field, for the exit plans.
+
+    `save_snapshot` deliberately leaves `price_data` out because nothing read it,
+    and 49 OHLCV frames would be the largest thing in the file. That stopped being
+    true when exits arrived: a stop needs the entry price against the last close,
+    and a trailing stop needs the high since entry, neither of which survives in
+    `df` -- which holds one row per ticker.
+
+    So this stores what is actually read: two fields, trimmed to the recent
+    sessions, as `{field: DataFrame(dates x tickers)}`. About a tenth of the raw
+    frames, and it keeps `render` off the network where the split requires it.
+    """
+    n = max(1, int(sessions))
+    out = {}
+    for field_name in RISK_PANEL_FIELDS:
+        series = {}
+        for ticker, frame in (price_data or {}).items():
+            if frame is None or getattr(frame, "empty", True) or field_name not in frame:
+                continue
+            col = frame[field_name].dropna()
+            if col.empty:
+                continue
+            idx = pd.DatetimeIndex(col.index)
+            col.index = idx.tz_localize(None) if idx.tz is not None else idx
+            series[ticker] = col[~col.index.duplicated(keep="last")]
+        if series:
+            out[field_name] = pd.DataFrame(series).sort_index().tail(n)
+    return out
+
+
 class DataFetcher:
     def __init__(self, settings: Settings):
         self.settings = settings

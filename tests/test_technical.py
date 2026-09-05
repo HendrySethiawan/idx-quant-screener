@@ -2,9 +2,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from analysis.technical import (DEFAULT_MARKET, compute_indicators,
-                                extract_latest_indicators,
-                                unmeasurable_factors)
+from analysis.technical import (DEFAULT_MARKET, average_true_range,
+                                compute_indicators, extract_latest_indicators,
+                                true_range, unmeasurable_factors)
 
 
 def test_indicator_columns_present(price_frame):
@@ -162,8 +162,25 @@ def test_a_suspended_price_cannot_support_volatility_or_momentum():
     vals[0] = 210.0
     blocked = unmeasurable_factors(_prices(vals), MARKET, vol_window=60)
 
-    assert set(blocked) == {"realized_vol", "mom_1m", "mom_6m", "mom_12m"}
+    assert set(blocked) == {"realized_vol", "mom_1m", "mom_6m", "mom_12m", "atr_14"}
     assert "no price change" in blocked["realized_vol"]
+
+
+def test_a_suspended_price_also_blocks_the_stop_distance():
+    """
+    `atr_14` carries no scoring weight, but a blocked one matters more than a
+    blocked factor does: a factor that cannot be measured scores a neutral zero,
+    while an ATR that cannot be measured puts the stop ON the entry price and
+    sells the position on its first tick. WIKA's real ATR is 0.00.
+    """
+    vals = np.full(300, 204.0)
+    vals[0] = 210.0
+    frame = compute_indicators(_frame(_prices(vals)))
+    latest = extract_latest_indicators(frame, MARKET, vol_window=60)
+
+    assert pd.isna(latest["atr_14"])
+    assert pd.isna(latest["atr_pct"])
+    assert "atr_14" in latest["price_note"]
 
 
 def test_a_price_pinned_at_the_floor_cannot_support_them_either():
@@ -249,3 +266,93 @@ def test_no_market_config_falls_back_to_the_shipped_defaults():
 def test_a_short_series_is_not_judged():
     assert unmeasurable_factors(_prices([100.0, 100.0, 100.0]), MARKET, 60) == {}
     assert unmeasurable_factors(None, MARKET, 60) == {}
+
+
+# ------------------------------------------------------------- ATR, for the stop
+# `realized_vol` answers "how volatile" as a percentage per year and is the right
+# thing to RANK on. A stop has to be a PRICE, and a price needs a rupiah distance,
+# which is what ATR supplies. Across the real universe the two disagree enough to
+# matter: 2.5 x ATR is 3.0% on BBSI and 16.8% on INET.
+
+def _ohlc(close, spread=0.0):
+    """A frame with a High/Low band `spread` wide around each close."""
+    return pd.DataFrame({
+        "Close": close,
+        "High": close * (1 + spread),
+        "Low": close * (1 - spread),
+        "Volume": pd.Series(np.full(len(close), 1e6), index=close.index),
+    })
+
+
+def test_atr_matches_wilders_smoothing_by_hand():
+    """
+    Wilder's, not a rolling mean. A constant true range smooths to itself, so the
+    recursion is pinned without needing a table of expected values -- and after
+    300 bars the warm-up from a first TR of zero has decayed to nothing.
+    """
+    close = _prices(np.arange(100, 400, dtype=float))     # +1 every session
+    out = compute_indicators(_ohlc(close), atr_window=14)
+    assert out["atr_14"].iloc[-1] == pytest.approx(1.0, abs=1e-6)
+
+
+def test_atr_uses_the_high_low_range_not_just_closes():
+    """
+    The reason the full bar matters. Two names whose closes crawl identically, one
+    of which swings 2% intraday, are not equally risky to hold -- and a
+    close-to-close measure would call them the same.
+    """
+    close = _prices(np.arange(1000, 1300, dtype=float))
+    calm = compute_indicators(_ohlc(close), atr_window=14)["atr_14"].iloc[-1]
+    wide = compute_indicators(_ohlc(close, spread=0.01),
+                              atr_window=14)["atr_14"].iloc[-1]
+
+    assert calm == pytest.approx(1.0, abs=1e-6)
+    assert wide > 20.0
+
+
+def test_atr_falls_back_to_close_to_close_without_high_and_low():
+    """
+    A session rebuilt from intraday bars can arrive without High/Low. The fallback
+    understates the range, so a stop built on it is TIGHTER than the truth -- the
+    safe direction to be wrong in.
+    """
+    close = _prices(np.arange(100, 400, dtype=float))
+    bare = pd.DataFrame({"Close": close})
+    assert average_true_range(bare, 14).iloc[-1] == pytest.approx(1.0, abs=1e-6)
+    assert true_range(bare).iloc[-1] == pytest.approx(1.0)
+
+
+def test_atr_pct_is_the_distance_as_a_share_of_the_price():
+    close = _prices(np.linspace(2000.0, 2200.0, 200))
+    out = compute_indicators(_ohlc(close, spread=0.005), atr_window=14)
+    latest = extract_latest_indicators(out)
+
+    assert latest["atr_pct"] == pytest.approx(
+        latest["atr_14"] / latest["last_close"] * 100, abs=1e-6)
+    assert 0 < latest["atr_pct"] < 5
+
+
+def test_a_flat_price_has_no_atr_to_speak_of():
+    """WIKA: 0.00. The exit rules read this as "no stop can be set here"."""
+    close = _prices(np.full(120, 204.0))
+    out = compute_indicators(_ohlc(close), atr_window=14)
+    assert out["atr_14"].iloc[-1] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_a_frozen_close_blocks_the_atr_even_with_a_wide_intraday_band():
+    """
+    Deliberate, and worth stating: a name whose close never moves is blocked
+    whatever its High and Low claim. On IDX an unchanged close for months is a
+    suspension, and the printed range around it is not something you can sell at.
+    """
+    close = _prices(np.full(200, 2000.0))
+    latest = extract_latest_indicators(
+        compute_indicators(_ohlc(close, spread=0.01)), MARKET, vol_window=60)
+    assert pd.isna(latest["atr_14"])
+
+
+def test_atr_reaches_the_indicator_snapshot():
+    close = _prices(np.arange(500, 700, dtype=float))
+    latest = extract_latest_indicators(compute_indicators(_ohlc(close, 0.005)))
+    assert latest["atr_14"] > 0
+    assert latest["atr_pct"] > 0

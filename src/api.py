@@ -815,6 +815,30 @@ class TerminalAPI:
         Portfolio value and unrealised P&L need live prices, so they carry whatever
         the last run fetched and are labelled as such. Realised profit, the monthly
         table and the round-trip list need no prices at all and are exact.
+
+        Exit plans are recomputed here too, from the cached price panel rather than
+        the network. Recording a trade is precisely when they change -- a sale
+        moves a position along its ladder, and a purchase creates one -- so a
+        ledger swap that left the Stop column reading "-" would be worse than not
+        showing it: it would say a position had no stop, which is a fact, and a
+        false one.
         """
         from report.journal_view import journal_panels
-        return journal_panels(self._settings, prices=self._prices)
+        return journal_panels(self._settings, prices=self._prices,
+                              exit_plans=self._exit_plans())
+
+    def _exit_plans(self) -> Dict[str, Any]:
+        """Never raises: a broken exit plan must not take the ledger down with it."""
+        ctx = self._ctx
+        if ctx is None or ctx.df is None:
+            return {}
+        try:
+            from report.assemble import build_exit_plans
+            plans, _, _ = build_exit_plans(
+                self._settings, ctx.df, self._prices,
+                risk_panel=ctx.risk_panel, journal=self._journal())
+            return plans
+        except Exception as e:
+            if self._logger:
+                self._logger.warning(f"Exit plans unavailable: {e}")
+            return {}

@@ -587,3 +587,240 @@ def test_the_two_benchmarks_state_which_basis_they_use():
     assert "PRICE" in out and "pays no dividends" in out      # the IHSG line
     assert "dividends included" in out                        # the watchlist line
     assert "same basis as your own total" in out
+
+
+# ===================================================================== EXITS
+# The tool decided what to buy and never decided what to sell. `build_orders`
+# emitted a sale for one reason only -- the name fell out of the target book on a
+# re-rank -- so a position could halve with nothing on the page mentioning it.
+
+def _plan_for(ticker="SRTG.JK", lots=10, entry=1938.68, price=1795.0, atr=55.42,
+              original=None):
+    from portfolio.exits import ExitConfig, plan_for
+    from portfolio.fees import FeeConfig
+
+    idx = pd.bdate_range("2026-08-26", periods=8)
+    closes = pd.Series(np.linspace(entry, price, len(idx)), index=idx)
+    return plan_for(ticker, lots, entry, closes, ExitConfig(), FeeConfig(),
+                    atr_rp=atr, entry_date=idx[0], high=closes,
+                    original_lots=original, capital_rp=10_000_000)
+
+
+def test_a_breached_stop_becomes_a_sell_in_the_ticket():
+    """The live case: SRTG bought at 1,938.68, stop 1,800, last close 1,795."""
+    plan = _plan_for()
+    alloc = Allocation(positions=[], budget=0, capital=10_000_000)
+    holdings = [Holding("SRTG.JK", lots=10, avg_price=1938.68)]
+
+    orders = build_orders(alloc, holdings, {"SRTG.JK": 1795.0},
+                          exit_plans={"SRTG.JK": plan})
+    sells = [o for o in orders if o["ticker"] == "SRTG.JK"]
+    assert len(sells) == 1
+    assert sells[0]["action"] == "SELL"
+    assert sells[0]["lots"] == 10
+    assert "1,800" in sells[0]["note"]
+    assert sells[0]["stop_rp"] == pytest.approx(1800.13, abs=0.02)
+
+
+def test_an_exit_is_not_also_emitted_by_the_rebalance():
+    """
+    The duplicate the ordering has to prevent: a name being stopped out AND
+    dropping from the target book would otherwise appear twice, once sold on the
+    stop and once sold on the re-rank.
+    """
+    plan = _plan_for()
+    alloc = Allocation(positions=[], budget=0, capital=10_000_000)
+    holdings = [Holding("SRTG.JK", lots=10, avg_price=1938.68)]
+
+    orders = build_orders(alloc, holdings, {"SRTG.JK": 1795.0},
+                          exit_plans={"SRTG.JK": plan})
+    assert [o["ticker"] for o in orders].count("SRTG.JK") == 1
+
+
+def test_a_trim_sells_only_the_stage():
+    from portfolio.exits import TRIM
+
+    plan = _plan_for(price=2100.0)      # past the +1R level of 2,077
+    assert plan.action == TRIM
+    alloc = Allocation(positions=[], budget=0, capital=10_000_000)
+    holdings = [Holding("SRTG.JK", lots=10, avg_price=1938.68)]
+
+    orders = build_orders(alloc, holdings, {"SRTG.JK": 2100.0},
+                          exit_plans={"SRTG.JK": plan})
+    row = next(o for o in orders if o["ticker"] == "SRTG.JK")
+    assert row["action"] == "SELL" and row["exit_kind"] == "TRIM"
+    assert row["lots"] == 4 and row["shares"] == 400
+
+
+def test_the_cooldown_blocks_a_re_buy():
+    from portfolio.sizing import Position
+
+    pos = Position("SRTG.JK", 1795.0, 5, 500, 897_500, 1.0, 1.0, 179_500)
+    alloc = Allocation(positions=[pos], budget=1_000_000, capital=10_000_000)
+
+    orders = build_orders(alloc, [], {"SRTG.JK": 1795.0}, cooling={"SRTG.JK": 7})
+    row = next(o for o in orders if o["ticker"] == "SRTG.JK")
+    assert row["action"] == "WAIT"
+    assert row["lots"] == 0 and row["rupiah"] == 0.0
+    assert "7 more sessions" in row["note"]
+
+
+def test_the_cooldown_also_blocks_topping_a_trimmed_position_back_up():
+    """
+    The bug the backtest found. Blocking only names you no longer hold left the
+    ladder undoing itself: trim 4 lots at +1R, and the next re-rank tops the
+    position straight back to target, paying both sides to end where it started.
+    """
+    from portfolio.sizing import Position
+
+    pos = Position("SRTG.JK", 1795.0, 10, 1000, 1_795_000, 1.0, 1.0, 179_500)
+    alloc = Allocation(positions=[pos], budget=2_000_000, capital=10_000_000)
+    holdings = [Holding("SRTG.JK", lots=6, avg_price=1938.68)]
+
+    orders = build_orders(alloc, holdings, {"SRTG.JK": 1795.0},
+                          cooling={"SRTG.JK": 8})
+    row = next(o for o in orders if o["ticker"] == "SRTG.JK")
+    assert row["action"] == "HOLD"
+    assert row["lots"] == 6                     # not topped back up to 10
+    assert "not topping this back up" in row["note"]
+
+
+def test_every_buy_carries_its_stop_and_what_it_risks(scored_df, settings_mock,
+                                                      regime_on):
+    """
+    The half of the request about going IN. A proposal is not "Rp1.2 juta of
+    BBRI"; it is "Rp83,000 at risk, 0.8% of everything you have".
+    """
+    df = scored_df.copy()
+    df["atr_14"] = [80.0, 55.0, 40.0, 30.0][: len(df)]
+    plan = assemble(settings_mock, df, regime_on, [])
+
+    buys = [o for o in plan["orders"] if o["action"] == "BUY"]
+    assert buys
+    for o in buys:
+        assert o["stop_rp"] < o["price"]
+        assert o["risk_rp"] > 0
+        assert o["risk_pct"] == pytest.approx(
+            o["risk_rp"] / settings_mock.capital_rp * 100, abs=1e-6)
+
+
+def test_the_ticket_shows_the_stop_column():
+    out = _render(orders=[{
+        "action": "BUY", "ticker": "BBRI.JK", "lots": 3, "shares": 300,
+        "price": 4150.0, "rupiah": 1_245_000, "note": "target weight 33%",
+        "stop_rp": 3950.0, "risk_rp": 60_000.0, "risk_pct": 0.6,
+        "risk_over": False, "risk_capped": False,
+    }])
+    assert ">Stop<" in out
+    assert "Rp3,950" in out
+    assert "risk Rp60,000" in out
+
+
+def test_a_position_over_the_risk_budget_is_flagged():
+    out = _render(orders=[{
+        "action": "BUY", "ticker": "INET.JK", "lots": 36, "shares": 3600,
+        "price": 366.0, "rupiah": 1_317_600, "note": "target weight 33%",
+        "stop_rp": 311.0, "risk_rp": 220_000.0, "risk_pct": 2.2,
+        "risk_over": True, "risk_capped": True,
+    }])
+    assert "pill warn" in out
+    assert "capped" in out
+
+
+def test_the_exit_panel_lists_the_whole_ladder():
+    from portfolio.exits import ExitConfig
+
+    out = _render(exit_plans={"SRTG.JK": _plan_for()}, exit_cfg=ExitConfig())
+    assert "Exit plan" in out
+    assert "SELL all 10" in out
+    assert "Rp2,077" in out and "Rp2,216" in out     # both rungs
+    assert "runs on the trailing stop" in out
+    assert "cannot watch these for you" in out
+
+
+def test_the_exit_panel_says_when_a_position_cannot_be_staged():
+    plan = _plan_for("BUVA.JK", lots=4, entry=790.0, price=800.0, atr=45.0)
+    out = _render(exit_plans={"BUVA.JK": plan})
+    assert "too small to stage" in out
+
+
+def test_the_book_risk_callout_totals_every_stop():
+    out = _render(open_risk={"total_rp": 740_000.0, "pct_of_capital": 7.4,
+                             "n_positions": 4, "n_without_stop": 0})
+    assert "Rp740,000" in out
+    assert "7.4% of your" in out
+
+
+def test_the_exit_evidence_is_quoted_from_the_backtest():
+    from report.brief import exits_note
+
+    note = exits_note({"cadence": "Monthly", "exits": {
+        "cagr_gap_pp": -13.3, "drawdown_gap_pp": -0.4, "sharpe_gap": -0.41,
+        "extra_fees_rp": 706_602.0, "extra_sell_days": 66,
+        "stop_only_cagr_gap_pp": 3.0}})
+    assert "cost 13.3pp a year" in note
+    assert "0.4pp deeper" in note
+    assert "monthly rebalance" in note
+    assert "paid Rp706,602 more in fees" in note
+
+
+def test_the_stop_without_the_ladder_is_reported_on_its_own():
+    """
+    The row that decides whether the ladder should be on at all. Reporting only the
+    combined gap would let the ladder's cost read as the stop's.
+    """
+    from report.brief import exits_note
+
+    note = exits_note({"cadence": "Monthly", "exits": {
+        "cagr_gap_pp": -13.3, "drawdown_gap_pp": -0.4, "sharpe_gap": -0.41,
+        "stop_only_cagr_gap_pp": 3.0}})
+    assert "no profit-taking at all" in note
+    assert "ahead of holding by <strong>3.0pp a year" in note
+    assert "16.3pp between them is the ladder" in note
+    assert "risk.ladder: []" in note
+
+
+def test_the_ladder_cost_is_named_even_when_both_variants_trail():
+    """
+    The weekly case. "The stop earns its place" is false there -- stop-only is also
+    behind -- but the gap between the two is still the ladder's own cost, and that
+    is the sentence that has to survive both signs.
+    """
+    from report.brief import exits_note
+
+    note = exits_note({"cadence": "Weekly", "exits": {
+        "cagr_gap_pp": -12.6, "drawdown_gap_pp": -0.1, "sharpe_gap": -0.42,
+        "stop_only_cagr_gap_pp": -6.3}})
+    assert "behind holding by <strong>6.3pp a year" in note
+    assert "6.3pp between them is the ladder" in note
+    assert "earns its place" not in note
+
+
+def test_no_ladder_cost_claim_when_the_ladder_did_not_cost():
+    from report.brief import exits_note
+
+    note = exits_note({"cadence": "Monthly", "exits": {
+        "cagr_gap_pp": 2.0, "drawdown_gap_pp": 1.0, "sharpe_gap": 0.1,
+        "stop_only_cagr_gap_pp": 1.0}})
+    assert "is the ladder" not in note
+
+
+def test_a_saved_fee_is_not_reported_as_a_cost():
+    """
+    The cooldown can CUT turnover, so the gap goes negative. Printing "paid
+    Rp-47,040 more" was the first thing the real backtest produced.
+    """
+    from report.brief import exits_note
+
+    note = exits_note({"cadence": "Weekly", "exits": {
+        "cagr_gap_pp": -11.5, "drawdown_gap_pp": -0.3, "sharpe_gap": -0.37,
+        "extra_fees_rp": -47_040.0, "extra_sell_days": 54}})
+    assert "saved Rp47,040 in fees" in note
+    assert "Rp-47,040" not in note
+    assert "0.3pp deeper" in note
+
+
+def test_no_backtest_means_no_exit_claim():
+    from report.brief import exits_note
+    assert exits_note(None) == ""
+    assert exits_note({"cadence": "Monthly"}) == ""

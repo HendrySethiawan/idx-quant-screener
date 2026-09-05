@@ -270,10 +270,42 @@ def monthly_table(monthly, totals) -> str:
     )
 
 
-def open_positions_table(positions) -> str:
+def _exit_cells(plan) -> str:
+    """
+    The stop and the next step, for a table that is otherwise about the past.
+
+    Two columns rather than the full ladder: this page is where you REVIEW
+    positions, and the whole plan lives on the Markets page where you act on it.
+    What is needed here is enough to notice that something wants attention.
+    """
+    if plan is None:
+        return ('<td class="num"><span class="note">-</span></td>'
+                '<td><span class="note">-</span></td>')
+
+    stop = '<span class="note">none</span>'
+    if plan.stop_rp:
+        stop = (f'{rp(plan.stop_rp)}<br><span class="note">{_e(plan.stop_kind)}'
+                + (f", {plan.to_stop_pct:+.1f}%" if plan.to_stop_pct is not None else "")
+                + "</span>")
+
+    cls = {"EXIT": "bad", "TRIM": "warn"}.get(plan.action, "")
+    verb = plan.action
+    if plan.action == "TRIM":
+        verb = f"trim {plan.action_lots} lot"
+    elif plan.action == "EXIT":
+        verb = f"sell all {plan.action_lots}"
+    elif plan.action == "HOLD" and plan.next_stage is not None:
+        verb = f"hold &rarr; trim at {rp(plan.next_stage.level_rp)}"
+
+    return (f'<td class="num">{stop}</td>'
+            f'<td><span class="pill {cls}">{verb}</span></td>')
+
+
+def open_positions_table(positions, exit_plans=None) -> str:
     if positions is None or getattr(positions, "empty", True):
         return '<div class="empty">Nothing open.</div>'
 
+    exit_plans = exit_plans or {}
     body = ""
     for _, r in positions.iterrows():
         pct = r["unrealized_pct"]
@@ -285,7 +317,9 @@ def open_positions_table(positions) -> str:
             f'<td class="num">{rp(r["value_now"])}</td>'
             f'<td class="num">{_signed(r["unrealized_pnl"])}</td>'
             f'<td class="num">{"-" if pct is None else _signed(pct, lambda v: f"{v:+.1f}%")}'
-            f"</td></tr>"
+            "</td>"
+            + _exit_cells(exit_plans.get(r["ticker"]))
+            + "</tr>"
         )
 
     return (
@@ -293,10 +327,13 @@ def open_positions_table(positions) -> str:
         '<th>Ticker</th><th class="num">Size</th><th class="num">YOUR avg cost</th>'
         '<th class="num">Cost basis</th><th class="num">Value now</th>'
         '<th class="num">Unrealised</th><th class="num">%</th>'
+        '<th class="num">Stop</th><th>Next step</th>'
         f"</tr></thead><tbody>{body}</tbody></table></div>"
         '<div class="note">Average cost includes the buy fee you actually paid, so '
         "this is the price the position has to beat to be genuinely ahead. Prices are "
-        "from the last run, not live.</div>"
+        "from the last run, not live &mdash; and so is the stop, which is checked "
+        "against the last close rather than watched. The full ladder for each "
+        "position is on the <strong>Markets</strong> page.</div>"
     )
 
 
@@ -612,7 +649,8 @@ python main.py --mark                     # snapshot value vs IHSG
 python main.py --event ADRO earnings 2026-08-27</pre>"""
 
 
-def journal_panels(settings, prices: Optional[Dict[str, float]] = None) -> str:
+def journal_panels(settings, prices: Optional[Dict[str, float]] = None,
+                   exit_plans: Optional[Dict[str, object]] = None) -> str:
     """
     Every panel that depends on the journal alone.
 
@@ -638,7 +676,7 @@ def journal_panels(settings, prices: Optional[Dict[str, float]] = None) -> str:
 
     return (
         f'<h2>Realised, by month</h2>{monthly_table(monthly, totals)}'
-        f'<h2>Still open</h2>{open_positions_table(positions)}'
+        f'<h2>Still open</h2>{open_positions_table(positions, exit_plans)}'
         f'<h2>Every completed round-trip</h2>{closed_trades_table(closed)}'
         f'<h2>Everything you recorded</h2>{trade_log_table(journal)}'
         f'<h2>Money in and out</h2><div id="cash-log">{cash_table(cash)}</div>'
