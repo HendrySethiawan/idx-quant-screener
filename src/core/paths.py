@@ -33,14 +33,26 @@ import sys
 from pathlib import Path
 from typing import List, Tuple
 
-# Copied out on first run: (bundled source, destination beside the exe).
+# Copied out on first run: (bundled source, destination, refresh on upgrade?).
 # `configs/user.yaml` is deliberately NOT here and must never be -- it holds the
 # reader's real capital, and shipping it inside a distributable binary would put a
 # private number into every copy handed to anyone else.
-_SEED_FILES: Tuple[Tuple[str, str], ...] = (
-    ("configs/default.yaml", "configs/default.yaml"),
-    ("configs/events.example.yaml", "configs/events.example.yaml"),
-    ("current_holdings.example.yaml", "current_holdings.example.yaml"),
+#
+# The third field is the fix for a bug that made every config change since the
+# first launch invisible to the packaged app. `default.yaml` is APP-OWNED: it holds
+# the ticker universe, the broker fees, the factor weights and the IDX market rules,
+# and the reader's own settings live in `user.yaml`, which is applied on top of it.
+# Seeding it once and never again meant a new build shipped a new universe that
+# nobody running the exe would ever see -- verified: a build carrying 74 tickers
+# analysed 49, because the copy from the first install was still on disk. It would
+# have silently swallowed the BEI Rp50 -> Rp1 minimum-price change too.
+#
+# The example files are refreshed for the same reason. Anything the reader edits is
+# either not here at all, or is the non-.example twin of one of these.
+_SEED_FILES: Tuple[Tuple[str, str, bool], ...] = (
+    ("configs/default.yaml", "configs/default.yaml", True),
+    ("configs/events.example.yaml", "configs/events.example.yaml", True),
+    ("current_holdings.example.yaml", "current_holdings.example.yaml", True),
 )
 
 _SEED_DIRS: Tuple[str, ...] = ("configs", "data", "data/output", "logs")
@@ -143,10 +155,16 @@ def bootstrap(chdir: bool = True) -> List[Path]:
     """
     Make the app's folder usable, and return the files that were created.
 
-    Idempotent, and it never overwrites something that already exists. That matters
-    most for `configs/user.yaml`: it holds the reader's capital, and a launcher that
-    reset it every run would be worse than no launcher at all. Nothing here touches
-    that file -- it is created by `save_user_overrides` or by hand.
+    Idempotent. It never touches anything the reader owns -- above all
+    `configs/user.yaml`, which holds their capital, and which a launcher that reset
+    it every run would ruin. That file is not in `_SEED_FILES` and must never be.
+
+    It does refresh the app's OWN files when a new build ships a different version
+    of one. Not doing that was a bug with no symptom: the universe, the broker fees
+    and the IDX market rules all live in `default.yaml`, so a build shipping 74
+    tickers went on analysing the 49 seeded at first install. A replaced file is
+    kept alongside as `<name>.replaced` so a hand edit is recoverable rather than
+    lost -- and `user.yaml` remains the right place to put one.
     """
     base = data_dir()
     if chdir and is_frozen():
@@ -163,13 +181,23 @@ def bootstrap(chdir: bool = True) -> List[Path]:
             target.mkdir(parents=True, exist_ok=True)
             created.append(target)
 
-    for src_rel, dst_rel in _SEED_FILES:
+    for src_rel, dst_rel, refresh in _SEED_FILES:
         target = base / dst_rel
-        if target.exists():
-            continue
         source = bundled(src_rel)
         if not source.exists():
             continue
+
+        if target.exists():
+            # Byte comparison, not a timestamp: an unzip or a file copy can leave
+            # mtimes in any order, and "the shipped one is newer" is not the
+            # question. "Are they the same file" is.
+            if not refresh or _same_file(source, target):
+                continue
+            try:
+                shutil.copyfile(target, target.with_suffix(target.suffix + ".replaced"))
+            except OSError:
+                pass
+
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
             shutil.copyfile(source, target)
@@ -181,3 +209,12 @@ def bootstrap(chdir: bool = True) -> List[Path]:
             pass
 
     return created
+
+
+def _same_file(a: Path, b: Path) -> bool:
+    """Contents, not metadata. False on any read error, which re-copies -- the
+    cheap direction to be wrong in."""
+    try:
+        return a.read_bytes() == b.read_bytes()
+    except OSError:
+        return False
