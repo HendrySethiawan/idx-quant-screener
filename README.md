@@ -3,7 +3,7 @@
 A personal stock screener for the **Indonesia Stock Exchange**, built for one
 investor with a small account and a lunch break.
 
-It ranks ~49 IDX names on a transparent multi-factor score, then does the part most
+It ranks 74 IDX names on a transparent multi-factor score, then does the part most
 screeners skip: it works out **what you can actually buy** — whole 100-share lots,
 inside your capital, in stocks liquid enough to sell again — and costs it against
 your real broker fees. The output is a single HTML page you read in about ten
@@ -22,7 +22,7 @@ window. Five destinations on a left rail:
 |---|---|
 | **Markets** | The decision. Ticket, IHSG, your capital, candidates, events, holdings |
 | **Portfolio** | Record a trade, and the ledger: monthly profit, open positions, every round-trip |
-| **Screener** | All 49 names and the evidence behind the ranking |
+| **Screener** | All 74 names and the evidence behind the ranking |
 | **Why** | The decision, stage by stage, plus a lookup for any name |
 | **Settings** | The broker fees, gates and factor weights driving every rule |
 
@@ -41,19 +41,19 @@ and never open the other four:
 | Events next 14 days | Earnings, ex-dividend, index reviews — labelled auto / you / est. |
 | How you're doing | Realised P&L net of fees, and your total versus the same money in IHSG |
 
-**Why** is how it got there — the chain from 49 names to today's ticket:
+**Why** is how it got there — the chain from 74 names to today's ticket:
 
 | Section | What it answers |
 |---|---|
-| The funnel | Every stage with its counts: `49 → 49 → 45 → 45 → 8 → 3` |
+| The funnel | Every stage with its counts: `74 → 74 → 70 → 70 → 8 → 3` |
 | One card per stage | The rule in plain words, the config key that sets it, and every name it dropped with the reason that gate gave |
-| **Why wasn't this suggested?** | Type any ticker — all 49, including names cut at the first gate — and see exactly where it stopped |
+| **Why wasn't this suggested?** | Type any ticker — all 74, including names cut at the first gate — and see exactly where it stopped |
 
 **Screener** is the evidence behind it:
 
 | Section | What it answers |
 |---|---|
-| Every stock, every factor | All 49 names with all 10 z-scores. Click any column to sort |
+| Every stock, every factor | All 74 names with all 10 z-scores. Click any column to sort |
 | **What is it worth?** | The arithmetic behind every verdict: EPS, book value, peer multiples, both estimates, peer group |
 | Why these scored what they scored | Signed factor contributions per pick — which factor actually drove it |
 | Are the factors independent? | Correlation heatmap. Momentum counted three times is one factor, not three |
@@ -67,7 +67,7 @@ and never open the other four:
 
 A left rail of destinations, a dense grid of panels, dark. **The window never
 scrolls** — `html, body { overflow: hidden }` — so the ticket stays where you left it
-while you read a 49-row table beside it. Only panel bodies scroll. Below 900px that
+while you read a 74-row table beside it. Only panel bodies scroll. Below 900px that
 is lifted and the page scrolls normally, because a phone has no room for panels.
 
 Three breakpoints, not two: a single jump from three columns to one leaves the
@@ -77,7 +77,7 @@ Tables scroll sideways rather than compressing.
 **Rebuild and Re-run** sit in the top bar with their real cost on the label. Rebuild
 redraws from what is already loaded in about two seconds — that is the one you want
 after recording a trade or changing a setting, since the market has not moved.
-Re-run screen fetches all 49 tickers again and re-ranks, about forty seconds. Both
+Re-run screen fetches every ticker again and re-ranks, about a minute. Both
 appear only once the app has answered, because a refresh button that cannot refresh
 is the same lie as a form with nothing behind it.
 
@@ -154,7 +154,7 @@ in a spec file is a promise, and this is a check. It caught a real one on the fi
 run: the example capital I had written into the bundled README happened to be the
 same number as the real one.
 
-First run fetches ~2 years of prices for 49 tickers and takes a minute or two;
+First run fetches ~2 years of prices for 74 tickers and takes a minute or two;
 afterwards the cache makes it fast.
 
 The window comes from `pywebview`, which wraps the OS webview — on Windows that is
@@ -268,9 +268,9 @@ python main.py --event MSCI review 2026-08-28 --note "Aug index review"
 python main.py --events                             # what's coming, and what we can't see
 ```
 
-Yahoo Finance has an earnings date for only **16 of the 49** names — the gaps include
-SRTG, TINS, TAPG, MAPI, ISAT, ITMG and KLBF. So `configs/events.yaml` is the primary
-source and yfinance fills in a third of it.
+Yahoo Finance has an earnings date for only about a third of the universe — the gaps
+include SRTG, TINS, TAPG, MAPI, ISAT, ITMG and KLBF. So `configs/events.yaml` is the
+primary source and yfinance fills in the rest.
 
 Because of that gap, every name resolves to one of three visibly different states, and
 the third is the important one:
@@ -343,29 +343,43 @@ the name straight back in the target book, and you pay both sides to end up exac
 where you started. It blocks any *increase*, not just a re-entry, so the ladder
 cannot undo itself by topping a trimmed position back up.
 
-### What the ladder measured, which is not what you would hope
+### What the ladder measured, and how much the answer depends on how often you re-rank
 
 From a random entry, +1R arrived 38.6% of the time and the stop first 37.4% — near a
 coin flip, which is what a random walk implies. The ladder narrows the spread of
-outcomes; it does not create return. `--backtest` measures what it actually did:
+outcomes; it does not create return. What `--backtest` measures is whether that
+narrowing is worth paying for, and **the answer differs by cadence**:
 
-| Monthly rebalance | CAGR | Max drawdown | Sharpe | Fees | Selling days |
+| **Weekly** re-rank | CAGR | Max drawdown | Sharpe | Fees | Selling days |
 |---|---|---|---|---|---|
-| Hold to the rebalance | +25.1% | −16.3% | 0.81 | Rp1,162,256 | 41 |
-| **Stop only, 2.5 × ATR** | **+28.1%** | −16.4% | **0.87** | Rp1,408,815 | 55 |
-| Stop + ladder (shipped) | +11.8% | −16.7% | 0.40 | Rp1,868,858 | 107 |
+| Hold to the rebalance | **+34.5%** | −31.6% | 1.16 | Rp4,480,878 | 167 |
+| Stop only, 2.5 × ATR | +33.8% | −19.5% | 1.30 | Rp3,924,705 | 171 |
+| **Stop + ladder (shipped)** | +31.1% | **−10.7%** | **1.61** | Rp4,612,458 | 255 |
 
-Weekly is the same shape. **The stop earns its place; the ladder does not.** On this
-universe a stop with no profit-taking beat holding on return *and* Sharpe for
-Rp250,000 of extra fees, while adding the ladder cost 13 percentage points a year and
-did not even buy a shallower trough.
+| **Monthly** re-rank | CAGR | Max drawdown | Sharpe | Fees | Selling days |
+|---|---|---|---|---|---|
+| Hold to the rebalance | +31.7% | −30.7% | 0.98 | Rp1,532,495 | 41 |
+| **Stop only, 2.5 × ATR** | **+37.9%** | −25.8% | **1.09** | Rp1,749,080 | 51 |
+| Stop + ladder (shipped) | +21.3% | −16.7% | 0.80 | Rp2,069,066 | 112 |
 
-That is not surprising in hindsight. The backtestable part of this strategy is
-momentum, and momentum lives in its right tail — a rule that systematically sells the
-names that are running removes exactly the outcomes it depends on.
+**On a weekly re-rank the ladder is the best risk-adjusted rule on the page.** It
+gives up 3.4 points of return and buys a drawdown a third the size — −10.7% against
+−31.6% — lifting Sharpe from 1.16 to 1.61. At 1–2 trades a week, that is the row
+that describes you.
 
-**The ladder ships on anyway, because it is what was asked for, and one line turns it
-off.** In `configs/user.yaml`:
+**On a monthly re-rank it is not.** There a stop with no profit-taking wins on both
+return and Sharpe, and the ladder costs 10 points.
+
+> **This conclusion reversed once the universe grew.** On the old 49-name list the
+> ladder lost at both cadences and this section said so. With 74 names across 11
+> properly scored sectors there are more independent trends, so trimming one winner
+> no longer removes the whole edge while the drawdown protection still compounds.
+> The ranking itself moved the same way: it went from **costing** 0.6pp a year
+> against an equal-weight universe to **adding 9.3pp**. Re-run `--backtest` after any
+> universe change; these numbers are not constants.
+
+**One line turns the ladder off** if you prefer the monthly-style result. In
+`configs/user.yaml`:
 
 ```yaml
 risk:
@@ -373,11 +387,10 @@ risk:
   ladder_fractions: []
 ```
 
-Caveats that cut the other way: the backtest reconstructs only 3.0 of the 9.0 factor
-weight, on a survivorship-biased universe, over one regime — and it rebalances on a
-fixed calendar, which is not how anyone actually trades. It disqualifies; it does not
-validate. But a 13-point gap is large enough to want a reason to ignore, and the page
-says so wherever it quotes an exit level.
+Caveats that cut against all of it: the backtest reconstructs only 3.0 of the 9.0
+factor weight, on a survivorship-biased universe, over one regime — and it rebalances
+on a fixed calendar, which is not how anyone actually trades. It disqualifies; it
+does not validate.
 
 **It cannot watch these levels for you.** The tool reads daily closes and has no
 live feed, so a level is checked once per session against the close — never
@@ -466,7 +479,7 @@ df["undervaluation_score"] = (raw - raw.min()) / (raw.max() - raw.min())
 ```
 
 So exactly one stock scores 1.00 and one scores 0.00 on every run, whatever the market
-is doing. In a bubble the top name still reads 1.00. It answers *"which of these 49"*,
+is doing. In a bubble the top name still reads 1.00. It answers *"which of these 74"*,
 which is the question the ticket needs — but it is a ranking wearing a valuation's name,
 and the brief labels it **Rank score** for that reason.
 
@@ -494,8 +507,8 @@ Every name lands in one of five states, and none of them is silence:
 | No usable multiple | `cannot value — no usable P/E and no usable P/B` |
 | No price | `cannot value` |
 
-On the current run: 41 of 49 valued on both measures, 7 on one, 1 not at all — and 13 of
-those 41 carry the disagreement flag.
+On the current run: 64 of 74 valued on both measures, 10 on one, none refused — and 19 of
+those 64 carry the disagreement flag.
 
 **Two things it cannot see.** Everything is relative to other IDX names, so if the whole
 market is expensive everything still reads "in line". And it takes no view on whether a
@@ -515,6 +528,95 @@ yfinance supplies none of them, and a 1% change in the discount rate would move 
 more than everything else the tool measures. Cheapness against a stock's *own* 5-year
 average multiple would be better than peer-relative, and is blocked for the same reason
 the fundamentals cannot be backtested: yfinance gives a current snapshot only.
+
+---
+
+## The universe and how it was chosen
+
+74 IDX tickers, in `configs/default.yaml`. Nothing outside the list can ever be
+suggested however good it is, so **how the list was drawn matters as much as what
+is on it.**
+
+### The rule, and why it is blind to performance
+
+`--backtest` reports that simply holding all 74 equally returned **+29.8% a year
+against the index's +1.7%** — a 28-point gap from the ticker list alone, with no
+ranking, no sizing and no timing. That gap is an artifact: the list was drawn in
+2026, knowing which companies still exist. It is the largest single effect in the
+whole simulation and none of it is skill.
+
+Which means **any name added because it "looks good" is a name that looks good
+because it already went up.** Curating on merit would inflate that artifact and
+then call it a strategy. So every criterion is one you could have applied without
+knowing what the price did:
+
+| Criterion | Threshold | What it is really asking |
+|---|---|---|
+| Median daily traded value | ≥ Rp250 juta | Can you get back out? |
+| One lot | ≤ Rp1,000,000 | Fits a slot at Rp10 juta in a risk-off regime |
+| Price history | ≥ 273 sessions | 252 + 21, the minimum for 12-month momentum |
+| Measurable ATR | not null | No ATR means no stop can be set for it |
+| Sector floor | ≥ 5 per sector | Makes `min_sector_size` reachable everywhere |
+| Tie-break | most traded first | Liquidity rank, never return rank |
+
+Not used: past return, momentum, market cap, or an opinion of the business. Those
+are what the screener exists to discover.
+
+### What changed, and the check that it was honest
+
+Five names were removed for failing the liquidity gate on **every** run since it
+existed — they could never have been recommended:
+
+```
+WIKA  Rp0/day traded, 98% flat sessions, and no measurable ATR at all
+ADHI  Rp0/day traded, 62% flat sessions
+BBSI  Rp2.3 juta/day   against the Rp250 juta floor   (100x short)
+BTPN  Rp56 juta/day                                   (4.5x short)
+BNLI  Rp116 juta/day                                  (2.2x short)
+```
+
+Thirty were added, filling two sectors that were entirely absent — **Properties**
+and **Transportation** — and lifting four more above the scoring floor. Before the
+change, six of eleven IDX-IC sectors held fewer than `min_sector_size: 4` names,
+so `roe`, `gross_margin` and `debt_to_equity` were silently scored against the
+whole universe instead of against peers: a hospital's return on equity compared to
+a coal miner's.
+
+**The honesty check.** If the selection had quietly favoured winners, the
+survivorship gap would have widened. It did not:
+
+| | 49 names | 74 names |
+|---|---|---|
+| Equal-weight universe, CAGR | +29.7% | +29.8% |
+| Gap over the index | +28.0pp | +28.1pp |
+| **Share of names beating the index** | **78%** | **73%** |
+| Median name's total return | +96.8% | +95.4% |
+
+The gap is unchanged within noise and the share of index-beaters *fell*. That is
+what an outcome-blind rule looks like from the outside. Re-run `--backtest` and
+compare these two lines after any change to the list.
+
+Two side effects worth knowing:
+
+* **The ranking started working.** Against an equal-weight universe it went from
+  costing 0.6pp a year to **adding 9.3pp**. A ten-factor z-score needs a cross
+  section; 49 names with six broken sectors was not one.
+* **A full Update takes about a minute** instead of forty seconds, dominated by
+  fundamentals (0.61s a ticker against 0.07s for prices). Launches are unaffected —
+  they read the saved screen.
+
+### What is still on the list despite failing something
+
+* **GOTO** — pinned at the Rp50 minimum tradable price for 100% of the last 42
+  sessions, so it has no measurable ATR and the exit engine cannot give it a stop.
+  BEI's move of that floor to Rp1 was targeted **7 September 2026**; removing GOTO
+  days before the rule that unpins it would be the wrong moment. Worth checking
+  against idx.co.id.
+* **ITMG, UNTR** — one lot costs Rp2.6 and Rp2.5 juta, more than a risk-off slot at
+  this account size, so the sizer refuses them and says why. They become reachable
+  at full deploy.
+* **EMAS** — 231 sessions of history, so it scores neutral on 12-month momentum
+  until it has more. A recent listing, not a defect.
 
 ---
 
@@ -593,11 +695,15 @@ factor does at this account size:
 12. **A capped stop understates its own risk.** Past `max_stop_pct` the level is the
     cap rather than 2.5 × ATR, which makes the wildest names look like the safest.
     Those rows are flagged `capped` wherever the risk is shown.
-13. **The ladder did not pay for itself in the backtest.** A stop with no
-    profit-taking beat both holding and the ladder, on return and on Sharpe, at both
-    cadences. The ladder ships because it was asked for and because the simulation
-    tests a third of the score on a rigid calendar — but it is one config line to
-    turn off, and the page says so. See [When to get out](#when-to-get-out).
+13. **Whether the ladder pays for itself depends on how often you re-rank**, and it
+    reversed once the universe grew from 49 names to 74. Weekly it is the best
+    risk-adjusted rule measured; monthly a stop with no profit-taking beats it. One
+    config line turns it off. See [When to get out](#when-to-get-out).
+14. **The universe is 74 names chosen on structure, not on merit.** Liquidity, lot
+    price, history length and sector coverage — never past return. That keeps the
+    selection from inflating the survivorship artifact, but it also means no
+    judgement was applied about which businesses are good. See
+    [The universe](#the-universe-and-how-it-was-chosen).
 
 ---
 

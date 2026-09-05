@@ -207,12 +207,21 @@ def exits_note(verdict: Optional[dict]) -> str:
     ]
     if dd is not None:
         # A positive gap means a SHALLOWER trough: both figures are negative and
-        # the stopped one is closer to zero. Said in words, because "+5.8pp of
+        # the stopped one is closer to zero. Said in words, because "+20.9pp of
         # drawdown" reads like more drawdown to most people.
         bits.append(
             f"and made the worst drawdown "
             f"<strong>{abs(dd):.1f}pp {'shallower' if dd >= 0 else 'deeper'}</strong>")
     line = " ".join(bits) + "."
+
+    # The number that actually settles it. Giving up return for a smaller worst
+    # case is the whole trade, and Sharpe is the one figure that prices both at
+    # once -- a note quoting only the cost would be arguing one side of it.
+    sharpe = ex.get("sharpe_gap")
+    if sharpe is not None:
+        line += (f" Risk-adjusted that is "
+                 f"<strong>{sharpe:+.2f} of Sharpe</strong>, which is the number "
+                 f"that weighs the two against each other.")
 
     # The sign is not decoration. Turnover can fall as well as rise: the cooldown
     # stops the rebalance buying back what an exit just sold, and on this universe
@@ -623,12 +632,13 @@ def _exit_section(plans: Dict[str, object], exit_cfg=None) -> str:
         'simulated entries on this universe, a target one risk-unit above entry '
         'arrived 38.6% of the time and the stop first 37.4% &mdash; close to a coin '
         'flip, which is what a random walk implies. Trimming in stages narrows the '
-        'spread of outcomes; it does not create return. In the backtest it did worse '
-        'than that: a stop with <strong>no profit-taking at all</strong> beat both '
-        'holding and this ladder, on return and on Sharpe. Setting '
+        'spread of outcomes; it does not create return. What it buys is a smaller '
+        'worst case, and whether that is worth the return it costs has depended on '
+        'both the universe and how often you re-rank &mdash; the same rule lost at '
+        'every cadence on the older, narrower ticker list. Setting '
         '<code>risk.ladder: []</code> in <code>configs/user.yaml</code> keeps every '
         'stop below and drops the trims. Run <code>python main.py --backtest</code> '
-        'to see the table on your own data.</div>'
+        'to see the table on your own data rather than trusting this sentence.</div>'
     )
 
 
@@ -1028,7 +1038,10 @@ def render_brief(
         pages.append(T.Page(
             "screener", "Screener", "screener",
             T.grid([T.column([T.panel("The whole universe", advanced_html, grow=True)])]),
-            "All 49 names and the evidence"))
+            # From the frame, never a literal. This said "All 49 names" for a day
+            # after the universe grew to 74 -- a hardcoded count is a claim that
+            # goes quietly wrong the moment the thing it counts changes.
+            f"All {universe_n} names and the evidence"))
     if steps_html:
         pages.append(T.Page(
             "why", "Why", "why",
