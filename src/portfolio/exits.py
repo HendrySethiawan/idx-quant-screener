@@ -55,6 +55,10 @@ HOLD = "HOLD"
 TRIM = "TRIM"
 EXIT = "EXIT"
 NO_STOP = "NO STOP"
+# The entry price itself is not believable, so nothing computed from it is. Kept
+# apart from NO_STOP: that one means the PRICE SERIES cannot support a stop, this
+# one means the record of what you paid cannot.
+CHECK_ENTRY = "CHECK ENTRY"
 
 
 @dataclass(frozen=True)
@@ -136,6 +140,10 @@ class ExitPlan:
     stages: List[Stage] = field(default_factory=list)
     stages_done: int = 0
     stop_capped: bool = False
+    # Why the recorded entry price cannot be a real fill, or "" when it can.
+    # Set from `ledger.implausible_entries`; when present nothing else here is
+    # computed, because everything else is measured from that price.
+    entry_note: str = ""
 
     action: str = HOLD
     action_lots: int = 0
@@ -380,6 +388,7 @@ def plan_for(
     capital_rp: float = 0.0,
     price_note: str = "",
     original_lots: Optional[int] = None,
+    entry_note: str = "",
 ) -> ExitPlan:
     """
     One position, one verdict: HOLD, TRIM n lots, EXIT, or NO STOP.
@@ -409,6 +418,22 @@ def plan_for(
 
     plan.high_since_entry_rp = _high_since(high if high is not None else close,
                                            entry_date, plan.price_rp)
+
+    # Before any level is computed. Every number below -- the stop, the ladder, the
+    # rupiah at risk, the verdict -- is derived from the entry price, so an entry
+    # that cannot be a real fill produces a whole page of confident nonsense: an
+    # AMRT recorded at Rp50 against a Rp1,310 market gave a stop 2,976% away and a
+    # SELL in the ticket that existed only because of the typo.
+    if entry_note:
+        plan.entry_note = entry_note
+        plan.action = CHECK_ENTRY
+        plan.reason = f"the entry price is not believable — {entry_note}"
+        plan.notes.append(
+            "No stop, target or exit is set for this position: every one of them "
+            "is measured from the entry price, and this one cannot be right. Fix "
+            "the row in your ledger and the plan comes back."
+        )
+        return plan
 
     value = plan.shares * plan.entry_rp
     plan.initial_stop_rp = stop_level(plan.entry_rp, plan.atr_rp, cfg, fee_cfg, value)
@@ -539,7 +564,11 @@ def _decide(plan: ExitPlan, cfg: ExitConfig, fee_cfg: FeeConfig) -> None:
     plan.action = HOLD
     bits = [f"stop {plan.stop_rp:,.0f} ({plan.to_stop_pct:+.1f}%)"]
     if nxt is not None:
-        bits.append(f"next trim {nxt.level_rp:,.0f} ({plan.to_next_pct:+.1f}%)")
+        # "trim" only when there is something to trim. On a 1-lot position the
+        # single stage is a full exit, and calling it a trim gave an instruction
+        # that cannot be followed -- the same slip the Portfolio page made.
+        what = "next trim" if plan.staged else "sell at"
+        bits.append(f"{what} {nxt.level_rp:,.0f} ({plan.to_next_pct:+.1f}%)")
     plan.reason = ", ".join(bits)
 
 
@@ -554,6 +583,7 @@ def plans_for(
     history: Optional[Dict[str, Dict[str, object]]] = None,
     atr: Optional[Dict[str, float]] = None,
     price_notes: Optional[Dict[str, str]] = None,
+    entry_notes: Optional[Dict[str, str]] = None,
     capital_rp: float = 0.0,
 ) -> Dict[str, ExitPlan]:
     """
@@ -574,6 +604,7 @@ def plans_for(
     history = history or {}
     atr = atr or {}
     price_notes = price_notes or {}
+    entry_notes = entry_notes or {}
 
     for _, row in positions.iterrows():
         ticker = str(row["ticker"])
@@ -590,6 +621,7 @@ def plans_for(
             high=_column(highs, ticker),
             capital_rp=capital_rp,
             price_note=price_notes.get(ticker, ""),
+            entry_note=entry_notes.get(ticker, ""),
         )
     return out
 

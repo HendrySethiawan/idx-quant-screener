@@ -14,9 +14,16 @@ is identical on both sides by construction, but once positions are closed out yo
 position value is zero while the shadow may still hold units — comparing positions
 alone then reports "-100%", which means nothing.
 
-The shadow pays the same Indopremier fees, so the comparison isolates stock
-selection rather than fee structure. Caveat worth stating in output: IHSG is not
-directly buyable — a real index position would be an ETF with its own costs.
+**The shadow moves the NET cash, fees included** — the rupiah that actually left
+the account, not the gross value of the shares. That is what makes "cash is
+identical on both sides" true rather than merely stated: the shadow used to buy
+the pre-fee amount while your cash had been debited the full one, so the index was
+quietly short by every rupiah of brokerage you had paid and you appeared ahead by
+exactly that. Six trades read as Rp163,000 of outperformance when Rp160,118 was
+real. The comparison now isolates stock selection, as it always claimed to.
+
+Caveat worth stating in output: IHSG is not directly buyable — a real index
+position would be an ETF with its own costs, which this does not model.
 
 **The significance floor.** At 4-8 trades a month, three months is ~20 trades.
 Splitting that into tool-picked versus self-picked and declaring a winner would be
@@ -170,13 +177,20 @@ def index_shadow(journal: pd.DataFrame, close: Optional[pd.Series]) -> ShadowRes
         level = _price_asof(close, row["date"])
         if not level:
             continue
-        gross = float(row["gross_rp"])
+        # The NET cash that actually moved, not the gross. This used `gross_rp`,
+        # which is the pre-fee amount -- so the shadow bought less index than left
+        # your account while `shadow_total` went on adding YOUR cash to it. The two
+        # sides did not hold the same money, and the difference was exactly the
+        # brokerage you paid, credited to you. On six trades it read as Rp163,000
+        # of outperformance where Rp160,118 was real and Rp2,882 was your own fees.
+        # It is systematic, always in your favour, and grows with turnover.
+        moved = abs(float(row["net_rp"]))
 
         if str(row["action"]).upper() == "BUY":
-            out.units += gross / level
-            out.deployed += gross
+            out.units += moved / level
+            out.deployed += moved
         else:
-            wanted = gross / level
+            wanted = moved / level
             if wanted > out.units:
                 # Your picks outran the index far enough that the shadow cannot
                 # fund the same withdrawal. Flagged rather than silently clamped.
@@ -351,9 +365,12 @@ def evaluate(
     )
     if not perf.shadow.unavailable and perf.comparable:
         # Compare TOTAL WEALTH, not bare position value. The two sides share an
-        # identical cash balance by construction, but once positions are closed out
-        # your position value is 0 while the shadow may still hold units -- comparing
-        # positions alone then reads as "-100%", which is meaningless.
+        # identical cash balance because the shadow moves the same NET rupiah --
+        # which was the whole point of the fix above; while it deployed gross, this
+        # line was adding your (smaller) cash to a shadow that had spent less, and
+        # the gap was your own brokerage. Once positions are closed out your
+        # position value is 0 while the shadow may still hold units, so comparing
+        # positions alone would read as "-100%", which is meaningless.
         perf.shadow_total = perf.cash + perf.shadow.value_now
         perf.vs_ihsg_rp = perf.total_value - perf.shadow_total
         perf.vs_ihsg_pct = (

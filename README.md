@@ -411,7 +411,11 @@ same days, have done better in the index?**
 - **Cash-flow-matched IHSG shadow.** Every rupiah you put into a stock on a given day
   buys the same rupiah of `^JKSE` on that day. A plain percentage return is misleading
   when money goes in and out at irregular times. Comparison is on total wealth, since
-  both sides hold identical cash.
+  both sides hold identical cash — the **net** rupiah that left your account, fees
+  included. It used to deploy the pre-fee amount while adding your already-debited
+  cash to it, so the index was short by every rupiah of brokerage you had paid and
+  you appeared ahead by exactly that. On six trades it read as Rp163,000 of
+  outperformance when Rp160,118 was real.
 - **FIFO cost basis**, matching Indonesian broker statements, so the numbers reconcile
   against Indopremier.
 - **Every figure is net of fees.** A Rp45,000 gross gain on a Rp1.2 juta position is
@@ -498,6 +502,26 @@ So the yield is now computed from the dividend payments themselves, which ride a
 with the price history at no extra request. A list of dates and rupiah amounts cannot
 be misread, and every name now has a real figure — **74 of 74, where 23 used to be
 imputed**.
+
+### A mistyped entry price, caught while the position is still open
+
+`implausible()` has flagged an impossible **closed** round-trip since a mistyped
+SRTG entry showed +1412%. Nothing caught the same mistake while the position was
+still open. An AMRT recorded at **Rp50** against a **Rp1,310** market read as
++2,515% profit, produced a stop 2,976% away and a trim level of Rp58, and put a
+SELL in the ticket that existed only because of the typo.
+
+The entry is now checked against the close of the session the trade was made in —
+not today's close, which would flag a position that has genuinely tripled. The
+threshold is 50%, and it is not a preference: **IDX auto-rejection caps a day's
+move at 35% / 25% / 20%** by price tier, so a real fill can never be half the
+reference price away, while every dropped, extra or transposed digit is.
+
+A flagged position gets **no stop, no ladder and no exit order** — every one of
+those is measured from the entry price — and says so wherever it appears. It stays
+in the totals, and the headline names it: *"These totals include a position whose
+entry price looks wrong: AMRT. It carries Rp125,990 of the profit above."* Removing
+it silently would be the tool deciding which of your records to count.
 
 ### The fix that nearly did not reach you
 
@@ -801,7 +825,10 @@ factor does at this account size:
     reversed once the universe grew from 49 names to 74. Weekly it is the best
     risk-adjusted rule measured; monthly a stop with no profit-taking beats it. One
     config line turns it off. See [When to get out](#when-to-get-out).
-16. **The universe is 74 names chosen on structure, not on merit.** Liquidity, lot
+16. **A mistyped entry is flagged, not corrected.** The tool can tell that Rp50
+    cannot be an Alfamart fill; it cannot know whether you meant Rp1,310 or
+    Rp1,305. The row stays in your totals with a warning until you fix it.
+17. **The universe is 74 names chosen on structure, not on merit.** Liquidity, lot
     price, history length and sector coverage — never past return. That keeps the
     selection from inflating the survivorship artifact, but it also means no
     judgement was applied about which businesses are good. See

@@ -22,12 +22,13 @@ def _ihsg(start=6000.0, end=6000.0, days=400):
     return pd.Series(np.linspace(start, end, days), index=idx)
 
 
-def _journal(rows):
+def _journal(rows, cfg=None):
     """rows: (action, ticker, lots, price, date, source)"""
+    cfg = cfg or CFG
     df = pd.DataFrame(columns=J.TRADE_COLS)
     for action, ticker, lots, price, date, *rest in rows:
         source = rest[0] if rest else "tool"
-        trade = J.build_trade(action, ticker, lots, price, CFG,
+        trade = J.build_trade(action, ticker, lots, price, cfg,
                               journal=df, on_date=date, source=source)
         df = pd.concat([df, pd.DataFrame([trade])], ignore_index=True)
         df["date"] = pd.to_datetime(df["date"])
@@ -38,7 +39,12 @@ def _journal(rows):
 def test_flat_index_shadow_holds_its_value():
     j = _journal([("BUY", "BBRI", 3, 4150.0, "2026-02-01")])
     s = ihsg_shadow(j, _ihsg(6000, 6000))
-    assert s.value_now == pytest.approx(1_245_000, rel=1e-6)
+    # The NET cash that left the account: Rp1,245,000 of shares plus Rp2,365.50 of
+    # brokerage. The shadow used to deploy the gross figure while `shadow_total`
+    # added your (already debited) cash to it, so the index was short by exactly
+    # the fees you had paid and you appeared ahead by them.
+    assert s.value_now == pytest.approx(1_247_365.50, rel=1e-6)
+    assert s.deployed == pytest.approx(1_247_365.50, rel=1e-6)
 
 
 def test_rising_index_grows_the_shadow():
@@ -64,10 +70,45 @@ def test_shadow_mirrors_the_timing_of_each_flow():
 
 
 def test_sell_redeems_from_the_shadow():
+    """
+    A flat round trip does not leave the shadow at zero, and should not. You put
+    Rp1,247,365.50 in and took Rp1,231,389.50 out; the difference is the buy fee,
+    the sell fee and the stamp. The shadow mirrors those two cash flows, so it
+    still holds exactly what the round trip cost you -- which is the honest
+    answer to "would the same money have done better in the index".
+    """
     j = _journal([("BUY", "BBRI", 3, 4150.0, "2026-01-01"),
                   ("SELL", "BBRI", 3, 4150.0, "2026-06-01")])
     s = ihsg_shadow(j, _ihsg(6000, 6000))
-    assert s.value_now == pytest.approx(0.0, abs=1.0)
+
+    round_trip = 2_365.50 + 3_610.50 + 10_000.0      # buy fee, sell fee, stamp
+    assert s.value_now == pytest.approx(round_trip, abs=1.0)
+
+
+def test_a_flat_round_trip_leaves_you_behind_the_index_by_its_cost():
+    """
+    The property the gross version hid. Buying and selling at the same price with
+    a flat index makes nothing and costs Rp15,976 -- so the index investor moving
+    the same rupiah on the same days ends ahead by exactly that.
+    """
+    j = _journal([("BUY", "BBRI", 3, 4150.0, "2026-01-01"),
+                  ("SELL", "BBRI", 3, 4150.0, "2026-06-01")])
+    s = ihsg_shadow(j, _ihsg(6000, 6000))
+    assert s.value_now > 0, "the shadow must not silently absorb your fees"
+    assert s.value_now == pytest.approx(s.deployed - s.redeemed, abs=1.0)
+
+
+def test_a_zero_fee_broker_reproduces_the_old_figure():
+    """
+    Proof that the whole gap was fees and nothing else: with no brokerage and no
+    stamp, net equals gross and the shadow lands exactly where it used to.
+    """
+    from portfolio.fees import FeeConfig
+
+    free = FeeConfig(buy_fee=0.0, sell_fee=0.0, stamp_duty_rp=0.0)
+    j = _journal([("BUY", "BBRI", 3, 4150.0, "2026-02-01")], cfg=free)
+    s = ihsg_shadow(j, _ihsg(6000, 6000))
+    assert s.value_now == pytest.approx(1_245_000, rel=1e-6)
 
 
 def test_shortfall_is_flagged_not_silently_clamped():

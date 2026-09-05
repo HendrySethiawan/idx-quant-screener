@@ -102,7 +102,40 @@ def _yield_note(realised: dict) -> str:
     return ", ".join(f"{t.replace('.JK','')} {v:.1f}% on cost" for t, v in best)
 
 
-def brief_section(perf) -> str:
+def _bad_entry_note(bad_entries, positions) -> str:
+    """
+    Say what the totals contain, rather than quietly excluding it.
+
+    An entry price that cannot be a real fill produces profit that is not there --
+    an AMRT recorded at Rp50 against a Rp1,310 market showed +2,515% and put
+    Rp125,991 of the Rp160,118 headline into a single row. Removing it silently
+    would be the tool deciding which of your records to count; the number stays,
+    and it is named.
+    """
+    if not bad_entries:
+        return ""
+
+    contribution = 0.0
+    if positions is not None and not getattr(positions, "empty", True):
+        hit = positions[positions["ticker"].isin(bad_entries)]
+        contribution = float(pd.to_numeric(hit["unrealized_pnl"],
+                                           errors="coerce").fillna(0).sum())
+
+    names = ", ".join(html.escape(t.replace(".JK", "")) for t in sorted(bad_entries))
+    reason = html.escape(next(iter(bad_entries.values())))
+    amount = (f" It carries <strong>{rp(contribution)}</strong> of the profit above"
+              if contribution else "")
+    return (
+        f'<div class="callout" style="border-left-color:var(--bad)">'
+        f"<strong>These totals include a position whose entry price looks wrong: "
+        f"{names}.</strong>{amount} &mdash; {reason}. Nothing has been removed, so "
+        f"every figure on this page still adds up; but until that row is corrected "
+        f"the profit it shows is not real. Any row in your ledger below can be "
+        f"removed and re-entered.</div>"
+    )
+
+
+def brief_section(perf, bad_entries=None, positions=None) -> str:
     """HTML block for brief.html. Sits below the ticket: it reports the past."""
     if perf.total_value <= 0 and perf.n_closed == 0:
         return ""
@@ -205,6 +238,7 @@ def brief_section(perf) -> str:
     )
     return f"""
 <h2>How you're doing</h2>
+{_bad_entry_note(bad_entries, positions)}
 <div class="kpis">{kpis}</div>
 {deployed_note}
 <div class="card">{bench}{watchlist}{stamp}{verdict}</div>"""
@@ -288,17 +322,26 @@ def _exit_cells(plan) -> str:
                 + (f", {plan.to_stop_pct:+.1f}%" if plan.to_stop_pct is not None else "")
                 + "</span>")
 
-    cls = {"EXIT": "bad", "TRIM": "warn"}.get(plan.action, "")
+    cls = {"EXIT": "bad", "TRIM": "warn", "CHECK ENTRY": "warn",
+           "NO STOP": "warn"}.get(plan.action, "")
     verb = plan.action
     if plan.action == "TRIM":
         verb = f"trim {plan.action_lots} lot"
     elif plan.action == "EXIT":
         verb = f"sell all {plan.action_lots}"
     elif plan.action == "HOLD" and plan.next_stage is not None:
-        verb = f"hold &rarr; trim at {rp(plan.next_stage.level_rp)}"
+        # "trim at" only when there is something to trim. A 1-lot position is one
+        # decision, and the exit panel says so about the same plan -- this said
+        # "hold, then trim at Rp5,190" about a position that cannot be trimmed,
+        # so the two views of one plan gave different instructions.
+        act = "trim at" if plan.staged else "sell at"
+        verb = f"hold &rarr; {act} {rp(plan.next_stage.level_rp)}"
 
-    return (f'<td class="num">{stop}</td>'
-            f'<td><span class="pill {cls}">{verb}</span></td>')
+    cell = f'<span class="pill {cls}">{verb}</span>'
+    if plan.entry_note:
+        cell += f'<br><span class="note">{_e(plan.entry_note)}</span>'
+
+    return f'<td class="num">{stop}</td><td>{cell}</td>'
 
 
 def open_positions_table(positions, exit_plans=None) -> str:
