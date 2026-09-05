@@ -32,11 +32,24 @@ logger = setup_logger(Path("logs"))
 _INDEX_PREFIXES = ("^", ".JKSE", ".KS11")
 
 # yfinance -> our column names.
+#
+# Two dividend fields, on purpose. `dividendYield` is a FORWARD, indicated figure
+# and yfinance reports it on a percent scale; `trailingAnnualDividendYield` is a
+# fraction and is what actually reached shareholders over twelve months. They
+# disagree by about a factor of two across this universe (BBRI 12.26 vs 6.13,
+# UNVR 13.53 vs 6.67) and by infinitely more for a name whose payout stopped --
+# ADRO reported 8.63% forward in a year it paid nothing after the AADI spinoff.
+#
+# The scorer ranks on the trailing one, so the screener's promise and the dividend
+# ledger's record of what arrived finally measure the same quantity.
 _FUNDAMENTAL_MAP = {
     "market_cap": "marketCap",
     "pe_ratio": "trailingPE",
     "price_to_book": "priceToBook",
-    "dividend_yield": "dividendYield",
+    # The FORWARD, indicated yield only, and kept for comparison rather than for
+    # ranking. The scored `dividend_yield` is computed from the dividends actually
+    # paid -- see `technical.trailing_dividend_yield`.
+    "dividend_yield_forward": "dividendYield",
     "beta": "beta",
     "roe": "returnOnEquity",
     "gross_margin": "grossMargins",
@@ -44,8 +57,38 @@ _FUNDAMENTAL_MAP = {
 }
 
 
+# Columns a cached price frame must carry to be usable. `Dividends` is here
+# because the scored dividend yield is computed from it -- see
+# `analysis.technical.trailing_dividend_yield`.
+_REQUIRED_PRICE_COLS = ("Close", "Dividends")
+
+
 def is_index(ticker: str) -> bool:
     return any(ticker.startswith(p) for p in _INDEX_PREFIXES)
+
+
+def _stale_shape(record: dict) -> bool:
+    """
+    True when a cached fundamentals record predates a field the mapping now has.
+
+    Nothing to do with age. `dividend_yield` was repointed at a different yfinance
+    field, and every cached record written before that had no key for it -- so the
+    whole column would have read as missing for up to the cache TTL, switching a
+    weight-1.0 factor off with nothing on the page to say so.
+
+    The set must match EXACTLY, not merely contain what is wanted. When
+    `dividend_yield` later moved out of this mapping entirely, records still
+    carrying the obsolete key collided with the technical frame's column of the
+    same name -- pandas renamed both to `_x`/`_y`, `factor_weights` then found
+    neither, and the factor dropped out of the score without a word.
+
+    Checked by key presence, not by value: a genuine `None` from a company that
+    pays no dividend is an answer, and refetching it every run would be pointless.
+    """
+    if not isinstance(record, dict):
+        return True
+    expected = set(_FUNDAMENTAL_MAP) | {"ticker", "name", "fetch_note"}
+    return set(record) != expected
 
 
 def repair_price_to_book(info: dict, fx_usd_idr: Optional[float]) -> tuple[Optional[float], Optional[str]]:
@@ -296,8 +339,17 @@ class DataFetcher:
         if self._fresh(cache_path):
             try:
                 cached = joblib.load(cache_path)
-                logger.debug(f"Cache hit: {ticker} ({period})")
-                return cached
+                # Age is not the only way a cache goes stale; shape is the other.
+                # A frame written before `actions=True` has no Dividends column, so
+                # the yield would read as missing for every name until the TTL
+                # expired -- a weight-1.0 factor switching itself off quietly.
+                missing = [c for c in _REQUIRED_PRICE_COLS
+                           if c not in getattr(cached, "columns", [])]
+                if missing:
+                    logger.debug(f"Cache for {ticker} predates {missing}; refetching")
+                else:
+                    logger.debug(f"Cache hit: {ticker} ({period})")
+                    return cached
             except Exception as e:
                 # Swallow deliberately: letting this escape would make @retry
                 # reload the same corrupt pickle three times before failing.
@@ -307,6 +359,14 @@ class DataFetcher:
             ticker,
             period=period,
             auto_adjust=True,
+            # The dividends actually paid, which ride along with the prices at no
+            # extra request. Both of yfinance's summary yield fields are unusable:
+            # `dividendYield` is a forward estimate on a percent scale, and
+            # `trailingAnnualDividendYield` turns out to be the LAST payment over
+            # the price -- it reported 0.0 for PGAS three months after a Rp125.6
+            # dividend, and 6.13% for BBRI which paid Rp346 on a Rp3,390 share.
+            # A list of dates and rupiah amounts cannot be misread.
+            actions=True,
             progress=False,
             timeout=self.settings.yfinance_timeout,
         )
@@ -396,12 +456,21 @@ class DataFetcher:
             if self._fresh(cache_path):
                 try:
                     cached = joblib.load(cache_path)
-                    # The display name comes from settings, not from the cache: a
-                    # renamed ticker in configs must not be overridden by whatever
-                    # it was called when the file was written.
-                    records.append({**cached, "name": name})
-                    hits += 1
-                    continue
+                    # A record written before a field was added has no key for it,
+                    # and `.get` on the frame would read the whole column as
+                    # missing -- a factor silently switching itself off for up to
+                    # the cache TTL, with nothing on the page to say so. Age is not
+                    # the only way a cache goes stale; shape is the other.
+                    if _stale_shape(cached):
+                        logger.debug(f"Fundamentals cache for {ticker} predates a "
+                                     f"field that now exists; refetching")
+                    else:
+                        # The display name comes from settings, not from the cache:
+                        # a renamed ticker in configs must not be overridden by
+                        # whatever it was called when the file was written.
+                        records.append({**cached, "name": name})
+                        hits += 1
+                        continue
                 except Exception as e:
                     logger.warning(f"Corrupt fundamentals cache for {ticker}: {e}")
 

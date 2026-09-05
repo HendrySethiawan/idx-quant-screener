@@ -665,6 +665,31 @@ def _holdings_section(holdings_rows: List[dict]) -> str:
                   rows, num_cols={2, 3})
 
 
+def ties_note(groups: Optional[List[List[str]]], floor: float) -> str:
+    """
+    Which of the shortlist the score cannot actually separate.
+
+    The ranking is an ordered list and the ticket buys from the top of it, so a
+    0.02 difference decides a purchase on a scale whose own precision is 0.10.
+    Every score here is measured against the rest of the universe, so it moves when
+    the universe does; `floor` is how much, by jackknife on today's list rather
+    than a number someone chose.
+    """
+    real = [g for g in (groups or []) if len(g) > 1]
+    if not real or not floor:
+        return ""
+    shown = "; ".join(
+        " = ".join(_e(t.replace(".JK", "")) for t in g) for g in real[:4])
+    return (
+        '<div class="callout"><strong>Some of these are level, not ranked.</strong> '
+        f'Scores closer together than <strong>{floor:.2f}</strong> cannot be told '
+        f'apart &mdash; that is how far one moves when the universe gains or loses a '
+        f'single name. On this list: {shown}. Where the score is silent the order '
+        f'comes from which name least duplicates what you already hold, so treat '
+        f'those as a choice you can make on any grounds you like.</div>'
+    )
+
+
 def _candidates_section(cands: List[dict]) -> str:
     rows = []
     for c in cands:
@@ -842,6 +867,8 @@ def render_brief(
     exit_plans: Optional[Dict[str, object]] = None,
     open_risk: Optional[dict] = None,
     exit_cfg=None,
+    tie_groups: Optional[List[List[str]]] = None,
+    score_floor: float = 0.0,
 ) -> str:
     """
     The terminal. One document, five destinations, nothing scrolls but panels.
@@ -974,6 +1001,7 @@ def render_brief(
                     stale_note + placeholder_note
                     + _ticket_section(orders, fees, capital, open_risk, exit_cfg)
                     + granularity + missing_note + concentration
+                    + ties_note(tie_groups, score_floor)
                     + evidence_note(verdict),
                     pid="panel-ticket", cls="print", grow=True),
             T.panel(f"Events, next {event_horizon} days",

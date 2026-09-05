@@ -207,7 +207,9 @@ technical:
 fundamental_metrics:
   - pe_ratio
   - price_to_book
-  - dividend_yield
+  # dividend_yield is NOT here: it is computed from the dividends actually paid,
+  # in analysis/technical.trailing_dividend_yield, and arrives with the price
+  # factors rather than from the fundamentals snapshot.
   - beta
   - roe
   - gross_margin

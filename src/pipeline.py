@@ -65,7 +65,19 @@ def run_screener(settings, logger=None, fetcher: Optional[DataFetcher] = None):
     df_fund = engine.validate_fundamentals(fund_records)
 
     df_tech, price_data = build_technical_frame(settings, fetcher, logger)
-    df = df_fund.merge(df_tech, on="ticker", how="left") if not df_tech.empty else df_fund
+    if not df_tech.empty:
+        # The price frame wins any name they both carry, and the duplicate is
+        # dropped rather than suffixed. A silent `_x`/`_y` collision is how
+        # `dividend_yield` disappeared from the score entirely: `factor_weights`
+        # looked for the plain name, found neither half, and skipped the factor
+        # without logging anything. Anything computed from prices is the newer and
+        # better-founded of the two by construction.
+        clash = [c for c in df_tech.columns if c != "ticker" and c in df_fund.columns]
+        if clash and logger:
+            logger.debug(f"Price frame supersedes fundamentals for: {clash}")
+        df = df_fund.drop(columns=clash).merge(df_tech, on="ticker", how="left")
+    else:
+        df = df_fund
 
     df["sector"] = df["ticker"].map(settings.sectors).fillna("Unknown")
 

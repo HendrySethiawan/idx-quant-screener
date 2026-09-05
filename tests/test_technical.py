@@ -4,7 +4,8 @@ import pytest
 
 from analysis.technical import (DEFAULT_MARKET, average_true_range,
                                 compute_indicators, extract_latest_indicators,
-                                true_range, unmeasurable_factors)
+                                trailing_dividend_yield, true_range,
+                                unmeasurable_factors)
 
 
 def test_indicator_columns_present(price_frame):
@@ -356,3 +357,81 @@ def test_atr_reaches_the_indicator_snapshot():
     latest = extract_latest_indicators(compute_indicators(_ohlc(close, 0.005)))
     assert latest["atr_14"] > 0
     assert latest["atr_pct"] > 0
+
+
+# ------------------------------------------ the dividend yield, from the payments
+# Both of yfinance's summary fields are wrong in ways that reached the ranking:
+#
+#   `dividendYield`                 a FORWARD estimate on a percent scale. Read as
+#                                   a fraction it turned BREN's real 0.12% into
+#                                   12%, and BREN pays nothing at all. It scored
+#                                   third-best in the universe on a weight-1.0
+#                                   factor.
+#   `trailingAnnualDividendYield`   sounds right, is not: it is the LAST payment
+#                                   over the price. 6.13% for BBRI, which paid
+#                                   Rp137 and Rp209 on a Rp3,390 share -- 10.2%.
+#                                   And 0.0 for PGAS three months after paying
+#                                   Rp125.6.
+#
+# A list of payment dates and rupiah amounts cannot be misread, and it is the same
+# basis portfolio/dividends.py records what actually arrived on.
+
+def _with_dividends(payments, price=1000.0, n=400, end="2026-09-04"):
+    """A price frame carrying a Dividends column, as `actions=True` returns."""
+    idx = pd.bdate_range(end=end, periods=n)
+    df = pd.DataFrame({"Close": float(price), "High": float(price),
+                       "Low": float(price), "Volume": 1e6,
+                       "Dividends": 0.0}, index=idx)
+    for when, amount in payments:
+        df.loc[pd.Timestamp(when), "Dividends"] = float(amount)
+    return df
+
+
+def test_the_yield_is_the_year_of_payments_over_the_price():
+    """BBRI: Rp137 in December and Rp209 in April, on a Rp3,390 share."""
+    df = _with_dividends([("2025-12-30", 137.0), ("2026-04-21", 209.0)], price=3390.0)
+    y = trailing_dividend_yield(df, today="2026-09-04")
+    assert y == pytest.approx(346.0 / 3390.0, abs=1e-6)
+    assert y == pytest.approx(0.102, abs=0.001)
+
+
+def test_a_payment_older_than_a_year_is_outside_the_window():
+    """IMPC last paid in May 2024, so its trailing yield really is zero."""
+    df = _with_dividends([("2024-05-31", 4.5)], price=1405.0)
+    assert trailing_dividend_yield(df, today="2026-09-04") == pytest.approx(0.0)
+
+
+def test_a_company_that_pays_nothing_yields_nothing():
+    """
+    BREN's case, and the whole point. Not missing, not neutral -- zero, so it
+    scores at the bottom of a factor it used to score near the top of.
+    """
+    df = _with_dividends([], price=3360.0)
+    assert trailing_dividend_yield(df, today="2026-09-04") == pytest.approx(0.0)
+
+
+def test_a_tiny_real_yield_stays_tiny():
+    """BREN pays about Rp4.1 on a Rp3,360 share: 0.12%, not 12%."""
+    df = _with_dividends([("2026-06-15", 4.1)], price=3360.0)
+    y = trailing_dividend_yield(df, today="2026-09-04")
+    assert y == pytest.approx(0.00122, abs=1e-5)
+    assert y < 0.01
+
+
+def test_no_dividend_column_means_no_answer():
+    """A frame fetched before `actions=True` must read as missing, never as zero."""
+    idx = pd.bdate_range(end="2026-09-04", periods=50)
+    bare = pd.DataFrame({"Close": 1000.0}, index=idx)
+    assert pd.isna(trailing_dividend_yield(bare, today="2026-09-04"))
+
+
+def test_an_impossible_yield_is_refused():
+    """A payment larger than the share price is a data error, not a payout."""
+    df = _with_dividends([("2026-06-15", 900.0)], price=1000.0)
+    assert pd.isna(trailing_dividend_yield(df, today="2026-09-04"))
+
+
+def test_the_yield_reaches_the_indicator_snapshot():
+    df = _with_dividends([("2026-06-15", 100.0)], price=2000.0)
+    latest = extract_latest_indicators(compute_indicators(df))
+    assert latest["dividend_yield"] == pytest.approx(0.05, abs=1e-6)

@@ -72,6 +72,10 @@ class RunContext:
     # only has a row: a stop compares the last close against an entry made weeks
     # ago, and a trailing stop needs the high since that entry.
     risk_panel: Dict[str, pd.DataFrame] = field(default_factory=dict)
+    # How far a score moves when the universe gains or loses one name, measured by
+    # jackknife on the day's own universe. It is the precision the ranking has, and
+    # two names closer together than this are not ranked, they are tied.
+    score_floor: float = 0.0
 
 
 # --------------------------------------------------------------- needs network
@@ -106,6 +110,21 @@ def full_run(settings, args, logger=None) -> RunContext:
     correlations = return_correlations(
         price_data, int((settings.selection or {}).get("correlation_window", 120)))
 
+    # Measured here, not in `render`: it is a jackknife over the whole universe and
+    # costs a few seconds, which belongs in the fetch you already waited for rather
+    # than in the redraw that has to feel instant.
+    score_floor = 0.0
+    try:
+        from analysis.fundamental import FundamentalEngine
+        q = float((settings.selection or {}).get("tie_floor_quantile", 0.9))
+        score_floor = FundamentalEngine(settings).score_noise_floor(df, quantile=q)
+        if logger:
+            logger.info(f"Score precision: two names within {score_floor:.3f} of each "
+                        f"other are tied, not ranked")
+    except Exception as e:
+        if logger:
+            logger.warning(f"Could not measure score precision: {e}")
+
     regime_cfg = settings.regime or {}
     fx_data = fetcher.fetch_technical_data([regime_cfg.get("fx_ticker", "IDR=X")])
 
@@ -138,6 +157,7 @@ def full_run(settings, args, logger=None) -> RunContext:
         fetched_at=pd.Timestamp.now(), universe_key=universe_key(settings),
         sessions=sessions, watchlist_level=watchlist_level,
         correlations=correlations, risk_panel=risk_panel(price_data),
+        score_floor=score_floor,
     )
 
 
@@ -207,6 +227,7 @@ def save_snapshot(ctx: RunContext) -> Optional[Path]:
             "watchlist_level": ctx.watchlist_level,
             "correlations": ctx.correlations,
             "risk_panel": ctx.risk_panel or {},
+            "score_floor": ctx.score_floor,
         }, path)
         return path
     except Exception as e:
@@ -266,6 +287,7 @@ def load_snapshot(settings, args, logger=None) -> Optional[RunContext]:
         watchlist_level=blob.get("watchlist_level"),
         correlations=blob.get("correlations"),
         risk_panel=blob.get("risk_panel") or {},
+        score_floor=float(blob.get("score_floor") or 0.0),
     )
 
 
@@ -388,7 +410,8 @@ def render(ctx: RunContext) -> Path:
     plan = assemble(settings, ctx.df, ctx.regime, holdings,
                     correlations=ctx.correlations,
                     events=all_events, blind=blind,
-                    risk_panel=ctx.risk_panel, journal=journal)
+                    risk_panel=ctx.risk_panel, journal=journal,
+                    score_floor=ctx.score_floor)
     pd.DataFrame(plan["orders"]).to_csv(settings.output_dir / "ticket.csv", index=False)
 
     perf = build_performance(
@@ -475,6 +498,7 @@ def render(ctx: RunContext) -> Path:
             book_correlation=plan.get("book_correlation"),
             exit_plans=plan.get("exit_plans"), open_risk=plan.get("open_risk"),
             exit_cfg=ExitConfig.from_settings(settings),
+            tie_groups=plan.get("tie_groups"), score_floor=plan.get("score_floor", 0.0),
         ),
         settings.output_dir,
     )

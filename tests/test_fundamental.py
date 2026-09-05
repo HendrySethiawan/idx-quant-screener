@@ -61,18 +61,68 @@ def test_missing_factor_contributes_neutral_zero(sample_fundamental_data):
 
 
 # ------------------------------------------------------------------ data hygiene
-def test_dividend_yield_percent_scale_is_rescaled():
+# `dividend_yield` is yfinance's `trailingAnnualDividendYield` -- a fraction, and
+# what actually reached shareholders. There used to be a heuristic here that
+# divided by 100 whenever the value exceeded 1.0, and it was wrong in the one
+# direction that mattered: a genuine yield below 1% arrives as 0.12 meaning 0.12%,
+# skips the test, and is then read as 12%. BREN pays literally nothing and was
+# scoring third-best in the universe on a factor weighted +1.0.
+
+def test_a_tiny_yield_is_not_read_as_a_large_one():
+    """BREN's shape: pays Rp0, reported as 0.12, must not become 12%."""
     engine = _engine()
     df = engine.validate_fundamentals([
-        {"ticker": "A.JK", "name": "A", "dividend_yield": 14.17},
-        {"ticker": "B.JK", "name": "B", "dividend_yield": 0.05},
+        {"ticker": "BREN.JK", "name": "Barito Renewables", "dividend_yield": 0.0},
+        {"ticker": "BBRI.JK", "name": "Bank Rakyat", "dividend_yield": 0.0613},
+        {"ticker": "UNVR.JK", "name": "Unilever", "dividend_yield": 0.0667},
     ])
-    assert df.loc[0, "dividend_yield"] == pytest.approx(0.1417)
-    assert df.loc[1, "dividend_yield"] == pytest.approx(0.05)
-    assert df.loc[0, "data_quality_flag"]
+    assert df.loc[0, "dividend_yield"] == pytest.approx(0.0)
+    assert df.loc[1, "dividend_yield"] == pytest.approx(0.0613)
 
 
-def test_absurd_price_to_book_is_nullified_not_propagated():
+def test_a_non_payer_scores_at_the_bottom_of_the_factor():
+    """The consequence that matters: it must rank last, not third."""
+    engine = _engine()
+    scored = engine.compute_scores(engine.validate_fundamentals([
+        {"ticker": "BREN.JK", "name": "BREN", "dividend_yield": 0.0},
+        {"ticker": "A.JK", "name": "A", "dividend_yield": 0.04},
+        {"ticker": "B.JK", "name": "B", "dividend_yield": 0.06},
+        {"ticker": "C.JK", "name": "C", "dividend_yield": 0.08},
+        {"ticker": "D.JK", "name": "D", "dividend_yield": 0.12},
+    ]))
+    z = scored.set_index("ticker")["z_dividend_yield"]
+    assert z["BREN.JK"] == z.min()
+    assert z["BREN.JK"] < 0
+
+
+def test_the_forward_yield_is_rescaled_from_percent_and_kept_separately():
+    engine = _engine()
+    df = engine.validate_fundamentals([
+        {"ticker": "BBRI.JK", "name": "Bank Rakyat",
+         "dividend_yield": 0.0613, "dividend_yield_forward": 12.26},
+    ])
+    assert df.loc[0, "dividend_yield_forward"] == pytest.approx(0.1226)
+    assert df.loc[0, "dividend_yield"] == pytest.approx(0.0613)
+
+
+def test_a_forward_trailing_disagreement_is_recorded():
+    """
+    BBRI's two figures are 6.1 points apart and UNVR's 6.9. After a spinoff they
+    diverge completely -- ADRO reported 8.63% forward in a year it paid nothing.
+    The reader is told rather than left assuming the ranked number is the story.
+    """
+    engine = _engine()
+    df = engine.validate_fundamentals([
+        {"ticker": "BBRI.JK", "name": "A", "dividend_yield": 0.0613,
+         "dividend_yield_forward": 12.26},
+        {"ticker": "CALM.JK", "name": "B", "dividend_yield": 0.0400,
+         "dividend_yield_forward": 4.10},
+    ])
+    assert "forward" in df.loc[0, "data_quality_notes"]
+    assert "forward" not in str(df.loc[1, "data_quality_notes"])
+
+
+def test_a_broken_multiple_is_still_nullified():
     """PTRO really did come back at 179,615, flattening every other P/B z-score."""
     engine = _engine()
     records = [{"ticker": f"T{i}.JK", "name": f"T{i}", "price_to_book": v}
@@ -82,6 +132,42 @@ def test_absurd_price_to_book_is_nullified_not_propagated():
     assert pd.isna(df.loc[5, "price_to_book"])
     assert "nullified" in df.loc[5, "data_quality_notes"]
     assert df.loc[:4, "price_to_book"].notna().all()
+
+
+def test_an_expensive_but_real_multiple_is_clipped_not_nullified():
+    """
+    A nullified factor scores NEUTRAL, so nullifying the most expensive name in the
+    universe handed it a free pass on a factor weighted -1.0. BREN's real P/B is
+    38.1 and MDKA's real P/E is 1,666.7 -- both extreme, neither broken.
+    """
+    engine = _engine()
+    records = [{"ticker": f"T{i}.JK", "name": f"T{i}", "price_to_book": v}
+               for i, v in enumerate([1.2, 1.5, 2.0, 2.4, 3.1, 38.1])]
+    scored = engine.compute_scores(engine.validate_fundamentals(records))
+
+    # Clipped to the bound, then winsorized to the MAD band like any other
+    # outlier. The value it lands on is the band's business; what this pins is
+    # that it kept a value at all and that the value ranks it last.
+    assert pd.notna(scored.loc[5, "price_to_book"])
+    assert "clipped_to_bound" in scored.loc[5, "data_quality_notes"]
+    z = scored["z_price_to_book"]
+    assert z[5] == z.max(), "the most expensive name must score worst, not average"
+    assert z[5] > 0
+    assert "price_to_book" not in str(scored.loc[5, "imputed_factors"])
+
+
+def test_a_glitch_and_a_real_extreme_are_told_apart():
+    """
+    One threshold cannot do it. The real extremes on this universe reach 38.1;
+    the currency glitch was 179,615, some nine thousand times the bound.
+    """
+    engine = _engine()
+    df = engine.validate_fundamentals([
+        {"ticker": "REAL.JK", "name": "real", "price_to_book": 38.1},
+        {"ticker": "GLITCH.JK", "name": "glitch", "price_to_book": 179615.38},
+    ])
+    assert df.loc[0, "price_to_book"] == pytest.approx(20.0)
+    assert pd.isna(df.loc[1, "price_to_book"])
 
 
 def test_outlier_does_not_flatten_remaining_zscores():

@@ -24,7 +24,7 @@ _SESSIONS_12M = 252
 _LATEST_KEYS = (
     "rsi_14", "ma5_slope", "ma20_slope", "price_change_pct", "return_20d",
     "mom_1m", "mom_6m", "mom_12m", "realized_vol", "median_daily_value_rp",
-    "last_close", "volume_ratio", "atr_14", "atr_pct",
+    "last_close", "volume_ratio", "atr_14", "atr_pct", "dividend_yield",
 )
 
 # Each price-derived factor, and the window it is actually measured over. A name
@@ -137,6 +137,60 @@ def average_true_range(df: pd.DataFrame, window: int = 14) -> pd.Series:
     return true_range(df).ewm(alpha=1 / n, adjust=False).mean()
 
 
+_DIVIDEND_WINDOW_DAYS = 365
+# A yield above this is a data error, not a payout. The highest real one in this
+# universe is about 12%.
+_MAX_PLAUSIBLE_YIELD = 0.50
+
+
+def trailing_dividend_yield(df: pd.DataFrame, price: float = None,
+                            days: int = _DIVIDEND_WINDOW_DAYS,
+                            today=None) -> float:
+    """
+    What this share actually paid in the last year, over what it costs now.
+
+    Computed from the `Dividends` column that rides along with the price history,
+    because both of yfinance's summary fields are wrong in ways that reach the
+    ranking:
+
+      * `dividendYield` is a FORWARD estimate on a percent scale. Read as a
+        fraction it turns BREN's real 0.12% into 12%, and BREN pays nothing at all.
+        No threshold can fix that -- 0.5 could mean 0.5% or 50%.
+      * `trailingAnnualDividendYield` sounds right and is not. It is the LAST
+        payment over the price: 6.13% for BBRI, which paid Rp137 and Rp209 on a
+        Rp3,390 share -- 10.2%. And it reported 0.0 for PGAS three months after a
+        Rp125.6 dividend.
+
+    A list of payment dates and rupiah amounts cannot be misread, and it is the
+    same basis `portfolio/dividends.py` records what actually arrived on. The
+    screener's promise and the ledger's receipt finally measure one quantity.
+
+    Uses the CURRENT price, not an average: this answers "if I buy today, what did
+    a year of this stock pay", which is the question a buyer is asking.
+    """
+    if df is None or "Dividends" not in df.columns:
+        return np.nan
+    if price is None:
+        if "Close" not in df.columns:
+            return np.nan
+        closes = df["Close"].dropna()
+        price = float(closes.iloc[-1]) if len(closes) else None
+    if not price or price <= 0:
+        return np.nan
+
+    paid = df["Dividends"].fillna(0.0)
+    idx = pd.DatetimeIndex(paid.index)
+    paid.index = idx.tz_localize(None) if idx.tz is not None else idx
+
+    end = pd.Timestamp(today) if today is not None else paid.index.max()
+    if pd.isna(end):
+        return np.nan
+    total = float(paid[paid.index >= end - pd.Timedelta(days=int(days))].sum())
+
+    y = total / float(price)
+    return y if 0.0 <= y <= _MAX_PLAUSIBLE_YIELD else np.nan
+
+
 def compute_indicators(
     df: pd.DataFrame,
     vol_window: int = 60,
@@ -228,8 +282,12 @@ def extract_latest_indicators(df: pd.DataFrame, market: Dict = None,
         v = row[key]
         return float(v) if pd.notna(v) else np.nan
 
-    out = {k: val(last, k) for k in _LATEST_KEYS if k not in ("last_close", "volume_ratio")}
+    out = {k: val(last, k) for k in _LATEST_KEYS
+           if k not in ("last_close", "volume_ratio", "dividend_yield")}
     out["last_close"] = val(last, "Close")
+    # From the payments themselves, not from a summary field. See
+    # `trailing_dividend_yield` for why neither of yfinance's is usable.
+    out["dividend_yield"] = trailing_dividend_yield(df, out["last_close"])
 
     vol_sma = val(prev, "Volume_SMA")
     last_vol = val(last, "Volume")

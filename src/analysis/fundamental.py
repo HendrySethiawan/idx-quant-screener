@@ -34,6 +34,26 @@ logger = setup_logger(Path("logs"))
 
 _MAD_SCALE = 1.4826  # makes MAD a consistent estimator of sigma for normal data
 
+# Absolute gap, in fraction terms, above which the forward and trailing dividend
+# yields are reported as disagreeing. 2 percentage points: BBRI's two figures are
+# 6.1pp apart and UNVR's 6.9pp, while an ordinary payer's differ by well under one.
+_DIVIDEND_DISAGREEMENT = 0.02
+
+# Multiples that can be extreme and still real. Above a sanity bound a value is
+# nullified, which scores it NEUTRAL -- so the most expensive names in the universe
+# used to get a free pass on a factor weighted -1.0. These two are clipped to the
+# bound instead, so a P/E of 1,667 scores worst-in-class rather than average.
+_CLIP_NOT_NULL = ("pe_ratio", "price_to_book")
+
+# ...but only up to a point, and the point is measured. On this universe the real
+# extremes reach P/B 38.1 (BREN) and P/E 1,666.7 (MDKA) -- under ten times their
+# bounds. The currency glitch this whole mechanism was built for was P/B 179,615,
+# some nine thousand times over. So beyond 10x the bound a value is not an
+# expensive company, it is a broken field, and clipping one to the band would drag
+# the mean and compress everybody else's z-score -- which is the exact harm the
+# bound exists to prevent.
+_GLITCH_MULTIPLE = 10.0
+
 
 class FundamentalEngine:
     def __init__(self, config: Union[dict, BaseModel]):
@@ -72,14 +92,35 @@ class FundamentalEngine:
         for col in (c for c in self.metrics if c in df.columns):
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        # yfinance returns dividendYield on a percent scale for most .JK names
-        # (BBRI came back as 14.17, not 0.1417). Normalise before bounds are applied.
-        if "dividend_yield" in df.columns:
-            pct_scale = df["dividend_yield"] > 1.0
-            if pct_scale.any():
-                df.loc[pct_scale, "dividend_yield"] = df.loc[pct_scale, "dividend_yield"] / 100.0
-                for i in df.index[pct_scale]:
-                    notes[i].append("dividend_yield:rescaled_from_percent")
+        # `dividend_yield` is now yfinance's `trailingAnnualDividendYield`, which is
+        # a fraction and needs no rescaling. `dividend_yield_forward` is the
+        # indicated figure, which yfinance reports on a percent scale ALWAYS.
+        #
+        # There used to be a heuristic here -- divide by 100 when the value exceeds
+        # 1.0 -- and it was wrong in the one direction that mattered. A genuine
+        # yield below 1% arrives as 0.12 meaning 0.12%, skips the test, and is then
+        # read as 12%. BREN pays literally nothing and was scoring third-best in
+        # the universe on a factor weighted +1.0; BRPT, CUAN, INET, PANI and WIFI
+        # were doing the same. No threshold can separate "0.5 meaning 0.5%" from
+        # "0.5 meaning 50%", so the heuristic is gone rather than tuned: the two
+        # fields are read from sources whose scale is known.
+        if "dividend_yield_forward" in df.columns:
+            df["dividend_yield_forward"] = pd.to_numeric(
+                df["dividend_yield_forward"], errors="coerce") / 100.0
+
+        # Where the two disagree materially, the reader is told rather than left to
+        # assume the ranked number is the whole story. The forward figure is an
+        # estimate of the next twelve months; the trailing one is a fact about the
+        # last twelve, and after a spinoff or a cut they are different questions.
+        if {"dividend_yield", "dividend_yield_forward"} <= set(df.columns):
+            trailing = pd.to_numeric(df["dividend_yield"], errors="coerce")
+            forward = df["dividend_yield_forward"]
+            gap = (forward - trailing).abs()
+            disagrees = (gap > _DIVIDEND_DISAGREEMENT).fillna(False) & trailing.notna()
+            for i in df.index[disagrees]:
+                notes[i].append(
+                    f"dividend_yield:forward {forward[i] * 100:.1f}% vs trailing "
+                    f"{trailing[i] * 100:.1f}%")
 
         # Structurally impossible or not-actually-reported values -> NaN (neutral),
         # never a dropped row.
@@ -100,18 +141,54 @@ class FundamentalEngine:
                     for i in df.index[bad]:
                         notes[i].append(f"{col}:{tag}")
 
+        # Snapshotted BEFORE the bounds, not after. Valuation must see the real
+        # multiple: BREN's P/B is 38.1, and reading the clipped 20 would put its
+        # book value per share at nearly twice the truth and its fair price with
+        # it. A glitch is nulled below and takes its snapshot with it, so valuation
+        # still never sees 179,615 -- it sees nothing, which is the honest answer.
+        for col in ("pe_ratio", "price_to_book"):
+            if col in df.columns:
+                df[f"unclipped_{col}"] = df[col]
+
         # Two-sided magnitude test catches both huge positives (P/B 179,615) and
         # huge negatives (deeply negative ROE from a one-off writedown).
+        #
+        # For the two valuation multiples a POSITIVE outlier is not a glitch any
+        # more. That bound was written for a currency error -- an IDR price over a
+        # USD book value, giving ADRO 15,000 and PTRO 203,846 -- and
+        # `repair_price_to_book` now fixes that at the source. The highest real P/B
+        # left in the universe is 19.7, so the bound only ever fires on genuine
+        # extremes, and nullifying one scored the most expensive name in the
+        # universe as perfectly average. Those are clipped instead, and land at
+        # worst-in-class where they belong. A negative value is still impossible
+        # and still nullified.
         for col, bound in self.sanity_bounds.items():
             if col not in df.columns:
                 continue
-            bad = (df[col].abs() > float(bound)).fillna(False)
-            if bad.any():
-                df.loc[bad, col] = np.nan
-                for i in df.index[bad]:
-                    notes[i].append(f"{col}:nullified(|x|>{bound:g})")
+            bound = float(bound)
+            over = (df[col].abs() > bound).fillna(False)
+            if not over.any():
+                continue
 
-        # Snapshot the two multiples valuation needs BEFORE winsorization.
+            if col in _CLIP_NOT_NULL:
+                real = (over & (df[col] > 0)
+                        & (df[col] <= bound * _GLITCH_MULTIPLE)).fillna(False)
+                df.loc[real, col] = bound
+                for i in df.index[real]:
+                    notes[i].append(f"{col}:clipped_to_bound({bound:g})")
+                over = over & ~real
+
+            if over.any():
+                df.loc[over, col] = np.nan
+                for i in df.index[over]:
+                    notes[i].append(f"{col}:nullified(|x|>{bound:g})")
+                # A nulled value is a broken field, so the snapshot goes with it.
+                # Valuation must have nothing rather than a number nobody believes.
+                if f"unclipped_{col}" in df.columns:
+                    df.loc[over, f"unclipped_{col}"] = np.nan
+
+        # `unclipped_*` is snapshotted above, before the bounds and therefore before
+        # winsorization too.
         #
         # _winsorize clips outliers to a shared bound, which is right for ranking --
         # it is the PTRO/BRPT fix -- but it makes the stored value a property of the
@@ -120,10 +197,6 @@ class FundamentalEngine:
         # price_to_book == 9.266952. Deriving earnings or book value from a clipped
         # multiple would invent them, and it would do so precisely for the extreme
         # names where "is this expensive?" is the whole question.
-        for col in ("pe_ratio", "price_to_book"):
-            if col in df.columns:
-                df[f"unclipped_{col}"] = df[col]
-
         df = self._winsorize(df, [c for c in self.metrics if c in df.columns], notes)
 
         df["data_quality_notes"] = [";".join(n) for n in notes]
@@ -173,6 +246,16 @@ class FundamentalEngine:
             notes: List[List[str]] = [[] for _ in range(len(df))]
             df = df.reset_index(drop=True)
             df = self._winsorize(df, late_cols, notes)
+            # Merged back rather than dropped. These notes used to be collected and
+            # then discarded, so a clipped momentum or volatility was invisible on
+            # the Data quality panel while a clipped P/E was listed -- the same
+            # operation, reported for half the factors it applies to.
+            if "data_quality_notes" in df.columns:
+                existing = df["data_quality_notes"].fillna("").astype(str)
+                merged = [";".join(p for p in (a, ";".join(b)) if p)
+                          for a, b in zip(existing, notes)]
+                df["data_quality_notes"] = merged
+                df["data_quality_flag"] = [len(s) > 0 for s in merged]
 
         if self.scoring_method == "zscore_normalized":
             df = self._zscore_normalize(df)
@@ -208,6 +291,12 @@ class FundamentalEngine:
         return z
 
     def _zscore_normalize(self, df: pd.DataFrame) -> pd.DataFrame:
+        # `imputed` is a plain list indexed positionally, so a frame whose index is
+        # not 0..n-1 -- any subset, any filtered view -- raises IndexError deep in
+        # the loop. Reset once here rather than trusting every caller to have done
+        # it, which is exactly the assumption that broke when the jackknife started
+        # passing subsets in.
+        df = df.reset_index(drop=True)
         factors = [c for c in self.factor_weights if c in df.columns and c != "market_cap"]
         if not factors:
             df["undervaluation_score"] = 0.0
@@ -257,6 +346,56 @@ class FundamentalEngine:
             logger.error(f"{n_bad} rows scored NaN after normalisation -- regression of the P0 bug")
         logger.info(f"Scored {len(df)} stocks across {len(factors)} factors")
         return df
+
+    def score_noise_floor(self, df: pd.DataFrame, quantile: float = 0.9,
+                          max_names: int = 120) -> float:
+        """
+        How far a name's score moves when the universe gains or loses one member.
+
+        Every factor is a z-score against the rest of the list, so a score is not a
+        property of a company alone -- it is a property of the company and its
+        peers. Drop one unrelated name and everybody's score shifts a little. This
+        measures that shift by jackknife and returns its `quantile`, which is the
+        precision the ranking actually has.
+
+        On the real universe it comes out at about 0.10, against a score standard
+        deviation of 3.75 and gaps between picks 3 and 8 of 0.02 to 0.21. Without
+        it the ticket buys the name that scored 0.02 higher and presents that as a
+        decision.
+
+        Measured on the day's own universe rather than frozen as a constant: a
+        hardcoded precision would go stale exactly when the universe changed, which
+        is the moment it matters. Roughly a second per twenty names, so it is
+        capped and only ever runs in `full_run`.
+        """
+        if df is None or len(df) < 5:
+            return 0.0
+
+        work = df.reset_index(drop=True)
+        if len(work) > max_names:
+            work = work.head(max_names)
+
+        # `_zscore_normalize` logs a line per call and this makes one per name, so
+        # a 74-name universe would bury the run's real output under 75 identical
+        # "Scored 73 stocks" lines. Silenced for the loop only.
+        logger.disable(__name__)
+        try:
+            base = self._zscore_normalize(work.copy())["raw_score"]
+            base.index = work["ticker"]
+
+            moves: List[float] = []
+            for i in range(len(work)):
+                sub = work.drop(index=i)
+                out = self._zscore_normalize(sub.copy())["raw_score"]
+                out.index = sub["ticker"]
+                common = out.index.intersection(base.index)
+                moves.extend((out[common] - base[common]).abs().dropna().tolist())
+        finally:
+            logger.enable(__name__)
+
+        if not moves:
+            return 0.0
+        return float(np.quantile(moves, quantile))
 
     def _percentile_rank(self, df: pd.DataFrame) -> pd.DataFrame:
         factors = [c for c in self.factor_weights if c in df.columns and c != "market_cap"]
