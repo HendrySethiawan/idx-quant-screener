@@ -58,7 +58,10 @@ class Settings(BaseSettings):
 
     # ---- Fundamental -------------------------------------------------------
     fundamental_metrics: List[str] = Field(default_factory=lambda: [
-        "pe_ratio", "price_to_book", "dividend_yield", "beta",
+        # `dividend_yield` is deliberately absent: it is computed from the
+        # dividends actually paid (analysis/technical.trailing_dividend_yield)
+        # and arrives with the price factors, not from the yfinance snapshot.
+        "pe_ratio", "price_to_book", "beta",
         "roe", "gross_margin", "debt_to_equity",
     ])
     scoring_method: str = "zscore_normalized"
@@ -264,6 +267,16 @@ class Settings(BaseSettings):
     selection: Dict[str, Any] = Field(default_factory=lambda: {
         "max_correlation": 0.70,
         "correlation_window": 120,
+        # Every score is a z-score against the rest of the list, so a score belongs
+        # to a company AND its peers -- drop one unrelated name and everybody
+        # shifts. This is the quantile of that shift, measured by jackknife on the
+        # day's own universe, used as the width below which two names are TIED
+        # rather than ranked. It comes out near 0.10 on 74 names, against a score
+        # spread of 3.75 and gaps between picks 3 and 8 of 0.02 to 0.21 -- so
+        # without it the ticket buys the name that scored 0.02 higher and presents
+        # that as a decision. Among tied names, the one that moves least like what
+        # is already picked goes first.
+        "tie_floor_quantile": 0.90,
     })
 
     events_path: str = "configs/events.yaml"

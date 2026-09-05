@@ -456,3 +456,71 @@ def test_missing_is_empty_when_everything_arrived():
 def test_missing_survives_a_total_fetch_failure():
     """Nothing came back at all -- the names still have to be named."""
     assert session_report({}, failed=["WIKA.JK"])["missing"] == ["WIKA.JK"]
+
+
+# ------------------------------------------- a cache goes stale by SHAPE as well
+# Age is the obvious way. The other one has no symptom: when a field is added or
+# repointed, every record written before that has no key for it, so the column
+# reads as missing for up to the whole TTL and a weight-1.0 factor switches itself
+# off with nothing on the page to say so. That is exactly what happened when
+# `dividend_yield` moved to a different source, and again -- in the opposite
+# direction -- when it left the fundamentals mapping entirely and the leftover key
+# collided with the price frame's column of the same name. Pandas renamed both to
+# `_x`/`_y`, `factor_weights` found neither, and the factor vanished from the
+# score without a word.
+
+def _full_record(**over):
+    from fetchers.data_fetcher import _FUNDAMENTAL_MAP
+    rec = {k: 1.0 for k in _FUNDAMENTAL_MAP}
+    rec.update({"ticker": "BBRI.JK", "name": "Bank Rakyat", "fetch_note": ""})
+    rec.update(over)
+    return rec
+
+
+def test_a_complete_record_is_reused():
+    from fetchers.data_fetcher import _stale_shape
+    assert not _stale_shape(_full_record())
+
+
+def test_a_record_missing_a_new_field_is_refetched():
+    from fetchers.data_fetcher import _FUNDAMENTAL_MAP, _stale_shape
+    rec = _full_record()
+    rec.pop(next(iter(_FUNDAMENTAL_MAP)))
+    assert _stale_shape(rec)
+
+
+def test_a_record_carrying_an_obsolete_field_is_refetched():
+    """
+    The collision case. A leftover key is not harmless: it survives the merge with
+    the price frame as `_x`/`_y` and takes the factor out of the score.
+    """
+    from fetchers.data_fetcher import _stale_shape
+    assert _stale_shape(_full_record(dividend_yield=0.06))
+
+
+def test_a_null_value_is_an_answer_not_a_gap():
+    """A company that pays no dividend reports None, and refetching it every run
+    would be pointless. Shape is checked by key presence, never by value."""
+    from fetchers.data_fetcher import _stale_shape
+    assert not _stale_shape(_full_record(dividend_yield_forward=None))
+
+
+def test_a_price_frame_without_dividends_is_refetched():
+    """
+    The same failure on the price side. The scored yield is computed from the
+    Dividends column that `actions=True` brings down; a frame cached before that
+    would make every yield read as missing until the TTL expired.
+    """
+    from fetchers.data_fetcher import _REQUIRED_PRICE_COLS
+    assert "Dividends" in _REQUIRED_PRICE_COLS
+    assert "Close" in _REQUIRED_PRICE_COLS
+
+
+def test_the_fundamentals_map_no_longer_carries_a_scored_dividend_yield():
+    """
+    It is computed from the payments instead. Two sources for one column is how
+    the merge collision happened, so the mapping must not reintroduce it.
+    """
+    from fetchers.data_fetcher import _FUNDAMENTAL_MAP
+    assert "dividend_yield" not in _FUNDAMENTAL_MAP
+    assert _FUNDAMENTAL_MAP["dividend_yield_forward"] == "dividendYield"

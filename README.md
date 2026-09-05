@@ -467,6 +467,79 @@ they answered before.
 
 ---
 
+## Where the numbers come from, and where they went wrong
+
+A methodology audit ran over the whole calculation chain — every factor's units,
+sign and bounds, the scoring, valuation, liquidity and sizing arithmetic, and the
+stability of the ranking itself. What it found is worth keeping visible.
+
+### The bug: a weight-1.0 factor was wrong for most of the universe
+
+`dividend_yield` was read from yfinance's `dividendYield`, which is a **percentage**.
+The code divided by 100 only when the value exceeded 1.0 — so any genuine yield
+*below 1%* skipped the rescale and was then read as a fraction:
+
+```
+        scored as   actually paid
+BREN      12.00%       Rp0          <- 3rd best in the universe on this factor
+WIFI      10.00%       Rp2 on a Rp2,090 share
+BRPT       9.00%       Rp0
+PANI       8.00%       Rp0
+CUAN       4.00%       Rp0
+INET       1.00%       Rp0
+```
+
+No threshold could fix it: `0.5` may mean 0.5% or 50%. The obvious replacement,
+`trailingAnnualDividendYield`, turned out to be the **last single payment** over the
+price — 6.13% for BBRI, which paid Rp137 and Rp209 on a Rp3,390 share, and **0.0 for
+PGAS three months after paying Rp125.6**.
+
+So the yield is now computed from the dividend payments themselves, which ride along
+with the price history at no extra request. A list of dates and rupiah amounts cannot
+be misread, and every name now has a real figure — **74 of 74, where 23 used to be
+imputed**.
+
+### The fix that nearly did not reach you
+
+Fixing the maths was not enough. The app opens from a **saved screen** so a launch
+costs two seconds instead of a minute — and that screen holds the scores as they
+were computed, not the inputs. The dividend fix changed what
+`undervaluation_score` *means* without changing a single field name, so the file
+stayed perfectly loadable and the rebuilt exe went on showing BREN at a 12% yield
+on a stock that pays Rp0. Only pressing **Update data** would have cleared it, and
+nothing on the page suggested it needed clearing.
+
+A saved screen is now discarded when the code that produced it has been replaced —
+compared against the executable's own timestamp in a build, or the newest file
+under `src/` from source, which is the rule `verify_bridge.py` already used to
+refuse a stale brief. That is automatic. The version stamp beside it is the
+declaration, and it is bumped whenever the scoring changes meaning.
+
+### What the audit checked and found correct
+
+Worth recording, because an audit that only reports faults tells you nothing about
+what it looked at:
+
+* **Every factor's sign.** `corr(raw value, z)` carries the intended direction for
+  all ten. Nothing is inverted.
+* **Rank stability.** Jackknife across the universe: top-8 membership survived
+  **every** drop, average rank move 0.35 places. When the picks change it is because
+  the inputs changed, not because the ranking is noisy.
+* **Imputation is not a back door.** Correlation between a name's number of missing
+  factors and its rank: **0.126**.
+* **The USD/IDR repair.** `price / (bookValue × fx)` is right and correctly targeted:
+  ADRO's `trailingEps` is already 357.14 **IDR** while its `bookValue` is 0.16
+  **USD**, so only book value needs converting — verified directly rather than
+  assumed.
+* **The liquidity gate.** The nominal-slot approximation cannot bind at Rp10 juta:
+  the Rp250 juta floor dominates the 1%-of-volume rule for every position this
+  account can hold. It would bind at larger capital.
+* **Valuation** reads unclipped multiples, so a winsorized number can never become a
+  fair-value estimate — and that snapshot now happens *before* the sanity bounds, so
+  clipping a real extreme cannot quietly halve its book value either.
+
+---
+
 ## Ranking is not valuation
 
 These are two different questions and the tool answers them separately.
@@ -633,13 +706,35 @@ and summed. The sign is the direction — negative means lower is better.
 | Risk | `realized_vol` (−) |
 | Momentum | `mom_1m` (+), `mom_6m` (+), `mom_12m` (+) |
 
-Three deliberate choices:
+Five deliberate choices:
 
 - **A missing factor scores neutral, never removes the stock.** It is listed in
   `imputed_factors` and flagged in the brief.
 - **Quality is judged within sector.** A bank's leverage is compared to other banks.
 - **`beta` is not used.** yfinance reports 0.016 for Bank Mandiri and negative values
   for several IDX large caps. `realized_vol`, computed from the price panel, replaces it.
+- **`dividend_yield` is computed from the dividends actually paid**, not read from a
+  summary field. Both of yfinance's are wrong here: `dividendYield` is a *forward*
+  estimate on a percent scale, and `trailingAnnualDividendYield` turns out to be the
+  *last single payment* over the price. Summing the payments in the trailing year is
+  the only version that agrees with what lands in your account — and it is the same
+  basis your dividend ledger records. See [Where the numbers come
+  from](#where-the-numbers-come-from-and-where-they-went-wrong).
+- **An extreme multiple is clipped, not discarded.** A nulled factor scores
+  *neutral*, so discarding a P/E of 1,667 handed the most expensive name in the
+  universe a free pass on a factor weighted −1.0. It is clipped to the bound and
+  scores worst-in-class. Only a value beyond ten times the bound — the currency
+  glitch this machinery was built for read 179,615 — is treated as broken and
+  dropped.
+
+**The score's own precision is measured, and the ticket says so.** Every factor is a
+z-score against the rest of the list, so a score belongs to a company *and its
+peers*: drop one unrelated name and everybody shifts. A jackknife over the universe
+puts that shift at about **0.10**, against a score spread of 3.75 — while picks #3 to
+#8 sit **0.02 to 0.21** apart. Names closer together than the measured floor are
+reported as **tied**, and among ties the one that least duplicates what you already
+hold goes first. Without that the ticket buys the name that scored 0.02 higher and
+presents it as a decision.
 
 Machine learning is **off** (`use_ml: false`). The ranker labelled its training data
 using the very score it then overwrote — circular by construction. See
@@ -695,11 +790,18 @@ factor does at this account size:
 12. **A capped stop understates its own risk.** Past `max_stop_pct` the level is the
     cap rather than 2.5 × ATR, which makes the wildest names look like the safest.
     Those rows are flagged `capped` wherever the risk is shown.
-13. **Whether the ladder pays for itself depends on how often you re-rank**, and it
+13. **The dividend yield is trailing, not forward.** It is what the last twelve
+    months actually paid, so a company that has just initiated or just cut its
+    dividend is scored on history rather than on intent. The forward figure is
+    carried alongside and a material disagreement is flagged.
+14. **Picks within the measured score precision are ties, not a ranking.** The
+    ticket says which, and breaks them on diversification rather than on a
+    difference the score cannot support.
+15. **Whether the ladder pays for itself depends on how often you re-rank**, and it
     reversed once the universe grew from 49 names to 74. Weekly it is the best
     risk-adjusted rule measured; monthly a stop with no profit-taking beats it. One
     config line turns it off. See [When to get out](#when-to-get-out).
-14. **The universe is 74 names chosen on structure, not on merit.** Liquidity, lot
+16. **The universe is 74 names chosen on structure, not on merit.** Liquidity, lot
     price, history length and sector coverage — never past return. That keeps the
     selection from inflating the survivorship artifact, but it also means no
     judgement was applied about which businesses are good. See

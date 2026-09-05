@@ -842,3 +842,70 @@ def test_giving_up_return_for_a_smaller_worst_case_is_reported_as_such():
     assert "cost 3.4pp a year" in note
     assert "20.9pp shallower" in note
     assert "+0.45 of Sharpe" in note
+
+
+# ======================================================== TIES IN THE TICKET
+# Picks 3 to 8 sit 0.02 to 0.21 raw points apart against a universe spread of
+# 3.75, and the ticket buys the top three. The tie band says which of them the
+# score cannot actually separate.
+
+def test_the_candidate_carries_the_unnormalised_score(scored_df, settings_mock):
+    """
+    `score` is min-max scaled to 0-1 for display, so the best name is always 1.00
+    whatever the market did -- useless for asking how FAR apart two names are.
+    `score_floor` is measured on `raw_score`, so the candidate must carry it.
+    """
+    df = scored_df.copy()
+    df["raw_score"] = [8.5, 7.7, 6.2, 6.1][: len(df)]
+    cands, _, _ = build_candidates(df, settings_mock, 1.0)
+    assert cands
+    for c in cands:
+        assert "raw_score" in c
+    assert {c["raw_score"] for c in cands} != {c["score"] for c in cands}
+
+
+def test_a_floor_on_the_wrong_scale_cannot_reorder_the_whole_book(
+        scored_df, settings_mock, regime_on):
+    """
+    The bug this guard exists for. The floor is measured on `raw_score`, whose
+    spread is about 3.75; the display score runs 0 to 1. Compared against the
+    wrong one, EVERY adjacent gap fell under the floor, all 74 names became a
+    single tie group, and the entire ticket was chosen by correlation with the
+    ranking ignored. A group covering most of the universe is a unit mismatch, not
+    a market observation.
+    """
+    df = pd.DataFrame([{
+        "ticker": f"T{i:02d}.JK", "name": f"T{i}", "sector": "Financials",
+        "undervaluation_score": 1.0 - i * 0.05, "raw_score": 9.0 - i,
+        "last_close": 1000.0, "median_daily_value_rp": 800e9,
+        "imputed_factors": "", "z_pe_ratio": -0.5, "mom_1m": 1.0,
+    } for i in range(20)])
+    # One genuine tie, so the sane case has something to find.
+    df.loc[1, "raw_score"] = df.loc[0, "raw_score"] - 0.02
+
+    sane = assemble(settings_mock, df, regime_on, [], score_floor=0.10)
+    absurd = assemble(settings_mock, df, regime_on, [], score_floor=1_000.0)
+
+    assert any(len(g) > 1 for g in sane["tie_groups"]), "a sane floor finds ties"
+    assert all(len(g) == 1 for g in absurd["tie_groups"]), (
+        "an impossible floor must be refused, not applied to the whole universe")
+    order = [c["ticker"] for c in absurd["candidates"]]
+    assert order == sorted(order), "with ties refused, the score order must survive"
+
+
+def test_the_ticket_names_which_picks_are_level():
+    from report.brief import ties_note
+
+    note = ties_note([["TINS.JK", "ADRO.JK"], ["UNVR.JK"],
+                      ["TAPG.JK", "SRTG.JK"]], 0.11)
+    assert "TINS = ADRO" in note
+    assert "TAPG = SRTG" in note
+    assert "UNVR" not in note                 # a group of one is not a tie
+    assert "0.11" in note
+
+
+def test_no_tie_note_when_nothing_is_tied():
+    from report.brief import ties_note
+    assert ties_note([["A"], ["B"]], 0.11) == ""
+    assert ties_note(None, 0.11) == ""
+    assert ties_note([["A", "B"]], 0.0) == ""     # no floor measured, no claim

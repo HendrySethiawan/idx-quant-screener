@@ -16,7 +16,8 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 
 from analysis.selection import (DEFAULT_MAX_CORRELATION, average_correlation,
-                                decorrelated_pick, sector_capped_pick)
+                                break_ties, decorrelated_pick, sector_capped_pick,
+                                tie_groups)
 from market.liquidity import LiquidityConfig, assess
 from portfolio.fees import FeeConfig, estimate_fees
 from portfolio.holdings import Holding
@@ -64,6 +65,8 @@ def build_candidates(
     exclude: Optional[set] = None,
     trail=None,
     correlations=None,
+    score_floor: float = 0.0,
+    ties: Optional[List[List[str]]] = None,
 ) -> Tuple[List[dict], Dict[str, str], Dict[str, str]]:
     """
     Returns (candidates, rejected, capped).
@@ -105,6 +108,12 @@ def build_candidates(
             "price": price,
             "lot_price": lot_price(price, settings.lot_size),
             "score": float(row.get("undervaluation_score", 0.0)),
+            # The un-normalised composite. `score` above is min-max scaled to 0-1
+            # for display, so the best name is always 1.00 whatever the market did
+            # -- which makes it useless for asking how FAR apart two names are.
+            # `score_floor` is measured on this one, and comparing the two scales
+            # made every name in the universe read as tied with every other.
+            "raw_score": float(row.get("raw_score", row.get("undervaluation_score", 0.0))),
             "sector": row.get("sector", "Unknown"),
             "reason": reason_phrase(row),
             "quality_note": data_quality_note(row),
@@ -136,6 +145,45 @@ def build_candidates(
     shortlist_n = max(settings.top_picks_n, nominal_n)
     ranked = [c["ticker"] for c in candidates]
     capped: Dict[str, str] = {}
+
+    # Before any gate reads the order. Every score here is a z-score against the
+    # rest of the list, so a score is a property of the company AND its peers --
+    # drop one unrelated name and everybody moves a little. `score_floor` is how
+    # much, measured by jackknife, and picks 3 to 8 sit 0.02 to 0.21 apart against
+    # a spread of 3.75. Where the score cannot separate two names, the one that
+    # least duplicates what has already been taken goes first, and the ticket says
+    # the order inside a tie is not a preference.
+    # `raw_score`, not the 0-to-1 display score: the floor is measured on the
+    # composite's own scale, and `tie_groups` refuses a floor that would swallow
+    # the universe rather than acting on it.
+    raw = {c["ticker"]: c["raw_score"] for c in candidates}
+    groups = tie_groups(ranked, raw, float(score_floor or 0.0))
+    tied = [g for g in groups if len(g) > 1]
+    # Reported from the FULL ranked list, before the shortlist cut. A tie between
+    # the last name in and the first name out is exactly the one worth seeing, and
+    # computing this after the truncation would hide it.
+    if ties is not None:
+        ties.clear()
+        ties.extend(tied)
+    if tied and correlations is not None:
+        ranked = break_ties(ranked, raw, correlations,
+                            float(score_floor or 0.0), groups=groups)
+        order = {t: i for i, t in enumerate(ranked)}
+        candidates.sort(key=lambda c: order.get(c["ticker"], len(order)))
+
+    if trail is not None and tied:
+        trail.record(
+            "ties", "Which of these are actually level",
+            f"Scores closer together than {score_floor:.2f} cannot be told apart: "
+            f"that is how far one moves when the universe gains or loses a single "
+            f"name, measured on today's list rather than assumed. Among names the "
+            f"score cannot separate, the one that moves least like what is already "
+            f"picked goes first.",
+            setting="selection.tie_floor_quantile, configs/default.yaml",
+            kept=ranked,
+            note="; ".join(" = ".join(t.replace(".JK", "") for t in g)
+                           for g in tied[:6]),
+        )
 
     if settings.max_per_sector:
         # top_n is the shortlist size, not the full list. Asking for the full list
@@ -476,7 +524,8 @@ def build_exit_plans(settings, df: pd.DataFrame, prices: Dict[str, float],
 def assemble(settings, df: pd.DataFrame, regime, holdings: List[Holding],
              correlations=None,
              events=None, blind=None,
-             risk_panel=None, journal=None, today=None):
+             risk_panel=None, journal=None, today=None,
+             score_floor: float = 0.0):
     """Everything the brief needs, in one pass."""
     prices = {
         r["ticker"]: float(r["last_close"])
@@ -529,8 +578,10 @@ def assemble(settings, df: pd.DataFrame, regime, holdings: List[Holding],
               f"scored neutral on it." if gaps else ""),
     )
 
+    ties: List[List[str]] = []
     candidates, rejected, capped = build_candidates(
-        df, settings, regime.deploy_pct, trail=trail, correlations=correlations
+        df, settings, regime.deploy_pct, trail=trail, correlations=correlations,
+        score_floor=score_floor, ties=ties,
     )
     allocation = choose_allocation(
         candidates, settings.capital_rp, regime.deploy_pct, settings=settings
@@ -620,6 +671,12 @@ def assemble(settings, df: pd.DataFrame, regime, holdings: List[Holding],
         # Mean pairwise correlation of the book. None when it cannot be measured,
         # never 0.0 -- which would read as "perfectly diversified".
         "book_correlation": book_correlation,
+        # The precision the ranking has, so the page can say which picks are
+        # level rather than presenting 0.02 as a decision.
+        "score_floor": float(score_floor or 0.0),
+        # Filled by `build_candidates` from the full ranked list, so a tie that
+        # straddles the shortlist boundary is still visible.
+        "tie_groups": ties,
         "exit_plans": exit_plans,
         "cooling": cooling,
         # What the whole book loses if every stop fills. Per-position risk sizes a

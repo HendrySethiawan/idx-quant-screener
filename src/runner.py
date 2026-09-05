@@ -72,6 +72,10 @@ class RunContext:
     # only has a row: a stop compares the last close against an entry made weeks
     # ago, and a trailing stop needs the high since that entry.
     risk_panel: Dict[str, pd.DataFrame] = field(default_factory=dict)
+    # How far a score moves when the universe gains or loses one name, measured by
+    # jackknife on the day's own universe. It is the precision the ranking has, and
+    # two names closer together than this are not ranked, they are tied.
+    score_floor: float = 0.0
 
 
 # --------------------------------------------------------------- needs network
@@ -106,6 +110,21 @@ def full_run(settings, args, logger=None) -> RunContext:
     correlations = return_correlations(
         price_data, int((settings.selection or {}).get("correlation_window", 120)))
 
+    # Measured here, not in `render`: it is a jackknife over the whole universe and
+    # costs a few seconds, which belongs in the fetch you already waited for rather
+    # than in the redraw that has to feel instant.
+    score_floor = 0.0
+    try:
+        from analysis.fundamental import FundamentalEngine
+        q = float((settings.selection or {}).get("tie_floor_quantile", 0.9))
+        score_floor = FundamentalEngine(settings).score_noise_floor(df, quantile=q)
+        if logger:
+            logger.info(f"Score precision: two names within {score_floor:.3f} of each "
+                        f"other are tied, not ranked")
+    except Exception as e:
+        if logger:
+            logger.warning(f"Could not measure score precision: {e}")
+
     regime_cfg = settings.regime or {}
     fx_data = fetcher.fetch_technical_data([regime_cfg.get("fx_ticker", "IDR=X")])
 
@@ -138,6 +157,7 @@ def full_run(settings, args, logger=None) -> RunContext:
         fetched_at=pd.Timestamp.now(), universe_key=universe_key(settings),
         sessions=sessions, watchlist_level=watchlist_level,
         correlations=correlations, risk_panel=risk_panel(price_data),
+        score_floor=score_floor,
     )
 
 
@@ -156,7 +176,11 @@ SNAPSHOT_REL = Path("data/snapshot/run.joblib")
 #      would come back with no stop and no trailing level -- the exit panel would
 #      read "cannot measure" for a book that is perfectly measurable. Refetching
 #      once is the right answer; rendering a wrong one is not.
-SNAPSHOT_VERSION = 2
+#   3  the dividend yield changed source and the sanity bounds changed behaviour,
+#      so `undervaluation_score` no longer means what a v2 file's does. Nothing
+#      about the SHAPE changed, which is the point: a snapshot is stale when the
+#      code that computed it is gone, not only when its fields move.
+SNAPSHOT_VERSION = 3
 
 
 def universe_key(settings) -> str:
@@ -166,6 +190,36 @@ def universe_key(settings) -> str:
     tickers = ",".join(sorted(settings.stock_tickers or {}))
     raw = f"{tickers}|{getattr(settings, 'history_period', '')}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _code_changed_since(path: Path) -> bool:
+    """
+    Was this snapshot written by code that has since been replaced?
+
+    `SNAPSHOT_VERSION` catches a change somebody remembered to declare. This
+    catches the rest, and it is the more dangerous half: the dividend fix altered
+    what `undervaluation_score` MEANS without touching a single field name, so a
+    saved screen stayed loadable and quietly kept showing scores computed under a
+    bug. The version bump fixes that one occurrence; this stops the next.
+
+    Frozen: the executable's own timestamp -- a new binary is new logic by
+    definition. From source: the newest file under `src/`, the same rule
+    `packaging/verify_bridge.py` already uses to refuse a stale brief.
+
+    Any failure to read a timestamp answers False. Refetching unnecessarily costs
+    a minute; refusing to refetch when the maths moved costs the wrong trade.
+    """
+    from core.paths import is_frozen
+
+    try:
+        written = path.stat().st_mtime
+        if is_frozen():
+            import sys
+            return Path(sys.executable).stat().st_mtime > written
+        src = Path(__file__).resolve().parent
+        return any(f.stat().st_mtime > written for f in src.rglob("*.py"))
+    except OSError:
+        return False
 
 
 def _snapshot_path(settings) -> Path:
@@ -207,6 +261,7 @@ def save_snapshot(ctx: RunContext) -> Optional[Path]:
             "watchlist_level": ctx.watchlist_level,
             "correlations": ctx.correlations,
             "risk_panel": ctx.risk_panel or {},
+            "score_floor": ctx.score_floor,
         }, path)
         return path
     except Exception as e:
@@ -240,6 +295,12 @@ def load_snapshot(settings, args, logger=None) -> Optional[RunContext]:
     if not isinstance(blob, dict) or blob.get("version") != SNAPSHOT_VERSION:
         return None
 
+    if _code_changed_since(path):
+        if logger:
+            logger.info("The saved screen was computed by code that has since "
+                        "changed; fetching fresh rather than showing it.")
+        return None
+
     df = blob.get("df")
     if df is None or getattr(df, "empty", True):
         return None
@@ -266,6 +327,7 @@ def load_snapshot(settings, args, logger=None) -> Optional[RunContext]:
         watchlist_level=blob.get("watchlist_level"),
         correlations=blob.get("correlations"),
         risk_panel=blob.get("risk_panel") or {},
+        score_floor=float(blob.get("score_floor") or 0.0),
     )
 
 
@@ -388,7 +450,8 @@ def render(ctx: RunContext) -> Path:
     plan = assemble(settings, ctx.df, ctx.regime, holdings,
                     correlations=ctx.correlations,
                     events=all_events, blind=blind,
-                    risk_panel=ctx.risk_panel, journal=journal)
+                    risk_panel=ctx.risk_panel, journal=journal,
+                    score_floor=ctx.score_floor)
     pd.DataFrame(plan["orders"]).to_csv(settings.output_dir / "ticket.csv", index=False)
 
     perf = build_performance(
@@ -475,6 +538,7 @@ def render(ctx: RunContext) -> Path:
             book_correlation=plan.get("book_correlation"),
             exit_plans=plan.get("exit_plans"), open_risk=plan.get("open_risk"),
             exit_cfg=ExitConfig.from_settings(settings),
+            tie_groups=plan.get("tie_groups"), score_floor=plan.get("score_floor", 0.0),
         ),
         settings.output_dir,
     )
