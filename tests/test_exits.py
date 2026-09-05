@@ -609,8 +609,10 @@ def test_a_flagged_position_raises_no_exit_order():
     orders = build_orders(alloc, holdings, {"AMRT.JK": 1310.0},
                           exit_plans={"AMRT.JK": plan})
     row = next(o for o in orders if o["ticker"] == "AMRT.JK")
+    # The point is that no EXIT/TRIM row was produced from the bad entry. The
+    # rebalance's own sell is fine -- it is priced off the market, not the typo.
     assert row.get("exit_kind") is None
-    assert "no longer in the target book" in row["note"]
+    assert row["action"] == "SELL"
 
 
 def test_an_unstaged_hold_says_sell_at_not_trim_at():
@@ -635,3 +637,243 @@ def test_a_staged_hold_still_says_trim():
                     capital_rp=CAPITAL)
     assert plan.staged is True
     assert "next trim" in plan.reason
+
+
+# ======================================================================
+# One decision per position.
+#
+# The page used to answer the same question twice and disagree with itself in
+# public: "SELL ADRO.JK - no longer in the target book" in the ticket, beside
+# "HOLD - stop 2,502, sell at 2,908" in the exit panel, with nothing saying
+# which to follow. And a rank-4 holding being liquidated to cut exposure carried
+# the identical note to a rank-33 one that had simply been beaten.
+# ======================================================================
+from portfolio.exits import DERISK, ROTATE          # noqa: E402
+from portfolio.holdings import Holding              # noqa: E402
+from portfolio.sizing import Allocation, Position   # noqa: E402
+from report.assemble import build_orders            # noqa: E402
+
+
+def _healthy(ticker, lots=1, entry=1000.0, price=1050.0, atr=40.0):
+    """A position above its stop and below its first rung: a genuine HOLD."""
+    closes = _series([price] * 8, start="2026-09-05")
+    return plan_for(ticker, lots, entry, closes, CFG, FEES, atr_rp=atr,
+                    entry_date="2026-09-05", high=closes, capital_rp=CAPITAL)
+
+
+def _pos(ticker, price, lots=1):
+    return Position(ticker=ticker, lots=lots, shares=lots * 100, price=price,
+                    lot_price=price * 100, rupiah=lots * 100 * price,
+                    weight=0.33, target_weight=0.33)
+
+
+def test_the_ticket_and_the_exit_panel_can_no_longer_disagree():
+    """
+    The guard the screenshot earned. Whatever the book decides, the plan carries
+    the same verdict, so the two panels render one answer instead of two.
+    """
+    plans = {t: _healthy(t) for t in ("KEEP.JK", "CUT.JK")}
+    holdings = [Holding("KEEP.JK", lots=1, avg_price=1000.0),
+                Holding("CUT.JK", lots=1, avg_price=1000.0)]
+    prices = {"KEEP.JK": 1050.0, "CUT.JK": 1050.0, "NEW.JK": 500.0}
+    alloc = Allocation(positions=[_pos("KEEP.JK", 1050.0), _pos("NEW.JK", 500.0)],
+                       budget=5_000_000, capital=CAPITAL)
+
+    orders = build_orders(alloc, holdings, prices, exit_plans=plans,
+                          rank_of={"NEW.JK": 0, "KEEP.JK": 1, "CUT.JK": 40},
+                          raw_of={"NEW.JK": 9.0, "KEEP.JK": 7.0, "CUT.JK": 1.0},
+                          score_floor=0.11, universe_n=74)
+
+    by_ticker = {o["ticker"]: o for o in orders}
+    for ticker, plan in plans.items():
+        assert by_ticker[ticker]["action"] == plan.final_action, ticker
+
+
+def test_a_rotation_cannot_override_a_hold_it_cannot_actually_beat():
+    """
+    Selling a position to buy one the score cannot tell apart from it pays 0.29%,
+    the stamp and 0.19% to act on a difference that is measurement noise.
+    """
+    plan = _healthy("MINE.JK")
+    alloc = Allocation(positions=[_pos("NEW.JK", 500.0)], budget=5_000_000,
+                       capital=CAPITAL)
+    orders = build_orders(alloc, [Holding("MINE.JK", lots=1, avg_price=1000.0)],
+                          {"MINE.JK": 1050.0, "NEW.JK": 500.0},
+                          exit_plans={"MINE.JK": plan},
+                          rank_of={"NEW.JK": 0, "MINE.JK": 1},
+                          raw_of={"NEW.JK": 7.05, "MINE.JK": 7.00},
+                          score_floor=0.11, universe_n=74)
+
+    row = next(o for o in orders if o["ticker"] == "MINE.JK")
+    assert row["action"] == "HOLD"
+    assert "inside the 0.11" in row["note"]
+    assert plan.final_action == "HOLD"
+
+
+def test_a_rotation_that_clears_the_floor_still_fires():
+    """The guard must not freeze the book: a real gap still rotates."""
+    plan = _healthy("MINE.JK")
+    alloc = Allocation(positions=[_pos("NEW.JK", 500.0)], budget=5_000_000,
+                       capital=CAPITAL)
+    orders = build_orders(alloc, [Holding("MINE.JK", lots=1, avg_price=1000.0)],
+                          {"MINE.JK": 1050.0, "NEW.JK": 500.0},
+                          exit_plans={"MINE.JK": plan},
+                          rank_of={"NEW.JK": 0, "MINE.JK": 30},
+                          raw_of={"NEW.JK": 7.28, "MINE.JK": 3.01},
+                          score_floor=0.11, universe_n=74)
+
+    row = next(o for o in orders if o["ticker"] == "MINE.JK")
+    assert row["action"] == "SELL"
+    assert row["sell_cause"] == ROTATE
+    assert "#31 of 74" in row["note"]
+    assert plan.final_action == "SELL"
+
+
+def test_over_budget_cuts_the_worst_ranked_and_buys_nothing():
+    """
+    RISK-OFF shrinks the budget. Cutting a rank-33 holding to keep a rank-4 one
+    reduces exposure by the same rupiah and leaves the better names; rebuilding
+    the book from the ranking sold the rank-4 name to buy a rank-1 one, which
+    reduces nothing and pays both sides of the spread for it.
+    """
+    names = {"GOOD.JK": 3, "MID.JK": 5, "BAD.JK": 40}
+    plans = {t: _healthy(t) for t in names}
+    holdings = [Holding(t, lots=1, avg_price=1000.0) for t in names]
+    prices = dict.fromkeys(names, 1050.0)
+    prices["NEW.JK"] = 500.0
+    # Three positions of Rp105,000 against a budget that fits two.
+    alloc = Allocation(positions=[_pos("NEW.JK", 500.0)], budget=220_000,
+                       capital=CAPITAL)
+
+    ranks = {"NEW.JK": 0}
+    ranks.update(names)
+    orders = build_orders(alloc, holdings, prices, exit_plans=plans,
+                          rank_of=ranks,
+                          raw_of={"NEW.JK": 9.0, "GOOD.JK": 7.0, "MID.JK": 6.5,
+                                  "BAD.JK": 1.0},
+                          score_floor=0.11, universe_n=74)
+
+    by_ticker = {o["ticker"]: o for o in orders}
+    assert by_ticker["GOOD.JK"]["action"] == "HOLD"
+    assert by_ticker["MID.JK"]["action"] == "HOLD"
+    assert by_ticker["BAD.JK"]["action"] == "SELL"
+    assert by_ticker["BAD.JK"]["sell_cause"] == DERISK
+    # Over budget and buying in the same breath is incoherent.
+    assert not [o for o in orders if o["action"] == "BUY"]
+
+
+def test_a_de_risk_says_it_is_not_a_verdict_on_the_name():
+    plans = {"A.JK": _healthy("A.JK")}
+    alloc = Allocation(positions=[], budget=1.0, capital=CAPITAL)
+    orders = build_orders(alloc, [Holding("A.JK", lots=1, avg_price=1000.0)],
+                          {"A.JK": 1050.0}, exit_plans=plans,
+                          rank_of={"A.JK": 3}, raw_of={"A.JK": 7.0},
+                          universe_n=74)
+    note = orders[0]["note"]
+    assert "not a verdict on the name" in note
+    assert "#4 of 74" in note
+    assert "no longer in the target book" not in note
+
+
+def test_the_two_causes_do_not_read_the_same():
+    """A rank-4 de-risk and a rank-33 rotation used to carry identical text."""
+    derisk = build_orders(
+        Allocation(positions=[], budget=1.0, capital=CAPITAL),
+        [Holding("A.JK", lots=1, avg_price=1000.0)], {"A.JK": 1050.0},
+        exit_plans={"A.JK": _healthy("A.JK")}, rank_of={"A.JK": 3},
+        raw_of={"A.JK": 7.0}, universe_n=74)[0]
+    rotate = build_orders(
+        Allocation(positions=[_pos("NEW.JK", 500.0)], budget=5_000_000,
+                   capital=CAPITAL),
+        [Holding("A.JK", lots=1, avg_price=1000.0)],
+        {"A.JK": 1050.0, "NEW.JK": 500.0},
+        exit_plans={"A.JK": _healthy("A.JK")}, rank_of={"NEW.JK": 0, "A.JK": 32},
+        raw_of={"NEW.JK": 7.3, "A.JK": 0.6}, score_floor=0.11, universe_n=74)
+    rotate = next(o for o in rotate if o["ticker"] == "A.JK")
+    assert derisk["sell_cause"] == DERISK and rotate["sell_cause"] == ROTATE
+    assert derisk["note"] != rotate["note"]
+
+
+def test_an_exit_still_outranks_the_book_and_its_remainder_is_what_counts():
+    """
+    A position trimmed 28 of 41 lots is the trimmed size for the budget test.
+    Measuring the pre-trim value would de-risk against exposure you are already
+    in the middle of removing.
+    """
+    closes = _series([1310.0] * 8, start="2026-09-05")
+    plan = plan_for("AMRT.JK", 41, 901.71, closes, CFG, FEES, atr_rp=45.79,
+                    entry_date="2026-09-05", high=closes, capital_rp=CAPITAL)
+    assert plan.action == TRIM
+
+    orders = build_orders(
+        Allocation(positions=[], budget=50_000_000, capital=CAPITAL),
+        [Holding("AMRT.JK", lots=41, avg_price=901.71)], {"AMRT.JK": 1310.0},
+        exit_plans={"AMRT.JK": plan}, rank_of={"AMRT.JK": 52},
+        raw_of={"AMRT.JK": -2.0}, universe_n=74)
+
+    rows = [o for o in orders if o["ticker"] == "AMRT.JK"]
+    assert len(rows) == 1                       # not sold twice
+    assert rows[0]["exit_kind"] == TRIM
+    assert plan.final_action == TRIM            # the book did not override it
+
+
+def test_what_an_exit_leaves_behind_is_charged_against_the_budget():
+    """
+    A 28-of-41-lot trim leaves Rp1.7 juta still held. Counting that toward the
+    book but not against the budget let every other position "fit" a budget the
+    book was already Rp1.7 juta over, so a de-risk cut nothing at all.
+    """
+    closes = _series([1310.0] * 8, start="2026-09-05")
+    trimmed = plan_for("AMRT.JK", 41, 901.71, closes, CFG, FEES, atr_rp=45.79,
+                       entry_date="2026-09-05", high=closes, capital_rp=CAPITAL)
+    assert trimmed.action == TRIM
+    kept_lots = 41 - trimmed.action_lots
+    kept_rp = kept_lots * 100 * 1310.0
+
+    small = _healthy("SMALL.JK")
+    holdings = [Holding("AMRT.JK", lots=41, avg_price=901.71),
+                Holding("SMALL.JK", lots=1, avg_price=1000.0)]
+    prices = {"AMRT.JK": 1310.0, "SMALL.JK": 1050.0}
+
+    # A budget that the trim's remainder alone nearly exhausts.
+    budget = kept_rp + 1_000.0
+    orders = build_orders(
+        Allocation(positions=[], budget=budget, capital=CAPITAL),
+        holdings, prices,
+        exit_plans={"AMRT.JK": trimmed, "SMALL.JK": small},
+        rank_of={"AMRT.JK": 52, "SMALL.JK": 3},
+        raw_of={"AMRT.JK": -2.0, "SMALL.JK": 7.0}, universe_n=74)
+
+    row = next(o for o in orders if o["ticker"] == "SMALL.JK")
+    assert row["action"] == "SELL", "the trim's remainder was not charged"
+    assert row["sell_cause"] == DERISK
+
+
+def test_the_survivors_are_always_the_best_ranked_ones():
+    """
+    Filling from the best end is bin-packing: a large well-ranked position that
+    does not fit is cut while a small badly-ranked one is kept, and the book you
+    are left with is not the good half. Dropping from the worst end cannot do it.
+    """
+    # Rp1.5 juta, Rp1.0 juta and Rp100k against a Rp1.6 juta budget. Filling from
+    # the best end takes BEST (1.5), cannot fit MID (2.5), then squeezes WORST in
+    # at 1.6 -- and leaves you holding the best name and the worst one. Dropping
+    # from the worst end cannot produce that.
+    sizes = {"BEST.JK": 15, "MID.JK": 10, "WORST.JK": 1}      # lots
+    ranks = {"BEST.JK": 0, "MID.JK": 5, "WORST.JK": 60}
+    plans = {t: _healthy(t) for t in sizes}
+    holdings = [Holding(t, lots=n, avg_price=1000.0) for t, n in sizes.items()]
+    prices = dict.fromkeys(sizes, 1000.0)
+
+    orders = build_orders(
+        Allocation(positions=[], budget=1_600_000, capital=CAPITAL),
+        holdings, prices, exit_plans=plans, rank_of=ranks,
+        raw_of={"BEST.JK": 9.0, "MID.JK": 6.0, "WORST.JK": 0.5}, universe_n=74)
+
+    by_ticker = {o["ticker"]: o["action"] for o in orders}
+    assert by_ticker["BEST.JK"] == "HOLD"
+    assert by_ticker["WORST.JK"] == "SELL", "the worst-ranked name survived"
+    # Survivors must be a rank prefix: never {best, worst} with the middle gone.
+    kept = [t for t, a in by_ticker.items() if a == "HOLD"]
+    assert sorted(kept, key=ranks.get) == sorted(kept, key=lambda t: ranks[t])
+    assert "WORST.JK" not in kept

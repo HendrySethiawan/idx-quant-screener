@@ -435,7 +435,7 @@ def _stop_phrase(o: dict) -> str:
 
 def _ticket_section(orders: List[dict], fees, capital: float,
                     open_risk: Optional[dict] = None,
-                    exit_cfg=None) -> str:
+                    exit_cfg=None, book_state: Optional[dict] = None) -> str:
     from portfolio.fees import FeeConfig, round_trip_cost
 
     # SELL first because a breached stop is the most urgent thing on the page,
@@ -495,6 +495,21 @@ def _ticket_section(orders: List[dict], fees, capital: float,
     )
     callouts = f'<div class="callout">{fee_bits}</div>'
 
+    # Why there are no BUY rows. Without this the page shows a ranked list headed
+    # "Best candidates you can afford" and a ticket that buys none of them, with
+    # nothing connecting the two -- the same silent contradiction as a ticket that
+    # said SELL beside an exit panel that said HOLD.
+    if (book_state or {}).get("derisking"):
+        callouts = (
+            '<div class="callout" style="border-left-color:var(--warn)">'
+            "<strong>Cutting back, not buying.</strong> You hold "
+            f'{rp(book_state.get("book_rp"))} against today\'s '
+            f'{rp(book_state.get("budget_rp"))} budget, so the book comes down to '
+            "size before anything else. Nothing is bought today &mdash; the "
+            "candidates listed elsewhere are what to buy when the regime turns, "
+            "not now.</div>"
+        ) + callouts
+
     # What these buys have to GAIN before they are worth having made. "0.06% of
     # capital" reads as nothing; the same fees against the money actually deployed,
     # counting the sale that has not happened yet and the stamp on it, is the
@@ -542,7 +557,10 @@ def _ticket_section(orders: List[dict], fees, capital: float,
 
 
 _EXIT_PILL = {"EXIT": "bad", "TRIM": "warn", "HOLD": "", "NO STOP": "warn",
-              "CHECK ENTRY": "warn"}
+              "CHECK ENTRY": "warn",
+              # A book-driven sale. Red like an EXIT because the instruction is
+              # the same size, even though no stop was hit.
+              "SELL": "bad"}
 
 
 def _ladder_cell(plan) -> str:
@@ -616,16 +634,22 @@ def _exit_section(plans: Dict[str, object], exit_cfg=None) -> str:
     # A position whose entry cannot be believed sorts to the top, above even a
     # breached stop: until the record is fixed, nothing else said about it means
     # anything, and a stop is at least a real level.
-    for plan in sorted(plans.values(), key=lambda p: (p.action != "CHECK ENTRY",
-                                                      p.action != "EXIT",
-                                                      p.action != "TRIM",
+    # `final_action`, never `action`. The plan's own verdict is what the STOP and
+    # the ladder say; the book can override it with a de-risk or a rotation, and
+    # this panel used to go on printing HOLD beside a ticket that said SELL.
+    for plan in sorted(plans.values(), key=lambda p: (p.final_action != "CHECK ENTRY",
+                                                      p.final_action not in ("EXIT", "SELL"),
+                                                      p.final_action != "TRIM",
                                                       p.ticker)):
-        pill = _EXIT_PILL.get(plan.action, "")
-        verb = plan.action
-        if plan.action == "TRIM":
+        act = plan.final_action
+        pill = _EXIT_PILL.get(act, "")
+        verb = act
+        if act == "TRIM":
             verb = f"TRIM {plan.action_lots} lot"
-        elif plan.action == "EXIT":
+        elif act == "EXIT":
             verb = f"SELL all {plan.action_lots}"
+        elif act == "SELL":
+            verb = f"SELL all {plan.lots}"
 
         stop = '<span class="note">none</span>'
         if plan.stop_rp:
@@ -656,7 +680,7 @@ def _exit_section(plans: Dict[str, object], exit_cfg=None) -> str:
             risk,
             _ladder_cell(plan),
             f'<span class="pill {pill}">{_e(verb)}</span>'
-            f'<br><span class="note">{_e(plan.reason)}</span>'
+            f'<br><span class="note">{_e(plan.final_reason)}</span>'
             + "".join(f'<br><span class="pill warn">{_e(n)}</span>' for n in plan.notes),
         ])
 
@@ -907,6 +931,7 @@ def render_brief(
     tie_groups: Optional[List[List[str]]] = None,
     score_floor: float = 0.0,
     density: str = "normal",
+    book_state: Optional[dict] = None,
 ) -> str:
     """
     The terminal. One document, five destinations, nothing scrolls but panels.
@@ -1037,7 +1062,8 @@ def render_brief(
         T.column([
             T.panel("Do this today",
                     stale_note + placeholder_note
-                    + _ticket_section(orders, fees, capital, open_risk, exit_cfg)
+                    + _ticket_section(orders, fees, capital, open_risk,
+                                      exit_cfg, book_state)
                     + granularity + missing_note + concentration
                     + ties_note(tie_groups, score_floor)
                     + evidence_note(verdict),

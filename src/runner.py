@@ -543,6 +543,7 @@ def render(ctx: RunContext) -> Path:
             exit_cfg=ExitConfig.from_settings(settings),
             tie_groups=plan.get("tie_groups"), score_floor=plan.get("score_floor", 0.0),
             density=str((getattr(settings, "ui", None) or {}).get("density", "normal")),
+            book_state=plan.get("book_state"),
         ),
         settings.output_dir,
     )
