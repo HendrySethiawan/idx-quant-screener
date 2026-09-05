@@ -978,8 +978,14 @@ def test_a_flagged_position_shows_no_stop_and_no_trim_level():
     from portfolio.exits import ExitConfig
 
     out = _render(exit_plans={"AMRT.JK": _flagged_plan()}, exit_cfg=ExitConfig())
-    assert "too small to stage" not in out       # no ladder was built
-    assert "trailing stop" not in out
+    # Scoped to the exit table. The Guide page defines "trailing stop" and every
+    # other term in the app, so a whole-document `not in` here would only be
+    # asserting that the glossary does not exist.
+    import re
+    panel = next(t for t in re.findall(r"<table.*?</table>", out, re.S)
+                 if "At risk" in t)
+    assert "too small to stage" not in panel     # no ladder was built
+    assert "trailing stop" not in panel
 
 
 def test_the_headline_names_what_the_totals_contain():
