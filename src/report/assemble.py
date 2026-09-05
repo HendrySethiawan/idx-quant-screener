@@ -275,6 +275,10 @@ def build_orders(
     decided: set = set()
 
     for ticker, plan in exit_plans.items():
+        # CHECK ENTRY never reaches here: `plan_for` returns before computing a
+        # stop or a ladder when the entry price cannot be a real fill, so there is
+        # no level to act on. The rebalance below may still sell the name, priced
+        # off the market rather than off the bad record.
         if getattr(plan, "action", None) not in (EXIT, TRIM):
             continue
         holding = held.get(ticker)
@@ -489,18 +493,18 @@ def build_exit_plans(settings, df: pd.DataFrame, prices: Dict[str, float],
     has to beat, and `position_history` gives the size it started at so the ladder
     keeps still when it is trimmed.
 
-    Returns `(plans, cooling)`. Both are empty when there is nothing open, which
-    is the ordinary case for a fresh install and must not be an error.
+    Returns `(plans, cooling, cfg, bad_entries)`. All empty when there is nothing
+    open, which is the ordinary case for a fresh install and must not be an error.
     """
     from portfolio.exits import ExitConfig, cooldown, plans_for, position_history
     from portfolio.fees import FeeConfig
-    from portfolio.ledger import open_positions
+    from portfolio.ledger import implausible_entries, open_positions
 
     cfg = ExitConfig.from_settings(settings)
     fee_cfg = FeeConfig.from_settings(settings)
 
     if journal is None or getattr(journal, "empty", True):
-        return {}, {}, cfg
+        return {}, {}, cfg, {}
 
     panel = risk_panel or {}
     closes = panel.get("Close")
@@ -511,14 +515,21 @@ def build_exit_plans(settings, df: pd.DataFrame, prices: Dict[str, float],
             atr[ticker] = _num(row.get("atr_14"))
             notes[ticker] = str(row.get("price_note") or "")
 
+    # One detection site. An entry that cannot be a real fill poisons the stop,
+    # the ladder, the risk figure and the verdict, because every one of them is
+    # measured from it -- so it is caught before any of them is computed.
+    bad_entries = implausible_entries(journal, closes)
+
     plans = plans_for(
         open_positions(journal, prices), closes, cfg, fee_cfg,
         highs=panel.get("High"),
         history=position_history(journal, fee_cfg.lot_size),
-        atr=atr, price_notes=notes, capital_rp=settings.capital_rp,
+        atr=atr, price_notes=notes, entry_notes=bad_entries,
+        capital_rp=settings.capital_rp,
     )
     sessions = None if closes is None else pd.DatetimeIndex(closes.index)
-    return plans, cooldown(journal, cfg, today=today, sessions=sessions), cfg
+    return (plans, cooldown(journal, cfg, today=today, sessions=sessions),
+            cfg, bad_entries)
 
 
 def assemble(settings, df: pd.DataFrame, regime, holdings: List[Holding],
@@ -619,7 +630,7 @@ def assemble(settings, df: pd.DataFrame, regime, holdings: List[Holding],
     # Exits before orders. A stop that has been hit is a decision already made
     # about a position you hold; the ranking above is an opinion about one you
     # might open, and the first of those outranks the second.
-    exit_plans, cooling, exit_cfg = build_exit_plans(
+    exit_plans, cooling, exit_cfg, bad_entries = build_exit_plans(
         settings, df, prices, risk_panel=risk_panel, journal=journal, today=today)
 
     fee_cfg = FeeConfig.from_settings(settings)
@@ -679,6 +690,9 @@ def assemble(settings, df: pd.DataFrame, regime, holdings: List[Holding],
         "tie_groups": ties,
         "exit_plans": exit_plans,
         "cooling": cooling,
+        # Positions whose recorded entry price cannot be a real fill. Kept in
+        # the totals and flagged, never silently dropped.
+        "bad_entries": bad_entries,
         # What the whole book loses if every stop fills. Per-position risk sizes a
         # trade; this is the one that keeps you solvent, and nothing said it before.
         "open_risk": _open_risk(exit_plans, settings.capital_rp),

@@ -909,3 +909,81 @@ def test_no_tie_note_when_nothing_is_tied():
     assert ties_note([["A"], ["B"]], 0.11) == ""
     assert ties_note(None, 0.11) == ""
     assert ties_note([["A", "B"]], 0.0) == ""     # no floor measured, no claim
+
+
+# ================================================ AN ENTRY THAT LOOKS WRONG
+# The totals keep it and name it. Silently excluding a row would be the tool
+# deciding which of your records to count, and if the price were merely unusual
+# rather than wrong it would be hiding a real position.
+
+BAD_ENTRY = ("recorded at Rp50, which is 96% from the Rp1,310 close on 05 Sep 26 "
+             "- check the entry against your broker")
+
+
+def _flagged_plan():
+    from portfolio.exits import ExitConfig, plan_for
+    from portfolio.fees import FeeConfig
+
+    idx = pd.bdate_range("2026-09-05", periods=3)
+    closes = pd.Series([1310.0] * 3, index=idx)
+    return plan_for("AMRT.JK", 1, 50.0, closes, ExitConfig(), FeeConfig(),
+                    atr_rp=45.79, entry_date=idx[0], high=closes,
+                    capital_rp=10_000_000, entry_note=BAD_ENTRY)
+
+
+def test_the_exit_panel_says_check_the_entry_instead_of_a_plan():
+    from portfolio.exits import ExitConfig
+
+    out = _render(exit_plans={"AMRT.JK": _flagged_plan()}, exit_cfg=ExitConfig())
+    assert "check the entry" in out
+    assert "Rp1,310" in out
+    assert "CHECK ENTRY" in out
+
+
+def test_a_flagged_position_shows_no_stop_and_no_trim_level():
+    from portfolio.exits import ExitConfig
+
+    out = _render(exit_plans={"AMRT.JK": _flagged_plan()}, exit_cfg=ExitConfig())
+    assert "too small to stage" not in out       # no ladder was built
+    assert "trailing stop" not in out
+
+
+def test_the_headline_names_what_the_totals_contain():
+    from report.journal_view import _bad_entry_note
+
+    positions = pd.DataFrame([
+        {"ticker": "AMRT.JK", "unrealized_pnl": 125_990.50},
+        {"ticker": "TINS.JK", "unrealized_pnl": 31_221.00},
+    ])
+    note = _bad_entry_note({"AMRT.JK": BAD_ENTRY}, positions)
+
+    assert "AMRT" in note
+    assert "Rp125,991" in note or "Rp125,990" in note
+    assert "Nothing has been removed" in note
+    assert "check the entry" in note
+
+
+def test_no_headline_note_when_every_entry_looks_sound():
+    from report.journal_view import _bad_entry_note
+    assert _bad_entry_note({}, pd.DataFrame()) == ""
+    assert _bad_entry_note(None, None) == ""
+
+
+def test_the_same_day_sell_advice_appears_exactly_once():
+    """
+    `estimate_fees` already emits it through `fees.notes`. A second callout added
+    during the exits work printed "Rp40,000 saved" twice in a row on a five-sell
+    ticket.
+    """
+    from portfolio.fees import FeeConfig, estimate_fees
+
+    sells = [{"action": "SELL", "ticker": f"T{i}.JK", "lots": 1, "shares": 100,
+              "price": 1000.0, "rupiah": 100_000.0, "note": "left the book"}
+             for i in range(5)]
+    out = _render(orders=sells,
+                  fees=estimate_fees(sells, FeeConfig(), 10_000_000, sell_days=1))
+
+    # Matched on the saving itself, not on the phrase "same day" -- the benchmark
+    # callouts legitimately say "the same rupiah, moved on the same days".
+    assert out.count("Rp40,000") == 1
+    assert out.count("Execute all 5 sells") == 1

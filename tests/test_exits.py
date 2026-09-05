@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from portfolio.exits import (EXIT, HOLD, NO_STOP, TRIM, ExitConfig, break_even_level,
+from portfolio.exits import (CHECK_ENTRY, EXIT, HOLD, NO_STOP, TRIM, ExitConfig, break_even_level,
                              build_ladder, cooldown, entry_risk, open_risk,
                              plan_for, plans_for, position_history, stop_level,
                              trailing_level)
@@ -548,3 +548,90 @@ def test_missing_risk_block_falls_back_to_defaults():
 
 def test_plans_for_skips_an_empty_book():
     assert plans_for(pd.DataFrame(), None, CFG, FEES) == {}
+
+
+# --------------------------------------- an entry that cannot be believed
+# Every level in a plan -- the stop, the ladder, the rupiah at risk, the verdict --
+# is measured from the entry price. So an entry that cannot be a real fill does
+# not produce a slightly wrong plan, it produces a confident and entirely fictional
+# one: AMRT recorded at Rp50 against a Rp1,310 market gave a stop 2,976% away, a
+# trim level of Rp58, and a SELL in the ticket that existed only because of it.
+
+BAD = ("recorded at Rp50, which is 96% from the Rp1,310 close on 05 Sep 26 - "
+       "check the entry against your broker")
+
+
+def _amrt(**kw):
+    closes = _series([1310.0] * 8, start="2026-09-05")
+    return plan_for("AMRT.JK", 1, 50.0, closes, CFG, FEES,
+                    atr_rp=45.79, entry_date="2026-09-05", high=closes,
+                    capital_rp=CAPITAL, **kw)
+
+
+def test_a_flagged_entry_produces_no_levels_at_all():
+    plan = _amrt(entry_note=BAD)
+    assert plan.action == CHECK_ENTRY
+    assert plan.stop_rp is None and plan.initial_stop_rp is None
+    assert plan.stages == []
+    assert plan.risk_rp is None and plan.risk_pct_of_capital is None
+    assert plan.action_lots == 0
+
+
+def test_a_flagged_entry_says_why_and_carries_the_numbers():
+    plan = _amrt(entry_note=BAD)
+    assert BAD in plan.reason
+    assert plan.entry_note == BAD
+    assert any("Fix the row" in n for n in plan.notes)
+
+
+def test_without_the_flag_the_same_position_gets_a_full_plan():
+    """The guard must be the flag, not something about the position itself."""
+    plan = _amrt()
+    assert plan.action != CHECK_ENTRY
+    assert plan.stop_rp is not None
+    assert plan.risk_rp is not None
+
+
+def test_a_flagged_position_raises_no_exit_order():
+    """
+    The ticket said SELL AMRT on the strength of a typo. A rebalance may still
+    sell the name -- that one is priced off the market -- but nothing derived from
+    the bad entry may reach the ticket.
+    """
+    from portfolio.holdings import Holding
+    from portfolio.sizing import Allocation
+    from report.assemble import build_orders
+
+    plan = _amrt(entry_note=BAD)
+    alloc = Allocation(positions=[], budget=0, capital=CAPITAL)
+    holdings = [Holding("AMRT.JK", lots=1, avg_price=50.095)]
+
+    orders = build_orders(alloc, holdings, {"AMRT.JK": 1310.0},
+                          exit_plans={"AMRT.JK": plan})
+    row = next(o for o in orders if o["ticker"] == "AMRT.JK")
+    assert row.get("exit_kind") is None
+    assert "no longer in the target book" in row["note"]
+
+
+def test_an_unstaged_hold_says_sell_at_not_trim_at():
+    """
+    A 1-lot position cannot be trimmed, and the exit panel already said so. The
+    HOLD reason said "next trim" about the same plan, which is an instruction that
+    cannot be followed.
+    """
+    closes = _series([4890.0, 4900.0], start="2026-09-04")
+    plan = plan_for("ASII.JK", 1, 4899.29, closes, CFG, FEES, atr_rp=116.23,
+                    entry_date="2026-09-04", high=closes, capital_rp=CAPITAL)
+    assert plan.action == HOLD and plan.staged is False
+    assert "sell at" in plan.reason
+    assert "trim" not in plan.reason
+
+
+def test_a_staged_hold_still_says_trim():
+    risk = 2.5 * SRTG_ATR
+    closes = _series([SRTG_ENTRY, SRTG_ENTRY + 0.2 * risk], start="2026-08-26")
+    plan = plan_for("SRTG.JK", SRTG_LOTS, SRTG_ENTRY, closes, CFG, FEES,
+                    atr_rp=SRTG_ATR, entry_date="2026-08-26", high=closes,
+                    capital_rp=CAPITAL)
+    assert plan.staged is True
+    assert "next trim" in plan.reason

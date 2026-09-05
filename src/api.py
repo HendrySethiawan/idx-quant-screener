@@ -834,7 +834,7 @@ class TerminalAPI:
             return {}
         try:
             from report.assemble import build_exit_plans
-            plans, _, _ = build_exit_plans(
+            plans, _, _, _ = build_exit_plans(
                 self._settings, ctx.df, self._prices,
                 risk_panel=ctx.risk_panel, journal=self._journal())
             return plans

@@ -432,6 +432,7 @@ def render(ctx: RunContext) -> Path:
     from cli import _paths, build_performance, collect_events
     from portfolio.exits import ExitConfig
     from portfolio.journal import load_journal
+    from portfolio.ledger import open_positions
     from report.journal_view import brief_section
 
     holdings = load_holdings(
@@ -521,7 +522,9 @@ def render(ctx: RunContext) -> Path:
             capital=settings.capital_rp, holdings_rows=plan["holdings_rows"],
             candidates=plan["candidates"], rejected=plan["rejected"],
             capped=plan["capped"], allocation=plan["allocation"],
-            journal_html=brief_section(perf),
+            journal_html=brief_section(
+                perf, bad_entries=plan.get("bad_entries"),
+                positions=open_positions(journal, plan["prices"])),
             events=E.upcoming(all_events, horizon), blind_n=len(blind),
             event_horizon=horizon, seasonality=ctx.season_line,
             universe_n=len(ctx.df),

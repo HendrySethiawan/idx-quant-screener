@@ -493,26 +493,17 @@ def _ticket_section(orders: List[dict], fees, capital: float,
             + "</div>"
         )
 
-    # Stamp is per DAY containing a sell, not per order. The exit ladder is the
-    # one thing in this tool that deliberately creates extra sell events, so the
-    # advice to batch them belongs next to it rather than in a footnote.
-    sells = [o for o in orders if o["action"] == "SELL"]
-    if len(sells) > 1:
-        callouts += (
-            '<div class="callout save"><strong>Sell these on the same day.</strong> '
-            f'The Rp10,000 stamp is charged once per day containing a sale, not per '
-            f'order, so putting all {len(sells)} through together costs one stamp '
-            f'instead of {len(sells)} &mdash; '
-            f'{rp((len(sells) - 1) * 10_000)} saved for doing nothing differently '
-            f'except the timing.</div>'
-        )
-
+    # No batching callout here. `estimate_fees` already emits exactly this advice
+    # through `fees.notes` whenever there is more than one sell, and adding a
+    # second one printed "Rp40,000 saved" twice in consecutive callouts on a
+    # five-sell ticket. One fact, one place.
     for note in fees.notes:
         callouts += f'<div class="callout save"><strong>Fee tip.</strong> {_e(note)}</div>'
     return table + callouts
 
 
-_EXIT_PILL = {"EXIT": "bad", "TRIM": "warn", "HOLD": "", "NO STOP": "warn"}
+_EXIT_PILL = {"EXIT": "bad", "TRIM": "warn", "HOLD": "", "NO STOP": "warn",
+              "CHECK ENTRY": "warn"}
 
 
 def _ladder_cell(plan) -> str:
@@ -527,6 +518,9 @@ def _ladder_cell(plan) -> str:
     stamp makes surprising -- a Rp665,000 trim that costs Rp1,928 sharing a sell
     day costs Rp11,928 on its own.
     """
+    if plan.entry_note:
+        return ('<span class="pill warn">check the entry</span>'
+                f'<br><span class="note">{_e(plan.entry_note)}</span>')
     if not plan.stages:
         return '<span class="note">-</span>'
     if not plan.staged:
@@ -580,7 +574,11 @@ def _exit_section(plans: Dict[str, object], exit_cfg=None) -> str:
                 "</div>" + how)
 
     rows = []
-    for plan in sorted(plans.values(), key=lambda p: (p.action != "EXIT",
+    # A position whose entry cannot be believed sorts to the top, above even a
+    # breached stop: until the record is fixed, nothing else said about it means
+    # anything, and a stop is at least a real level.
+    for plan in sorted(plans.values(), key=lambda p: (p.action != "CHECK ENTRY",
+                                                      p.action != "EXIT",
                                                       p.action != "TRIM",
                                                       p.ticker)):
         pill = _EXIT_PILL.get(plan.action, "")

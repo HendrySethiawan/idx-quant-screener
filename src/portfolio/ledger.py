@@ -157,6 +157,75 @@ def implausible(row) -> str:
             f"Rp{buy:,.0f} to Rp{sell:,.0f}")
 
 
+# How far an entry may sit from the close of the session it was made in before it
+# stops being a price and starts being a typo. Not a taste: IDX auto-rejection
+# caps a day's move at 35% / 25% / 20% by price tier, so a real fill can never be
+# half the reference price away. Below this it cannot fire on a genuine trade;
+# above it, every dropped, extra or transposed digit lands.
+IMPLAUSIBLE_ENTRY_GAP = 0.50
+
+
+def _close_asof(series: Optional[pd.Series], when) -> Optional[float]:
+    """Last close on or before `when`; None when the series starts later."""
+    if series is None or getattr(series, "empty", True):
+        return None
+    idx = pd.to_datetime(series.index)
+    idx = idx.tz_localize(None) if getattr(idx, "tz", None) is not None else idx
+    clean = pd.Series(series.values, index=idx).dropna()
+    upto = clean[clean.index <= pd.to_datetime(when)]
+    return float(upto.iloc[-1]) if len(upto) else None
+
+
+def implausible_entries(journal: Optional[pd.DataFrame],
+                        closes: Optional[pd.DataFrame],
+                        max_gap: float = IMPLAUSIBLE_ENTRY_GAP) -> Dict[str, str]:
+    """
+    Open positions whose recorded entry price cannot be a real fill.
+
+    `implausible` above catches this for a CLOSED round-trip and has since it was
+    written -- a mistyped SRTG entry showed +1412% and prompted it. Nothing caught
+    it while the position was still open, so an AMRT bought at Rp50 against a
+    Rp1,310 market read as +2,515% profit, produced a stop 2,976% away, and put a
+    SELL in the ticket generated entirely by the typo.
+
+    Measured against the close of the session the trade was made in, NOT today's.
+    Comparing against the current price would flag a position that has genuinely
+    tripled since it was bought, which is the one case where the number is real and
+    most worth trusting.
+
+    Returns `{ticker: reason}`, in the same voice as `implausible`, so the two read
+    as one idea rather than two.
+    """
+    out: Dict[str, str] = {}
+    if journal is None or getattr(journal, "empty", True) or closes is None:
+        return out
+
+    df = journal.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df[df["action"].astype(str).str.upper() == "BUY"].dropna(subset=["date"])
+
+    for _, row in df.iterrows():
+        ticker = str(row["ticker"])
+        if ticker in out or ticker not in getattr(closes, "columns", []):
+            continue
+        try:
+            entry = float(row["price"])
+        except (TypeError, ValueError):
+            continue
+        reference = _close_asof(closes[ticker], row["date"])
+        if not reference or reference <= 0 or entry <= 0:
+            continue
+
+        gap = abs(entry / reference - 1.0)
+        if gap > float(max_gap):
+            out[ticker] = (
+                f"recorded at Rp{entry:,.0f}, which is {gap * 100:,.0f}% from the "
+                f"Rp{reference:,.0f} close on {row['date']:%d %b %y} - check the "
+                f"entry against your broker"
+            )
+    return out
+
+
 def recent_trades(journal: Optional[pd.DataFrame], limit: int = 20) -> pd.DataFrame:
     """The raw log, newest first -- every buy and sell exactly as recorded."""
     if journal is None or journal.empty:

@@ -13,7 +13,7 @@ import pytest
 
 from portfolio.fees import FeeConfig
 from portfolio.journal import build_trade, closed_trades
-from portfolio.ledger import (monthly_realized, monthly_totals, open_positions,
+from portfolio.ledger import (implausible_entries, monthly_realized, monthly_totals, open_positions,
                               recent_trades)
 
 CFG = FeeConfig()
@@ -321,3 +321,94 @@ def test_the_columns_degrade_when_there_is_no_plan():
     out = open_positions_table(_positions(), {})
     assert ">Stop<" in out
     assert out.count(">-<") >= 1
+
+
+# ------------------------------------------ an entry price that cannot be a fill
+# `implausible` above catches this once a round-trip is CLOSED, and has since a
+# mistyped SRTG entry showed +1412%. Nothing caught it while the position was
+# still open, so an AMRT recorded at Rp50 against a Rp1,310 market read as +2,515%
+# profit, produced a stop 2,976% away, and put a SELL in the ticket that existed
+# only because of the typo.
+
+def _buys(rows):
+    """rows: (ticker, price, date)"""
+    return pd.DataFrame([{
+        "date": d, "ticker": t, "action": "BUY", "lots": 1, "shares": 100,
+        "price": p, "gross_rp": p * 100, "fee_rp": 0.0, "stamp_rp": 0.0,
+        "net_rp": -p * 100, "source": "own", "note": "",
+    } for t, p, d in rows])
+
+
+def _closes(series):
+    """series: {ticker: {date: close}}"""
+    frames = {t: pd.Series(v) for t, v in series.items()}
+    out = pd.DataFrame(frames)
+    out.index = pd.to_datetime(out.index)
+    return out
+
+
+LIVE_CLOSES = _closes({
+    "AMRT.JK": {"2026-09-04": 1310.0}, "TINS.JK": {"2026-09-04": 4420.0},
+    "ASII.JK": {"2026-09-04": 4900.0},
+})
+
+
+def test_a_dropped_digit_is_caught():
+    """The real row: AMRT at Rp50 when Alfamart closed at Rp1,310 that session."""
+    bad = implausible_entries(_buys([("AMRT.JK", 50.0, "2026-09-05")]), LIVE_CLOSES)
+    assert "AMRT.JK" in bad
+    assert "Rp50" in bad["AMRT.JK"] and "Rp1,310" in bad["AMRT.JK"]
+    assert "check the entry" in bad["AMRT.JK"]
+
+
+def test_a_real_fill_is_not_flagged():
+    """TINS at Rp4,100 against a Rp4,420 close is 7.2% out -- an ordinary fill."""
+    j = _buys([("TINS.JK", 4100.0, "2026-09-05"), ("ASII.JK", 4890.0, "2026-09-05")])
+    assert implausible_entries(j, LIVE_CLOSES) == {}
+
+
+def test_the_threshold_sits_outside_any_idx_daily_move():
+    """
+    IDX auto-rejection caps a session at 35% / 25% / 20% by price tier, so a fill
+    can never be half the reference away. A 34% gap must pass.
+    """
+    j = _buys([("ASII.JK", 4900.0 * 0.66, "2026-09-05")])
+    assert implausible_entries(j, LIVE_CLOSES) == {}
+    worse = _buys([("ASII.JK", 4900.0 * 0.49, "2026-09-05")])
+    assert "ASII.JK" in implausible_entries(worse, LIVE_CLOSES)
+
+
+def test_the_reference_is_the_close_on_the_trade_date():
+    """
+    Not today's close. A position bought at Rp1,000 that has since tripled is the
+    case where the number is real and most worth trusting -- comparing it against
+    the current price would flag exactly that.
+    """
+    closes = _closes({"X.JK": {"2026-01-02": 1000.0, "2026-09-04": 3000.0}})
+    j = _buys([("X.JK", 1000.0, "2026-01-02")])
+    assert implausible_entries(j, closes) == {}
+
+
+def test_a_name_with_no_price_history_is_left_alone():
+    """Absence of a reference is not evidence the entry is wrong."""
+    j = _buys([("NEW.JK", 50.0, "2026-09-05")])
+    assert implausible_entries(j, LIVE_CLOSES) == {}
+
+
+def test_a_trade_before_the_series_starts_is_left_alone():
+    closes = _closes({"X.JK": {"2026-09-04": 1000.0}})
+    j = _buys([("X.JK", 12.0, "2020-01-02")])
+    assert implausible_entries(j, closes) == {}
+
+
+def test_only_buys_are_checked():
+    """A sell price is checked by `implausible` once the round-trip closes."""
+    j = _buys([("AMRT.JK", 50.0, "2026-09-05")])
+    j.loc[0, "action"] = "SELL"
+    assert implausible_entries(j, LIVE_CLOSES) == {}
+
+
+def test_an_empty_journal_flags_nothing():
+    assert implausible_entries(None, LIVE_CLOSES) == {}
+    assert implausible_entries(pd.DataFrame(), LIVE_CLOSES) == {}
+    assert implausible_entries(_buys([("AMRT.JK", 50.0, "2026-09-05")]), None) == {}
