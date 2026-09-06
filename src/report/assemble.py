@@ -23,6 +23,7 @@ from portfolio.fees import FeeConfig, estimate_fees
 from portfolio.holdings import Holding
 from portfolio.sizing import Allocation, choose_allocation, lot_price
 from report.explain import data_quality_note, health_flags, reason_phrase
+from report.method import capital_ladder, sector_exposure
 
 
 def _price_of(row) -> Optional[float]:
@@ -67,7 +68,6 @@ def _value_fields(row) -> Dict[str, object]:
 def build_candidates(
     df: pd.DataFrame,
     settings,
-    deploy_pct: float,
     exclude: Optional[set] = None,
     trail=None,
     correlations=None,
@@ -83,12 +83,22 @@ def build_candidates(
     The nominal slot is used for the liquidity test before the real position count
     is known -- an approximation, but the gate is an order-of-magnitude check, not
     a precise one.
+
+    **Measured on FULL capital, not today's deployed budget.** Scaling this by
+    `deploy_pct` made the eligible universe a function of the regime, which is
+    both backwards and unsafe. Backwards, because a risk-off reading shrank the
+    slot and so LOOSENED the cap: at Rp10 miliar it offered 36 names in risk-off
+    against 16 in risk-on, most permissive exactly when the market was worst.
+    Unsafe, because the position does not go away when the regime turns -- a name
+    that fitted at 30% deploy is still held when deploy returns to 100% and the
+    target triples, and the question the gate exists to answer is whether you can
+    get out of the FULL position, not today's smaller one.
     """
     exclude = exclude or set()
     liq_cfg = LiquidityConfig.from_settings(settings)
     account = getattr(settings, "account", None) or {}
     nominal_n = int(account.get("max_positions", 5))
-    nominal_slot = settings.capital_rp * deploy_pct / max(1, nominal_n)
+    nominal_slot = settings.capital_rp / max(1, nominal_n)
 
     candidates: List[dict] = []
     rejected: Dict[str, str] = {}
@@ -770,7 +780,7 @@ def assemble(settings, df: pd.DataFrame, regime, holdings: List[Holding],
 
     ties: List[List[str]] = []
     candidates, rejected, capped = build_candidates(
-        df, settings, regime.deploy_pct, trail=trail, correlations=correlations,
+        df, settings, trail=trail, correlations=correlations,
         score_floor=score_floor, ties=ties,
     )
     allocation = choose_allocation(
@@ -879,6 +889,11 @@ def assemble(settings, df: pd.DataFrame, regime, holdings: List[Holding],
         # level rather than presenting 0.02 as a decision.
         "score_floor": float(score_floor or 0.0),
         "book_state": book_state,
+        # Computed here because this is where the frame is. The Method page
+        # renders them; hardcoding a capital table would be wrong the first
+        # time IDX turnover moved.
+        "capital_ladder": capital_ladder(df, settings),
+        "sector_exposure": sector_exposure(settings),
         # Filled by `build_candidates` from the full ranked list, so a tie that
         # straddles the shortlist boundary is still visible.
         "tie_groups": ties,

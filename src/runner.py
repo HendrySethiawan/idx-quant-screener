@@ -544,6 +544,8 @@ def render(ctx: RunContext) -> Path:
             tie_groups=plan.get("tie_groups"), score_floor=plan.get("score_floor", 0.0),
             density=str((getattr(settings, "ui", None) or {}).get("density", "normal")),
             book_state=plan.get("book_state"),
+            capital_ladder=plan.get("capital_ladder"),
+            sector_exposure=plan.get("sector_exposure"),
         ),
         settings.output_dir,
     )
