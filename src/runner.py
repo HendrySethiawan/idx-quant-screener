@@ -514,7 +514,7 @@ def render(ctx: RunContext) -> Path:
         if logger:
             logger.warning(f"Ledger unavailable: {e}")
 
-    from first_run import is_placeholder_capital
+    from first_run import should_ask
 
     path = write_brief(
         render_brief(
@@ -535,7 +535,7 @@ def render(ctx: RunContext) -> Path:
             cash_form_html=cash_form_html,
             dividend_form_html=dividend_form_html,
             market=_market_panel_data(ctx),
-            placeholder_capital=is_placeholder_capital(settings),
+            placeholder_capital=should_ask(settings),
             perf=perf, fetched_at=ctx.fetched_at, sessions=ctx.sessions,
             verdict=_backtest_verdict(settings, logger),
             book_correlation=plan.get("book_correlation"),
