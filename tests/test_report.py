@@ -86,7 +86,7 @@ def test_data_quality_note_flags_imputation(scored_df):
 
 # ------------------------------------------------------------------- assemble
 def test_illiquid_names_never_become_candidates(scored_df, settings_mock):
-    cands, rejected, _ = build_candidates(scored_df, settings_mock, 1.0)
+    cands, rejected, _ = build_candidates(scored_df, settings_mock)
     tickers = [c["ticker"] for c in cands]
 
     assert "WIKA.JK" not in tickers
@@ -96,7 +96,7 @@ def test_illiquid_names_never_become_candidates(scored_df, settings_mock):
 
 
 def test_sector_cap_is_reported_separately_from_hard_gates(scored_df, settings_mock):
-    _, rejected, capped = build_candidates(scored_df, settings_mock, 1.0)
+    _, rejected, capped = build_candidates(scored_df, settings_mock)
     assert not any("sector cap" in r for r in rejected.values())
     assert all("volume" in r or "day" in r or "price" in r or "slot" in r
                for r in rejected.values())
@@ -891,7 +891,7 @@ def test_the_candidate_carries_the_unnormalised_score(scored_df, settings_mock):
     """
     df = scored_df.copy()
     df["raw_score"] = [8.5, 7.7, 6.2, 6.1][: len(df)]
-    cands, _, _ = build_candidates(df, settings_mock, 1.0)
+    cands, _, _ = build_candidates(df, settings_mock)
     assert cands
     for c in cands:
         assert "raw_score" in c

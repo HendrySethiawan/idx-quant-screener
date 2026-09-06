@@ -18,7 +18,7 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
-from report import guide, layout, terminal as T
+from report import guide, layout, method, terminal as T
 from report.terminal import SHELL_JS, THEME_CSS
 
 # Styling that belongs to content this module renders, not to the shell.
@@ -435,7 +435,8 @@ def _stop_phrase(o: dict) -> str:
 
 def _ticket_section(orders: List[dict], fees, capital: float,
                     open_risk: Optional[dict] = None,
-                    exit_cfg=None, book_state: Optional[dict] = None) -> str:
+                    exit_cfg=None, book_state: Optional[dict] = None,
+                    ladder: Optional[dict] = None) -> str:
     from portfolio.fees import FeeConfig, round_trip_cost
 
     # SELL first because a breached stop is the most urgent thing on the page,
@@ -494,6 +495,25 @@ def _ticket_section(orders: List[dict], fees, capital: float,
         f'— buy {rp(fees.buy_fee)}, sell {rp(fees.sell_fee)}, stamp {rp(fees.stamp_duty)}.'
     )
     callouts = f'<div class="callout">{fee_bits}</div>'
+
+    # An empty ticket with 74 rejection lines in Skipped is 74 true statements and
+    # not the one that matters. The gate is a ratio between your slot and each
+    # name's daily turnover, so above a certain account size NOTHING on this list
+    # can absorb a position -- and that is a fact about IDX, not a bad market day.
+    if (ladder or {}).get("outgrown"):
+        n = ladder["max_positions"]
+        callouts = (
+            '<div class="callout" style="border-left-color:var(--bad)">'
+            "<strong>Your account has outgrown this universe.</strong> One slot is "
+            f'{rp(ladder["your_slot"])} &mdash; a {n}th of your capital &mdash; and '
+            f'that is more than {ladder["pct"]:.0%} of the daily turnover of every '
+            f'name on this list. The busiest, {_e(ladder["busiest_ticker"])}, does '
+            f'{rp(ladder["busiest_rp"])} a day. Nothing here can be sized for you, '
+            "so the ticket is empty for a reason that has nothing to do with the "
+            f'market. This universe supports about <strong>{rp(ladder["ceiling_rp"])}'
+            "</strong> before the first name fits. See <strong>Method</strong> for "
+            "what to do instead.</div>"
+        ) + callouts
 
     # Why there are no BUY rows. Without this the page shows a ranked list headed
     # "Best candidates you can afford" and a ticket that buys none of them, with
@@ -932,6 +952,8 @@ def render_brief(
     score_floor: float = 0.0,
     density: str = "normal",
     book_state: Optional[dict] = None,
+    capital_ladder: Optional[dict] = None,
+    sector_exposure: Optional[dict] = None,
 ) -> str:
     """
     The terminal. One document, five destinations, nothing scrolls but panels.
@@ -1063,7 +1085,7 @@ def render_brief(
             T.panel("Do this today",
                     stale_note + placeholder_note
                     + _ticket_section(orders, fees, capital, open_risk,
-                                      exit_cfg, book_state)
+                                      exit_cfg, book_state, capital_ladder)
                     + granularity + missing_note + concentration
                     + ties_note(tie_groups, score_floor)
                     + evidence_note(verdict),
@@ -1158,6 +1180,18 @@ def render_brief(
         T.grid([T.column([T.panel("How to read this terminal",
                                   guide.render_guide(), grow=True)])]),
         "What everything here means"))
+    # After the Guide: the Guide says what the words mean, this says why the
+    # answer is what it is. Reads the run, unlike the Guide, because a hardcoded
+    # capital table would be wrong the first time turnover moved.
+    if capital_ladder and sector_exposure:
+        pages.append(T.Page(
+            "method", "Method", "method",
+            T.grid([T.column([T.panel(
+                "Why this is the answer",
+                f'<div class="method">'
+                f"{method.render_method(capital_ladder, sector_exposure, regime)}"
+                f"</div>", grow=True)])]),
+            "Capital, the rupiah, and the limits"))
     pages.append(T.Page(
         "settings", "Settings", "settings",
         T.grid([
@@ -1234,7 +1268,7 @@ def render_brief(
         top_html=top,
         body_html=T.pages_html(pages, "markets"),
         tick_html=T.tickerbar(ticks),
-        css=THEME_CSS + _EXTRA_CSS + guide.GUIDE_CSS,
+        css=THEME_CSS + _EXTRA_CSS + guide.GUIDE_CSS + method.METHOD_CSS,
         js=SHELL_JS,
     )
 
