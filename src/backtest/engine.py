@@ -650,7 +650,15 @@ def run_backtest(
                 fx_hist = fx[fx.index < t] if fx is not None else None
                 deploy = _deploy_pct(bench_hist, fx_hist, trend_ma, deploy_ladder)
 
-            candidates = [{"ticker": tk, "price": float(prices_t[tk])} for tk in eligible]
+            # `atr_rp` so the simulation sizes the way the ticket does. Without
+            # it `choose_allocation` falls back to equal rupiah here and equal
+            # risk live, and the two would be measuring different strategies.
+            atr_t = (atr_panel.loc[:t].iloc[-1]
+                     if atr_panel is not None and not atr_panel.loc[:t].empty
+                     else None)
+            candidates = [{"ticker": tk, "price": float(prices_t[tk]),
+                           "atr_rp": _finite(atr_t.get(tk)) if atr_t is not None else None}
+                          for tk in eligible]
             target = _target_shares(
                 candidates, value, deploy, cfg, fee_cfg,
             )

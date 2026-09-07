@@ -130,6 +130,9 @@ def build_candidates(
             # `score_floor` is measured on this one, and comparing the two scales
             # made every name in the universe read as tied with every other.
             "raw_score": float(row.get("raw_score", row.get("undervaluation_score", 0.0))),
+            # Sizing reads this: a position's share of the budget is set by how
+            # far its stop is, not by an equal split. See `sizing._allocate_for_n`.
+            "atr_rp": _num(row.get("atr_14")),
             "sector": row.get("sector", "Unknown"),
             "reason": reason_phrase(row),
             "quality_note": data_quality_note(row),

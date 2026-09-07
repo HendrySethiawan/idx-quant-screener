@@ -108,7 +108,7 @@ def survivorship_text(s: Dict[str, Optional[float]]) -> str:
 # ------------------------------------------------- 1. do the factors add value?
 def factor_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
                   trend_ma=200, deploy_ladder=(0.30, 0.60, 1.00),
-                  turnover=None) -> List[Comparison]:
+                  turnover=None, atr_panel=None) -> List[Comparison]:
     """
     Strategy versus the index versus an equal-weight universe.
 
@@ -127,9 +127,9 @@ def factor_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
 
     gross_cfg = BacktestConfig(**{**cfg.__dict__, "charge_fees": False, "whole_lots": False})
     gross = run_backtest(panel, capital, gross_cfg, fee_cfg, sectors, benchmark, fx,
-                         trend_ma, deploy_ladder, turnover=turnover)
+                         trend_ma, deploy_ladder, turnover=turnover, atr_panel=atr_panel)
     net = run_backtest(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
-                       trend_ma, deploy_ladder, turnover=turnover)
+                       trend_ma, deploy_ladder, turnover=turnover, atr_panel=atr_panel)
 
     out = [
         Comparison("Strategy (gross, frictionless)", gross.equity, gross.metrics(),
@@ -160,12 +160,17 @@ def factor_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
 # ------------------------------------------------ 2. what does being small cost?
 def cost_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
                 trend_ma=200, deploy_ladder=(0.30, 0.60, 1.00),
-                turnover=None) -> pd.DataFrame:
+                turnover=None, atr_panel=None) -> pd.DataFrame:
     """
     Separate the true costs from the noise, because they behave differently.
 
-    **Fees and stamp are a genuine drag.** Hold everything else fixed and charging
-    them always lowers the result. That difference is a cost.
+    **Fees and stamp are a genuine drag** -- on average, and not on every path.
+    Charging them takes cash out, cash sets the budget, the budget sets the lot
+    counts, and from there the two runs hold different books. Measured across 25
+    seeds the mean effect was -5.2 percentage points and it was the right sign in
+    15 of them. So this line is a cost in expectation; a single positive reading
+    is the same rounding noise the next paragraph is about, not a free lunch.
+    The stronger claim used to be asserted in the suite and was simply false.
 
     **Whole-lot rounding is not.** Measured on the real universe by varying the
     start month, the rounding effect was positive in 7 of 14 windows with a
@@ -184,7 +189,7 @@ def cost_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
     def run(**over):
         c = BacktestConfig(**{**cfg.__dict__, **over})
         return run_backtest(panel, capital, c, fee_cfg, sectors, benchmark, fx,
-                            trend_ma, deploy_ladder, turnover=turnover)
+                            trend_ma, deploy_ladder, turnover=turnover, atr_panel=atr_panel)
 
     exact = run(charge_fees=False, whole_lots=False, min_position_rp=0)
     lots = run(charge_fees=False, whole_lots=True, min_position_rp=0)
@@ -219,7 +224,7 @@ def cost_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
 # ---------------------------------------------------- 3. does the ladder help?
 def regime_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
                   trend_ma=200, deploy_ladder=(0.30, 0.60, 1.00),
-                  turnover=None) -> pd.DataFrame:
+                  turnover=None, atr_panel=None) -> pd.DataFrame:
     """
     Always-invested versus the deploy ladder, on return AND drawdown.
 
@@ -230,7 +235,7 @@ def regime_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
     for label, use_regime in (("Always 100% deployed", False), ("Regime ladder 30/60/100", True)):
         c = BacktestConfig(**{**cfg.__dict__, "use_regime": use_regime})
         r = run_backtest(panel, capital, c, fee_cfg, sectors, benchmark, fx,
-                         trend_ma, deploy_ladder, turnover=turnover)
+                         trend_ma, deploy_ladder, turnover=turnover, atr_panel=atr_panel)
         if r.equity.empty:
             continue
         m = r.metrics()

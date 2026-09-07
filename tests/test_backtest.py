@@ -624,9 +624,13 @@ def test_no_exits_reproduces_the_old_curve_exactly():
     Turning the feature off must not move the equity curve by one rupiah.
     """
     panel = _panel()
-    before = run_backtest(panel, CAPITAL, _cfg(), FEE)
-    after = run_backtest(panel, CAPITAL, _cfg(exits=None), FEE,
-                         atr_panel=_atr(panel))
+    # The SAME atr_panel on both sides. It stopped being an exits-only input when
+    # sizing began reading it -- positions are sized by the distance to their stop
+    # now -- so withholding it from one run would be comparing two different
+    # strategies and calling the difference a regression.
+    atr = _atr(panel)
+    before = run_backtest(panel, CAPITAL, _cfg(), FEE, atr_panel=atr)
+    after = run_backtest(panel, CAPITAL, _cfg(exits=None), FEE, atr_panel=atr)
 
     pd.testing.assert_series_equal(before.equity, after.equity)
     assert before.fees_paid == after.fees_paid
@@ -639,12 +643,13 @@ def test_a_stop_too_wide_to_fire_also_reproduces_it():
     never triggers. Any difference here is bookkeeping drift, not the rule.
     """
     panel = _panel()
-    base = run_backtest(panel, CAPITAL, _cfg(), FEE)
+    atr = _atr(panel)          # same panel both sides; see the test above
+    base = run_backtest(panel, CAPITAL, _cfg(), FEE, atr_panel=atr)
     inert = run_backtest(
         panel, CAPITAL,
         _cfg(exits=_exit_cfg(k_atr=1e6, max_stop_pct=99.9, ladder=(1e6,),
                              ladder_fractions=(0.4,))),
-        FEE, atr_panel=_atr(panel))
+        FEE, atr_panel=atr)
 
     pd.testing.assert_series_equal(base.equity, inert.equity)
     assert inert.n_exit_sales == 0

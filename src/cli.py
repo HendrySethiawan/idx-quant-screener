@@ -330,7 +330,10 @@ def cmd_backtest(settings, logger=None) -> int:
         args = (panel, settings.capital_rp, cfg, fee_cfg, settings.sectors,
                 benchmark, fx, int(regime_cfg.get("trend_ma", 200)),
                 regime_cfg.get("deploy_ladder", (0.30, 0.60, 1.00)))
-        kwargs = {"turnover": turnover}
+        # `atr_panel` is a SIZING input now, not just an exits one: positions
+        # are sized by the distance to their stop. Every report needs it, or
+        # the headline number would be sized differently from the ticket.
+        kwargs = {"turnover": turnover, "atr_panel": atr_panel}
 
         from backtest.engine import rebalance_dates
         base = run_backtest(*args, **kwargs)
@@ -342,7 +345,7 @@ def cmd_backtest(settings, logger=None) -> int:
         # `cfg.exits` stays None for every report above, so questions 1-3 keep
         # answering exactly what they answered before. The exits get their own
         # comparison rather than silently changing the others' baseline.
-        exits = R.exit_report(*args, atr_panel=atr_panel, **kwargs)
+        exits = R.exit_report(*args, **kwargs)
         robustness = R.robustness_report(*args, **kwargs)
         verdict = R.robustness_verdict(robustness)
 
