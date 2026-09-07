@@ -453,7 +453,7 @@ class FundamentalEngine:
         corr.round(3).to_csv(out)
         logger.info(f"Factor correlations saved to {out}")
 
-        eff = effective_factors(corr, getattr(self.settings, "factor_weights", None))
+        eff = effective_factors(corr, (self.config or {}).get("factor_weights"))
         if eff:
             logger.info(
                 f"Factor independence: {eff['declared']} factors behave like "

@@ -286,3 +286,20 @@ def test_without_the_measurement_the_page_simply_omits_it():
     out = render_method(capital_ladder(pd.DataFrame(), _settings(1e7)),
                         sector_exposure(_settings(1e7)), Regime([], 1.0, "", "", ""))
     assert "fewer bets" not in out
+
+
+def test_the_diagnostics_writer_actually_runs(tmp_path, settings_mock):
+    """
+    This path had no coverage, and an `AttributeError` in it survived a green
+    suite -- it only fires in the real pipeline, where it would have taken the
+    whole run down. Calling it for real is the entire point of the test.
+    """
+    from analysis.fundamental import FundamentalEngine
+
+    frame = pd.DataFrame([
+        {"ticker": "A.JK", "pe_ratio": 10.0, "price_to_book": 1.0, "roe": 0.10},
+        {"ticker": "B.JK", "pe_ratio": 20.0, "price_to_book": 2.0, "roe": 0.20},
+        {"ticker": "C.JK", "pe_ratio": 15.0, "price_to_book": 1.5, "roe": 0.05},
+    ])
+    FundamentalEngine(settings_mock).save_factor_diagnostics(frame, tmp_path)
+    assert (tmp_path / "factor_correlations.csv").exists()
