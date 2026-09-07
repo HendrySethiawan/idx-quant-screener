@@ -546,6 +546,7 @@ def render(ctx: RunContext) -> Path:
             book_state=plan.get("book_state"),
             capital_ladder=plan.get("capital_ladder"),
             sector_exposure=plan.get("sector_exposure"),
+            factor_independence=plan.get("factor_independence"),
         ),
         settings.output_dir,
     )

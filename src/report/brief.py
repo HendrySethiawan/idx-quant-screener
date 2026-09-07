@@ -1021,6 +1021,7 @@ def render_brief(
     book_state: Optional[dict] = None,
     capital_ladder: Optional[dict] = None,
     sector_exposure: Optional[dict] = None,
+    factor_independence: Optional[dict] = None,
 ) -> str:
     """
     The terminal. One document, five destinations, nothing scrolls but panels.
@@ -1257,7 +1258,7 @@ def render_brief(
             T.grid([T.column([T.panel(
                 "Why this is the answer",
                 f'<div class="method">'
-                f"{method.render_method(capital_ladder, sector_exposure, regime)}"
+                f"{method.render_method(capital_ladder, sector_exposure, regime, factor_independence)}"
                 f"</div>", grow=True)])]),
             "Capital, the rupiah, and the limits"))
     pages.append(T.Page(

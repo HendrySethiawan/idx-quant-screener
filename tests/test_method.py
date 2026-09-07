@@ -238,3 +238,51 @@ def test_the_page_scales_with_the_density_control():
 
     from report.method import METHOD_CSS
     assert re.findall(r"font-size:\s*[\d.]+px", METHOD_CSS) == []
+
+
+# ============================================ ten weights, fewer real bets
+def test_effective_factor_count_is_measured_not_written_down():
+    """
+    Ten weights look like ten pieces of evidence. On the live matrix they behave
+    like 5.68, and the weighted composite carries 2.27x the variance it would if
+    they were independent. Perturbing the matrix must move both.
+    """
+    from analysis.fundamental import effective_factors
+
+    names = ["a", "b", "c"]
+    independent = pd.DataFrame([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                               index=names, columns=names)
+    entangled = pd.DataFrame([[1.0, 0.95, 0.95], [0.95, 1.0, 0.95],
+                              [0.95, 0.95, 1.0]], index=names, columns=names)
+    weights = {"a": 1.0, "b": 1.0, "c": 1.0}
+
+    clean = effective_factors(independent, weights)
+    messy = effective_factors(entangled, weights)
+
+    assert clean["effective"] == pytest.approx(3.0)
+    assert messy["effective"] < 1.5
+    assert clean["concentration"] == pytest.approx(1.0)
+    assert messy["concentration"] > 2.5
+
+
+def test_a_matrix_too_small_to_judge_says_nothing():
+    from analysis.fundamental import effective_factors
+    assert effective_factors(pd.DataFrame()) == {}
+    assert effective_factors(pd.DataFrame([[1.0]], index=["a"], columns=["a"])) == {}
+
+
+def test_the_limits_tab_states_the_effective_count():
+    from market.regime import Regime
+    out = render_method(capital_ladder(pd.DataFrame(), _settings(1e7)),
+                        sector_exposure(_settings(1e7)), Regime([], 1.0, "", "", ""),
+                        {"declared": 10, "effective": 5.68, "top_share": 0.32,
+                         "concentration": 2.27})
+    assert "5.7" in out and "2.27x" in out
+    assert "overstates how diversified" in out
+
+
+def test_without_the_measurement_the_page_simply_omits_it():
+    from market.regime import Regime
+    out = render_method(capital_ladder(pd.DataFrame(), _settings(1e7)),
+                        sector_exposure(_settings(1e7)), Regime([], 1.0, "", "", ""))
+    assert "fewer bets" not in out

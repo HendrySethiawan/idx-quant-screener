@@ -11,6 +11,7 @@ portfolio rule rather than a per-name one.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -897,6 +898,7 @@ def assemble(settings, df: pd.DataFrame, regime, holdings: List[Holding],
         # time IDX turnover moved.
         "capital_ladder": capital_ladder(df, settings),
         "sector_exposure": sector_exposure(settings),
+        "factor_independence": _factor_independence(settings),
         # Filled by `build_candidates` from the full ranked list, so a tie that
         # straddles the shortlist boundary is still visible.
         "tie_groups": ties,
@@ -911,6 +913,23 @@ def assemble(settings, df: pd.DataFrame, regime, holdings: List[Holding],
                                 risk_panel, exit_cfg, orders,
                                 float((settings.risk or {}).get("max_book_risk_pct", 0.0))),
     }
+
+
+def _factor_independence(settings) -> dict:
+    """
+    How many independent bets the ten weights really are, from the matrix the
+    scoring step already saved. Measured rather than written down, so it moves
+    when the market does.
+    """
+    try:
+        from analysis.fundamental import effective_factors
+        path = Path(settings.output_dir) / "factor_correlations.csv"
+        if not path.exists():
+            return {}
+        corr = pd.read_csv(path, index_col=0)
+        return effective_factors(corr, getattr(settings, "factor_weights", None))
+    except Exception:
+        return {}
 
 
 def _open_risk(exit_plans, capital_rp: float, risk_panel=None, exit_cfg=None,
