@@ -907,10 +907,37 @@ def assemble(settings, df: pd.DataFrame, regime, holdings: List[Holding],
         "bad_entries": bad_entries,
         # What the whole book loses if every stop fills. Per-position risk sizes a
         # trade; this is the one that keeps you solvent, and nothing said it before.
-        "open_risk": _open_risk(exit_plans, settings.capital_rp),
+        "open_risk": _open_risk(exit_plans, settings.capital_rp,
+                                risk_panel, exit_cfg, orders,
+                                float((settings.risk or {}).get("max_book_risk_pct", 0.0))),
     }
 
 
-def _open_risk(exit_plans, capital_rp: float):
+def _open_risk(exit_plans, capital_rp: float, risk_panel=None, exit_cfg=None,
+               orders=None, cap_pct: float = 0.0):
+    """
+    The book's risk, what it is made of, and whether the plan breaches the cap.
+
+    `orders` is folded in because the question is not "what do you risk now" but
+    "what will you risk if you do what this page says" -- a BUY that pushes you
+    over should say so before you place it, not after.
+    """
     from portfolio.exits import open_risk
-    return open_risk(exit_plans, capital_rp) if exit_plans else None
+
+    if not exit_plans:
+        return None
+    closes = (risk_panel or {}).get("Close")
+    per_ticker = {t: closes[t] for t in closes.columns} if closes is not None else {}
+    out = open_risk(exit_plans, capital_rp, per_ticker, exit_cfg)
+
+    # What today's proposed buys would add on top.
+    adding = 0.0
+    for order in (orders or []):
+        if order.get("action") == "BUY" and order.get("risk_rp"):
+            adding += float(order["risk_rp"])
+    out["adding_rp"] = adding
+    out["planned_rp"] = out["total_rp"] + adding
+    out["planned_pct"] = (out["planned_rp"] / capital_rp * 100.0) if capital_rp else 0.0
+    out["cap_pct"] = float(cap_pct or 0.0)
+    out["over_cap"] = bool(cap_pct and out["planned_pct"] > cap_pct)
+    return out

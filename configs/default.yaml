@@ -373,6 +373,13 @@ risk:
   # of a Rp179,500 position costs Rp10,520 to sell alone, 5.9% of what it returns.
   max_trim_cost_pct: 2.5
   max_position_risk_pct: 2.0  # warned about, not enforced -- sizing is unchanged
+  # The whole book, not one position. Six positions at the per-position warn level
+  # is 12% of capital on one bad week, and nothing anywhere said so. Warned about,
+  # never enforced: no order is refused, because on an account this size you are
+  # the risk committee. What the tool owes you is the number, its cause, what it
+  # costs to fix, and the fact that it assumes every stop fills at its level --
+  # which measurement says is about a quarter optimistic.
+  max_book_risk_pct: 6.0
   cooldown_sessions: 10       # no re-buy this soon after selling
 
 # ------------------------------------------------------------------ interface

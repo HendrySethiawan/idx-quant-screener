@@ -1119,3 +1119,64 @@ def test_the_runner_asks_the_whole_question_not_half_of_it():
     src = inspect.getsource(runner.render)
     assert "placeholder_capital=should_ask(settings)" in src
     assert "capital_equals_placeholder" not in src
+
+
+# =====================================================================
+# The breach memo. Warn-only settles authority, not effort: a red number with
+# no cause, no cost and no way back under is a desk that has done nothing.
+# =====================================================================
+def _risk(**kw):
+    base = dict(total_rp=8_400_000, pct_of_capital=8.4, gap_total_rp=10_500_000,
+                gap_pct_of_capital=10.5, n_positions=4, n_without_stop=0,
+                adding_rp=0.0, planned_rp=8_400_000, planned_pct=8.4,
+                cap_pct=6.0, over_cap=True,
+                contributors=[{"ticker": "AMRT.JK", "risk_rp": 4_700_000,
+                               "gap_rp": 5_875_000, "slippage": 1.25,
+                               "pct_of_capital": 4.7}])
+    base.update(kw)
+    return base
+
+
+def test_a_breach_is_stated_with_both_numbers():
+    out = _render(open_risk=_risk())
+    assert "over its risk limit" in out
+    assert "8.4% against a 6.0% cap" in out
+    assert "Rp10,500,000" in out          # the gap-adjusted total, not just the stop one
+
+
+def test_a_breach_names_its_largest_contributor():
+    out = _render(open_risk=_risk())
+    assert "AMRT.JK" in out
+    assert "4.7 of the 8.4 points" in out
+
+
+def test_a_breach_says_how_likely_the_whole_total_is():
+    low = _render(open_risk=_risk(), book_correlation=0.24, allocation=None)
+    assert "move together 0.24" in low
+    assert "genuinely separate positions" in low
+
+    high = _render(open_risk=_risk(), book_correlation=0.80)
+    assert "as a single trade" in high
+
+
+def test_a_breach_never_refuses_an_order():
+    """
+    The guarantee that separates a warning from a veto, asserted directly. The
+    reader chose warn-only; the buys must still be there and still be actionable.
+    """
+    orders = [{"action": "BUY", "ticker": "BBRI.JK", "lots": 3, "shares": 300,
+               "price": 4150.0, "rupiah": 1_245_000, "note": "target weight 33%"}]
+    out = _render(orders=orders, open_risk=_risk())
+    assert "over its risk limit" in out
+    assert "BBRI.JK" in out
+    assert "Nothing here is blocked" in out
+
+
+def test_a_book_inside_its_limit_gets_no_memo():
+    out = _render(open_risk=_risk(planned_pct=3.1, over_cap=False))
+    assert "over its risk limit" not in out
+
+
+def test_the_memo_says_what_the_buys_are_adding():
+    out = _render(open_risk=_risk(adding_rp=1_800_000))
+    assert "add Rp1,800,000" in out

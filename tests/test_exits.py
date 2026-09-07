@@ -877,3 +877,40 @@ def test_the_survivors_are_always_the_best_ranked_ones():
     kept = [t for t, a in by_ticker.items() if a == "HOLD"]
     assert sorted(kept, key=ranks.get) == sorted(kept, key=lambda t: ranks[t])
     assert "WORST.JK" not in kept
+
+
+# ======================================================================
+# The risk number was optimistic, and said so only in a docstring.
+# ======================================================================
+def test_slippage_is_measured_from_the_name_and_not_assumed():
+    from portfolio.exits import slippage_multiple
+
+    calm = _series([100.0 + (i % 3) * 0.1 for i in range(200)])
+    gappy = [100.0] * 200
+    for i in range(20, 200, 20):
+        gappy[i] = gappy[i - 1] - 40.0          # falls far through any 2.5xATR stop
+    assert slippage_multiple(calm, 5.0, CFG) == 1.0
+    assert slippage_multiple(_series(gappy), 5.0, CFG) > 1.0
+
+
+def test_too_little_history_returns_the_stop_level_not_an_invented_tail():
+    from portfolio.exits import slippage_multiple
+    assert slippage_multiple(_series([100.0] * 10), 5.0, CFG) == 1.0
+    assert slippage_multiple(None, 5.0, CFG) == 1.0
+    assert slippage_multiple(_series([100.0] * 200), None, CFG) == 1.0
+
+
+def test_the_gap_adjusted_total_is_never_below_the_stop_level_one():
+    plan = _healthy("A.JK")
+    out = open_risk({"A.JK": plan}, CAPITAL)
+    assert out["gap_total_rp"] >= out["total_rp"]
+
+
+def test_the_book_risk_says_which_positions_it_is_made_of():
+    """A breach you cannot attribute is one you cannot act on."""
+    plans = {t: _healthy(t) for t in ("BIG.JK", "SMALL.JK")}
+    plans["BIG.JK"].risk_rp = 4_700_000
+    plans["SMALL.JK"].risk_rp = 300_000
+    out = open_risk(plans, CAPITAL)
+    assert [c["ticker"] for c in out["contributors"]] == ["BIG.JK", "SMALL.JK"]
+    assert out["contributors"][0]["risk_rp"] == 4_700_000
