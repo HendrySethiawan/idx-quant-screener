@@ -537,7 +537,7 @@ def render(ctx: RunContext) -> Path:
             market=_market_panel_data(ctx),
             placeholder_capital=should_ask(settings),
             perf=perf, fetched_at=ctx.fetched_at, sessions=ctx.sessions,
-            verdict=_backtest_verdict(settings, logger),
+            verdict=_backtest_verdict(settings, logger), settings=settings,
             book_correlation=plan.get("book_correlation"),
             exit_plans=plan.get("exit_plans"), open_risk=plan.get("open_risk"),
             exit_cfg=ExitConfig.from_settings(settings),

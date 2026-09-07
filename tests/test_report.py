@@ -461,25 +461,42 @@ def _verdict(**over):
     return base
 
 
-def test_the_ticket_says_what_the_ranking_is_worth():
-    from report.brief import evidence_note
-
-    out = evidence_note(_verdict())
-    assert "4.2pp a year" in out
-    assert "0.16 of Sharpe" in out
-    assert "gave up" in out
-    assert "only ONE half of the window" in out
-
-
-def test_the_comparison_is_named_as_before_costs():
+def test_an_unestablished_edge_is_not_stated_as_an_achievement():
     """
-    Gross against frictionless is the only fair pairing -- engine.py says so. A
-    reader who thinks this is net would be comparing a fee-paying strategy against
-    a benchmark that never trades.
+    This panel used to print "this ranking added 4.2pp a year" as a fact. On the
+    shipped configuration the ranking did not measurably beat holding every name
+    equally, and the comparison reversed between the halves of the window -- so
+    the figure was not merely unproven, it had the wrong sign.
     """
     from report.brief import evidence_note
 
-    assert "before costs" in evidence_note(_verdict())
+    out = evidence_note(_verdict(edge={"verdict": "unstable - reverses between halves",
+                                       "gap_pp": -4.1, "half_sign_stable": False}))
+    assert "has not been established" in out
+    assert "not even consistent between the two halves" in out
+    assert "added" not in out
+
+
+def test_no_edge_figure_is_printed_at_all():
+    """
+    The headline subtracts the claim rather than replacing it. Three separate
+    attempts at a replacement sentence were wrong, each computed under settings
+    that were not the ones being run -- so the safest headline quotes no edge
+    number, because then there is none that can be wrong.
+    """
+    from report.brief import evidence_note
+
+    out = evidence_note(_verdict(edge={"verdict": "cannot tell", "gap_pp": -4.13,
+                                       "half_sign_stable": False}))
+    assert "4.1" not in out and "4.13" not in out
+
+
+def test_a_comparison_the_reader_could_not_have_taken_says_so():
+    """Holding all 74 equally is frictionless and unreachable at this account size."""
+    from report.brief import evidence_note
+
+    out = evidence_note(_verdict(edge={"verdict": "cannot tell", "gap_pp": None}))
+    assert "out of reach at your account size" in out
 
 
 def test_the_survivorship_artifact_is_named():
@@ -491,13 +508,46 @@ def test_the_survivorship_artifact_is_named():
     assert "knowing who survived" in out
 
 
-def test_a_ranking_that_beat_the_benchmark_reads_that_way():
+def test_an_edge_that_clears_the_bar_reads_as_a_finding():
+    """The wording follows the statistic, not the direction it happened to fall."""
     from report.brief import evidence_note
 
-    out = evidence_note(_verdict(cagr_gap_vs_equal_pp=6.0, sharpe_gap_vs_equal=0.3))
-    assert "added <strong>6.0pp a year</strong>" in out
-    assert "added <strong>0.30 of Sharpe</strong>" in out
-    assert "gave up" not in out
+    out = evidence_note(_verdict(edge={"verdict": "distinguishable", "gap_pp": 26.0,
+                                       "half_sign_stable": True}))
+    assert "more than this window could explain by chance" in out
+    assert "has not been established" not in out
+
+
+def test_a_verdict_measured_under_other_settings_is_refused():
+    """
+    The guard for the error class: three wrong figures in one afternoon, every one
+    of them measured under a configuration that was not the live one. A verdict
+    whose fingerprint disagrees is not quoted at all.
+    """
+    from core.config import Settings
+    from report.brief import evidence_note
+
+    settings = Settings()
+    stamped = _verdict(config={"max_per_sector": 99, "min_positions": 3,
+                               "max_positions": 6, "exits": True})
+    out = evidence_note(stamped, settings)
+    assert "describes a different strategy" in out
+    assert "has not been established" not in out
+
+
+def test_a_matching_fingerprint_is_quoted_normally():
+    from core.config import Settings
+    from report.brief import evidence_note
+
+    settings = Settings()
+    stamped = _verdict(
+        edge={"verdict": "cannot tell", "gap_pp": None},
+        config={"max_per_sector": int(settings.max_per_sector),
+                "min_positions": int(settings.account.get("min_positions", 3)),
+                "max_positions": int(settings.account.get("max_positions", 6)),
+                "exits": True})
+    out = evidence_note(stamped, settings)
+    assert "describes a different strategy" not in out
 
 
 def test_never_backtested_says_so_rather_than_staying_silent():

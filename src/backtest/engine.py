@@ -54,6 +54,12 @@ BACKTESTABLE_FACTORS = ("mom_1m", "mom_6m", "mom_12m", "realized_vol")
 
 # The live default in configs/default.yaml. Correlations are measured over the
 # same trailing window there.
+# How often the score floor is re-measured, in rebalances. A jackknife is one
+# pass per name, so measuring at every date would be ~19,000 passes over the
+# panel; the floor moves slowly enough that a periodic reading is honest, and the
+# interval is named here rather than buried.
+_FLOOR_SAMPLE = 20
+
 _CORR_WINDOW = 120
 
 _PERIODS_PER_YEAR = {"M": 12, "W": 52}
@@ -110,6 +116,9 @@ class BacktestResult:
     # exits were not switched on".
     n_exit_sales: int = 0
     holdings_log: List[dict] = field(default_factory=list)
+    # How many times the score floor was re-measured, so the sampling is
+    # visible rather than assumed.
+    score_floors_measured: int = 0
     config: Optional[BacktestConfig] = None
 
     def metrics(self) -> Dict[str, Optional[float]]:
@@ -203,6 +212,13 @@ def build_turnover_panel(price_data: Dict[str, pd.DataFrame],
     return pd.DataFrame(series).sort_index()
 
 
+# The floor for a given history and weighting is the same number however many
+# times it is asked for, and a full report runs the simulation ~21 times over the
+# same dates. Without this the jackknife is repeated identically for every one of
+# them, which is most of what makes `--backtest` slow.
+_FLOOR_CACHE: Dict[tuple, float] = {}
+
+
 def price_score_floor(hist: pd.DataFrame, weight_scale: float = 1.0,
                       quantile: float = 0.9) -> float:
     """
@@ -214,8 +230,27 @@ def price_score_floor(hist: pd.DataFrame, weight_scale: float = 1.0,
     the panel for a number that barely moves. The approximation is stated here
     rather than hidden: it is a representative floor, not a per-date one.
     """
+    # Bucketed by the sampling interval, not by exact length. A full report runs
+    # the simulation ~21 times over the SAME dates, so keying on the exact row
+    # count made every run re-measure the identical floor from scratch -- 28
+    # seconds a run, ten minutes a report. The floor is a sampled approximation
+    # already; sharing one reading across a bucket of dates is the same
+    # approximation applied consistently, and it is what makes the ablation
+    # affordable enough to actually run.
+    key = (len(hist) // _FLOOR_SAMPLE, tuple(hist.columns),
+           float(weight_scale), float(quantile))
+    if key in _FLOOR_CACHE:
+        return _FLOOR_CACHE[key]
+
+    # Only the rows  actually reads. It reaches back _M12 + _SKIP
+    # sessions and no further, so jackknifing against five years of history did
+    # the same arithmetic on 1,300 rows that 280 would have answered -- 74 times
+    # per measurement. This is the difference between a backtest that runs in
+    # minutes and one nobody waits for.
+    hist = hist.iloc[-(_M12 + _SKIP + 5):]
     full = price_signal(hist, weight_scale).dropna()
     if len(full) < 3:
+        _FLOOR_CACHE[key] = 0.0
         return 0.0
     moves = []
     for dropped in full.index:
@@ -223,9 +258,9 @@ def price_score_floor(hist: pd.DataFrame, weight_scale: float = 1.0,
         common = full.index.intersection(without.dropna().index)
         if len(common) > 1:
             moves.extend((full[common] - without[common]).abs().tolist())
-    if not moves:
-        return 0.0
-    return float(pd.Series(moves).quantile(quantile))
+    out = 0.0 if not moves else float(pd.Series(moves).quantile(quantile))
+    _FLOOR_CACHE[key] = out
+    return out
 
 
 def rebalance_dates(panel: pd.DataFrame, rule: str = "M") -> List[pd.Timestamp]:
@@ -575,14 +610,22 @@ def run_backtest(
     # at Rp10 juta is that sales sharing a day share the stamp.
     charged: set = set()
 
-    # Measured once on the whole window; see `price_score_floor`. Zero disables
-    # the tie step, which is what a universe too small to jackknife should do.
+    # Re-measured periodically from the history available at the time, not once
+    # over the whole window.
+    #
+    # The one-shot version was a bug of mine: a floor measured on five years of
+    # data was compared against scores computed from a single cross-section, so it
+    # was far too wide and the tie step never fired once in 260 rebalances. The
+    # ablation then reported "never binds" for the score floor AND for
+    # decorrelation, and I very nearly proposed deleting both -- while live, on the
+    # real composite, the tie step binds sixteen times on a single day's frame.
+    #
+    # Sampled rather than recomputed every date: the jackknife is one pass per
+    # name, so doing it at all 260 rebalances is ~19,000 passes over the panel for
+    # a number that moves slowly. The sample interval is stated rather than hidden.
     score_floor = 0.0
-    if cfg.use_score_floor:
-        try:
-            score_floor = price_score_floor(panel, cfg.weight_scale)
-        except Exception:
-            score_floor = 0.0
+    floor_at = 0
+    floors_measured = 0
 
     for t, t_next in zip(dates[:-1], dates[1:]):
         hist = panel[panel.index < t]
@@ -624,6 +667,16 @@ def run_backtest(
 
             # TIES. Where the score cannot separate two names, prefer the one that
             # least duplicates what has already been taken.
+            if cfg.use_score_floor and (floors_measured == 0
+                                        or floor_at >= _FLOOR_SAMPLE):
+                try:
+                    score_floor = price_score_floor(hist, cfg.weight_scale)
+                    floors_measured += 1
+                except Exception:
+                    score_floor = 0.0
+                floor_at = 0
+            floor_at += 1
+
             if score_floor > 0 and corr is not None and len(eligible) > 1:
                 raw = {tk: float(score.get(tk, 0.0)) for tk in eligible}
                 groups = tie_groups(eligible, raw, score_floor)
@@ -733,6 +786,7 @@ def run_backtest(
         equity_points.append((t_next, end_value))
         result.holdings_log.append({"date": t, "n_holdings": len(holdings),
                                     "names": ",".join(sorted(holdings))})
+        result.score_floors_measured = floors_measured
 
     equity = pd.Series(dict(equity_points)).sort_index()
     result.equity = equity

@@ -347,17 +347,43 @@ def cmd_backtest(settings, logger=None) -> int:
         # comparison rather than silently changing the others' baseline.
         exits = R.exit_report(*args, **kwargs)
         robustness = R.robustness_report(*args, **kwargs)
+
+        # The ablation and the edge run the config you ACTUALLY run -- exits
+        # included. Every other report above deliberately keeps `exits=None` so
+        # questions 1-3 keep answering what they always answered, but that makes
+        # their baseline a strategy without stops. Asking "what do the stops cost"
+        # of a baseline that has none is meaningless, and quoting its edge on the
+        # front page would describe a strategy nobody runs.
+        from dataclasses import replace as _replace
+        live_cfg = _replace(cfg, exits=exit_cfg)
+        live_args = (panel, settings.capital_rp, live_cfg, fee_cfg, settings.sectors,
+                     benchmark, fx, int(regime_cfg.get("trend_ma", 200)),
+                     regime_cfg.get("deploy_ladder", (0.30, 0.60, 1.00)))
+        # One cadence only. The ablation is six extra simulations with the exits
+        # walking every session, and running it for both M and W doubled the cost
+        # of `--backtest` for a second copy of the same conclusions. A test nobody
+        # waits for is the failure this whole exercise is about.
+        ablation, live_equity = (R.ablation_report(*live_args, **kwargs)
+                                 if rule == bt.get("rebalances", ["M"])[-1]
+                                 else (pd.DataFrame(), None))
+        live_edge = R.edge_from_equity(
+            live_equity,
+            R.equal_weight_universe(panel, R.rebalance_dates(panel, rule),
+                                    settings.capital_rp),
+            live_cfg.periods_per_year) if live_equity is not None else None
         verdict = R.robustness_verdict(robustness)
 
         label = {"M": "Monthly", "W": "Weekly"}.get(rule, rule)
         sections[label] = {
             "factors": factors, "costs": costs, "regimes": regimes,
             "exits": exits, "robustness": robustness, "verdict": verdict,
+            "ablation": ablation,
             "n_rebalances": base.n_rebalances, "avg_names": base.avg_names_available,
             "fees_paid": base.fees_paid,
         }
         print(R.console_block(factors, costs, regimes, robustness, verdict,
-                              label, base.avg_names_available, surv, exits))
+                              label, base.avg_names_available, surv, exits,
+                              ablation))
 
         out = Path(settings.output_dir)
         costs.to_csv(out / f"backtest_costs_{rule}.csv", index=False)
@@ -372,7 +398,9 @@ def cmd_backtest(settings, logger=None) -> int:
     # this the page recommending the trades carried none of the evidence about
     # what the ranking is worth.
     verdict_path = R.write_verdict(
-        R.verdict_payload(factors, robustness, surv, label, costs, exits),
+        R.verdict_payload(factors, robustness, surv, label,
+                          cfg=live_cfg, costs=costs, exits=exits,
+                          edge_factors=live_edge),
         settings.output_dir)
 
     print(f"\n  Full report: {path}")

@@ -127,7 +127,38 @@ def _pct(v: Optional[float], digits: int = 1) -> str:
     return f"{v:+.{digits}f}%"
 
 
-def evidence_note(verdict: Optional[dict]) -> str:
+def _verdict_is_stale(verdict: Optional[dict], settings=None) -> str:
+    """
+    Whether the stored verdict describes the strategy currently configured.
+
+    Returns a human sentence naming what differs, or "" when it matches. This is
+    the guard for the error that produced three wrong figures in one afternoon:
+    every one of them was measured under settings that were not the live ones, and
+    nothing anywhere would have noticed.
+
+    Absent fingerprint or absent settings means no opinion -- an older verdict is
+    quoted as before rather than being declared stale on a technicality.
+    """
+    stamped = (verdict or {}).get("config") or {}
+    if not stamped or settings is None:
+        return ""
+    risk = getattr(settings, "risk", None) or {}
+    account = getattr(settings, "account", None) or {}
+    now = {
+        "max_per_sector": int(getattr(settings, "max_per_sector", 0) or 0),
+        "min_positions": int(account.get("min_positions", 3)),
+        "max_positions": int(account.get("max_positions", 6)),
+    }
+    differs = [k for k, v in now.items() if k in stamped and stamped[k] != v]
+    if risk and stamped.get("exits") is False:
+        differs.append("the stops were switched off when it ran")
+    if not differs:
+        return ""
+    named = ", ".join(str(d) for d in differs)
+    return f"It was run with different settings ({named})."
+
+
+def evidence_note(verdict: Optional[dict], settings=None) -> str:
     """
     What the ranking above is actually worth, next to the ranking above.
 
@@ -146,25 +177,51 @@ def evidence_note(verdict: Optional[dict]) -> str:
             "not a finding.</div>"
         )
 
-    bits = []
-    cagr_gap = verdict.get("cagr_gap_vs_equal_pp")
-    sharpe_gap = verdict.get("sharpe_gap_vs_equal")
-    if cagr_gap is not None and sharpe_gap is not None:
-        verb = "added" if cagr_gap >= 0 else "cost"
-        risk = "gave up" if sharpe_gap < 0 else "added"
-        # Both sides frictionless, which is the only fair comparison -- the net
-        # curve pays fees the benchmark never does, and comparing those two would
-        # flatter the benchmark by exactly the trading costs.
-        years = (verdict.get("gross") or {}).get("years")
-        span = f"Over {years:.0f} years, a" if years else "A"
-        cadence = str(verdict.get("cadence") or "").lower()
-        cadence_note = f" on a {cadence} rebalance" if cadence else ""
-        bits.append(
-            f"{span}gainst simply holding every name in the list, this ranking "
-            f"{verb} <strong>{abs(cagr_gap):.1f}pp a year</strong> of return and "
-            f"{risk} <strong>{abs(sharpe_gap):.2f} of Sharpe</strong>{cadence_note} "
-            f"&mdash; both measured before costs, which is the only fair comparison."
+    stale = _verdict_is_stale(verdict, settings)
+    if stale:
+        return (
+            '<div class="callout" style="border-left-color:var(--warn)">'
+            "<strong>The stored backtest describes a different strategy.</strong> "
+            f"{_e(stale)} Run <code>python main.py --backtest</code> again before "
+            "trusting anything it says &mdash; a number measured under settings you "
+            "are not running is worse than no number.</div>"
         )
+
+    bits = []
+    # NO EDGE FIGURE IS PRINTED HERE, deliberately.
+    #
+    # This panel used to state "this ranking added 11.3pp a year" as a fact. On the
+    # shipped configuration the ranking did not measurably beat holding every name
+    # equally at all, and the comparison reversed between the two halves of the
+    # window -- so the figure was not merely unproven, it had the wrong sign. Three
+    # separate attempts at a replacement sentence were also wrong, each computed
+    # from settings that were not the ones being run.
+    #
+    # So the headline SUBTRACTS the claim rather than replacing it. Quoting no edge
+    # number means there is no edge number here that can be wrong; the arithmetic
+    # lives in the backtest report, where it reads as a diagnostic.
+    edge = verdict.get("edge") or {}
+    if edge.get("verdict"):
+        years = (verdict.get("gross") or {}).get("years")
+        span = f"On {years:.0f} years of one market it" if years else "It"
+        if edge["verdict"] == "distinguishable" and (edge.get("gap_pp") or 0) > 0:
+            bits.append(
+                f"{span} beat holding every name in the list equally by more than "
+                f"this window could explain by chance. That is the strongest thing "
+                f"the evidence says, and it is one market."
+            )
+        else:
+            bits.append(
+                f"<strong>What this ranking is worth has not been established.</strong> "
+                f"{span} did not measurably beat holding every name in the list "
+                f"equally"
+                + (" &mdash; and the comparison was not even consistent between the "
+                   "two halves of the window"
+                   if edge.get("half_sign_stable") is False else "")
+                + ". Holding all of them is frictionless here and out of reach at "
+                "your account size, so this is a test of whether the ranking adds "
+                "anything, not an alternative you could have taken."
+            )
 
     robust = verdict.get("robustness")
     if robust:
@@ -1022,6 +1079,7 @@ def render_brief(
     capital_ladder: Optional[dict] = None,
     sector_exposure: Optional[dict] = None,
     factor_independence: Optional[dict] = None,
+    settings=None,
 ) -> str:
     """
     The terminal. One document, five destinations, nothing scrolls but panels.
@@ -1157,7 +1215,7 @@ def render_brief(
                                       book_correlation)
                     + granularity + missing_note + concentration
                     + ties_note(tie_groups, score_floor)
-                    + evidence_note(verdict),
+                    + evidence_note(verdict, settings),
                     pid="panel-ticket", cls="print", grow=True),
             T.panel(f"Events, next {event_horizon} days",
                     _events_section(events or [], blind_n, universe_n, event_horizon)),
