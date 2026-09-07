@@ -301,25 +301,39 @@ def test_avg_names_available_is_reported():
 
 
 # ==================================== THE INVARIANT THE COST TABLE MUST OBEY
-def test_fees_can_only_reduce_returns():
-    """
-    Fees are a true cost: holding everything else fixed, charging them must never
-    improve the result.
-
-    Note what is deliberately NOT asserted here. An earlier version also claimed
-    lot rounding could only reduce returns. That is false, and it passed on this
-    synthetic panel by luck. Measured on the real universe by varying the start
-    date, the rounding effect was positive in 7 of 14 windows with a standard
-    deviation of ~157 percentage points -- it is path noise, not a cost. The
-    report reflects that.
-    """
+def test_charging_fees_actually_charges_them():
+    """The one path-wise invariant here: asked to charge, it charges."""
     panel = _panel(tickers=tuple(f"T{i}.JK" for i in range(8)))
+    assert run_backtest(panel, CAPITAL, _cfg(charge_fees=True), FEE).fees_paid > 0
+    assert run_backtest(panel, CAPITAL, _cfg(charge_fees=False), FEE).fees_paid == 0
 
-    def total(**over):
-        r = run_backtest(panel, CAPITAL, _cfg(**over), FEE)
-        return float(r.equity.iloc[-1] / r.equity.iloc[0] - 1)
 
-    assert total(charge_fees=True) <= total(charge_fees=False) + 1e-9
+def test_fees_reduce_returns_on_average():
+    """
+    Fees are a cost, and this asserts that in the only form that is true.
+
+    It used to assert the stronger claim -- that charging fees can never improve a
+    single path -- and that is false for exactly the reason this file already gives
+    about lot rounding: fees come out of cash, cash sets the budget, the budget
+    sets the lot counts, and from there the two runs hold different books. It
+    passed on one seed by luck. Measured across 25 seeds it held in 15 of them,
+    with individual paths swinging as much as +18 percentage points the wrong way.
+
+    So the assertion is on the mean, where the cost is real and large, and not on
+    any single path, where it is swamped by rounding noise. The same distinction
+    the report makes between a cost and path noise.
+    """
+    effects = []
+    for seed in range(20):
+        panel = _panel(tickers=tuple(f"T{i}.JK" for i in range(8)), seed=seed)
+
+        def total(**over):
+            r = run_backtest(panel, CAPITAL, _cfg(**over), FEE)
+            return float(r.equity.iloc[-1] / r.equity.iloc[0] - 1)
+
+        effects.append(total(charge_fees=True) - total(charge_fees=False))
+
+    assert sum(effects) / len(effects) < 0, "fees did not cost anything on average"
 
 
 def test_lot_rounding_leaves_cash_undeployed():
@@ -610,9 +624,13 @@ def test_no_exits_reproduces_the_old_curve_exactly():
     Turning the feature off must not move the equity curve by one rupiah.
     """
     panel = _panel()
-    before = run_backtest(panel, CAPITAL, _cfg(), FEE)
-    after = run_backtest(panel, CAPITAL, _cfg(exits=None), FEE,
-                         atr_panel=_atr(panel))
+    # The SAME atr_panel on both sides. It stopped being an exits-only input when
+    # sizing began reading it -- positions are sized by the distance to their stop
+    # now -- so withholding it from one run would be comparing two different
+    # strategies and calling the difference a regression.
+    atr = _atr(panel)
+    before = run_backtest(panel, CAPITAL, _cfg(), FEE, atr_panel=atr)
+    after = run_backtest(panel, CAPITAL, _cfg(exits=None), FEE, atr_panel=atr)
 
     pd.testing.assert_series_equal(before.equity, after.equity)
     assert before.fees_paid == after.fees_paid
@@ -625,12 +643,13 @@ def test_a_stop_too_wide_to_fire_also_reproduces_it():
     never triggers. Any difference here is bookkeeping drift, not the rule.
     """
     panel = _panel()
-    base = run_backtest(panel, CAPITAL, _cfg(), FEE)
+    atr = _atr(panel)          # same panel both sides; see the test above
+    base = run_backtest(panel, CAPITAL, _cfg(), FEE, atr_panel=atr)
     inert = run_backtest(
         panel, CAPITAL,
         _cfg(exits=_exit_cfg(k_atr=1e6, max_stop_pct=99.9, ladder=(1e6,),
                              ladder_fractions=(0.4,))),
-        FEE, atr_panel=_atr(panel))
+        FEE, atr_panel=atr)
 
     pd.testing.assert_series_equal(base.equity, inert.equity)
     assert inert.n_exit_sales == 0
@@ -740,3 +759,119 @@ def test_build_atr_panel_uses_the_live_indicator():
     built = build_atr_panel({"X.JK": frame}, window=14)
     assert built["X.JK"].iloc[-1] == pytest.approx(
         average_true_range(frame, 14).iloc[-1])
+
+
+# ======================================================================
+# The simulation must apply the live path's selection stages.
+#
+# It used to apply one of four. The module docstring named the liquidity gate
+# while the word "liquidity" appeared exactly once in the whole package -- in
+# that sentence -- so the headline number described a strategy that could hold
+# names the reader's account could not exit. Measured on the real universe,
+# turning the gate on cost 2.15 percentage points of CAGR and returned 2.0
+# points of drawdown. That is the price of being able to get out, and it is a
+# fact the reader is entitled to.
+# ======================================================================
+def _turnover(panel, per_name):
+    """A turnover panel shaped like the price panel, one constant per ticker."""
+    return pd.DataFrame({t: [per_name[t]] * len(panel) for t in panel.columns},
+                        index=panel.index)
+
+
+def _names_held(result):
+    """Every ticker the simulation ever held, from the per-rebalance log."""
+    out = set()
+    for row in result.holdings_log:
+        out.update(n for n in str(row.get("names", "")).split(",") if n)
+    return out
+
+
+def test_the_docstring_cannot_claim_a_stage_the_code_does_not_run():
+    """
+    The failure this whole section exists for was documentation, not logic: the
+    file you consult to decide how much to trust the number claimed a gate it
+    never called. Every stage the docstring names is asserted present by name.
+    """
+    import backtest.engine as E
+
+    doc = E.__doc__
+    for claim, symbol in (("liquidity gate", "assess"),
+                          ("decorrelation step", "decorrelated_pick"),
+                          ("score floor", "tie_groups"),
+                          ("sector cap", "sector_capped_pick")):
+        assert claim in doc, f"docstring no longer claims {claim}"
+        assert hasattr(E, symbol), f"docstring claims {claim} but {symbol} is absent"
+
+
+def test_a_name_too_illiquid_to_exit_is_not_bought():
+    from market.liquidity import LiquidityConfig
+
+    panel = _panel(tickers=("RICH.JK", "THIN.JK", "OK1.JK", "OK2.JK"))
+    liq = LiquidityConfig(min_median_daily_value_rp=1e6,
+                          max_position_pct_of_daily_value=0.01)
+    # THIN trades far too little to absorb a slot; the rest are fine.
+    turn = _turnover(panel, {"RICH.JK": 9e11, "THIN.JK": 2e6,
+                             "OK1.JK": 9e11, "OK2.JK": 9e11})
+
+    cfg = _cfg(liquidity=liq)
+    with_gate = run_backtest(panel, CAPITAL, cfg, FEE, turnover=turn)
+    without = run_backtest(panel, CAPITAL, _cfg(liquidity=None), FEE, turnover=turn)
+
+    assert "THIN.JK" not in _names_held(with_gate)
+    assert "THIN.JK" in _names_held(without), "fixture does not exercise the gate"
+
+
+def test_the_gate_reads_only_the_past():
+    """
+    Turnover is history like any other series. A name that is illiquid up to the
+    rebalance and floods with volume on the day must still be refused.
+    """
+    from market.liquidity import LiquidityConfig
+
+    panel = _panel(tickers=("A.JK", "B.JK", "C.JK", "LATE.JK"))
+    liq = LiquidityConfig(min_median_daily_value_rp=1e6,
+                          max_position_pct_of_daily_value=0.01)
+    turn = _turnover(panel, {t: 9e11 for t in panel.columns})
+    turn["LATE.JK"] = 2e6
+    turn.iloc[-1, turn.columns.get_loc("LATE.JK")] = 9e11   # only the final row
+
+    held = _names_held(run_backtest(panel, CAPITAL, _cfg(liquidity=liq), FEE,
+                                    turnover=turn))
+    assert "LATE.JK" not in held
+
+
+def test_no_turnover_panel_means_the_gate_simply_does_not_run():
+    """Absent data must not silently empty the book against the whole universe."""
+    from market.liquidity import LiquidityConfig
+
+    panel = _panel()
+    r = run_backtest(panel, CAPITAL,
+                     _cfg(liquidity=LiquidityConfig()), FEE, turnover=None)
+    assert len(_names_held(r)) > 0
+
+
+def test_the_score_floor_is_measured_from_the_panel():
+    from backtest.engine import price_score_floor
+
+    floor = price_score_floor(_panel(tickers=tuple(f"T{i}.JK" for i in range(8))))
+    assert floor >= 0.0
+    # Too few names to jackknife is zero, not an invented number.
+    assert price_score_floor(_panel(tickers=("A.JK", "B.JK"))) == 0.0
+
+
+def test_the_turnover_panel_is_close_times_volume():
+    from backtest.engine import build_turnover_panel
+
+    idx = pd.bdate_range("2024-01-01", periods=30)
+    frame = pd.DataFrame({"Close": [100.0] * 30, "Volume": [1_000.0] * 30}, index=idx)
+    out = build_turnover_panel({"X.JK": frame}, window=20)
+    assert not out.empty
+    assert out["X.JK"].iloc[-1] == pytest.approx(100_000.0)
+
+
+def test_a_frame_without_volume_is_skipped_not_guessed():
+    from backtest.engine import build_turnover_panel
+
+    idx = pd.bdate_range("2024-01-01", periods=30)
+    no_vol = pd.DataFrame({"Close": [100.0] * 30}, index=idx)
+    assert build_turnover_panel({"X.JK": no_vol}).empty

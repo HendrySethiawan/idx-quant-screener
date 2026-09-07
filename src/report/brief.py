@@ -433,10 +433,76 @@ def _stop_phrase(o: dict) -> str:
     return out
 
 
+def _breach_memo(risk: dict, correlation: Optional[float] = None) -> str:
+    """
+    What a risk desk says when the book is over its limit.
+
+    No order is refused -- on an account this size the reader is the risk
+    committee, and that was their explicit choice. Warn-only settles authority,
+    not effort: a red number with no cause, no cost and no way back under is a
+    desk that has done nothing. So this carries the size, what it is made of, what
+    the cheapest fix costs, how likely the total actually is, and the fact that the
+    number itself is optimistic.
+    """
+    if not risk or not risk.get("over_cap"):
+        return ""
+
+    planned, cap = risk["planned_pct"], risk["cap_pct"]
+    top = (risk.get("contributors") or [])[:1]
+    gap_pct = risk.get("gap_pct_of_capital") or 0.0
+
+    out = (
+        '<div class="callout" style="border-left-color:var(--bad)">'
+        f'<strong>Your book is over its risk limit: {planned:.1f}% against a '
+        f'{cap:.1f}% cap.</strong> Nothing here is blocked &mdash; this is your '
+        "call to make, and the tool will place whatever you tell it to. What it "
+        "owes you is the rest of the picture."
+    )
+    if risk.get("adding_rp"):
+        out += (f' The buys on this ticket add {rp(risk["adding_rp"])} of that, '
+                f'on top of {rp(risk["total_rp"])} already open.')
+
+    # 1. The number is optimistic. Stops are read once a session against the
+    #    close, so the close can already be through the level.
+    if gap_pct > risk["pct_of_capital"] + 0.05:
+        out += (
+            f'<br><br><strong>And it is the good case.</strong> That total assumes '
+            f'every stop fills exactly at its level. Levels here are checked once '
+            f'a session against the close, and measured on the history of these '
+            f'same names, a session that falls through a stop overshoots it. Allowing '
+            f'for that, the same book is <strong>{rp(risk["gap_total_rp"])}</strong> '
+            f'({gap_pct:.1f}% of capital).'
+        )
+
+    # 2. Attribution -- a breach you cannot attribute is one you cannot act on.
+    if top:
+        c = top[0]
+        out += (f'<br><br><strong>Where it comes from.</strong> '
+                f'{_e(c["ticker"])} alone is {rp(c["risk_rp"])}, '
+                f'{c["pct_of_capital"]:.1f} of the {planned:.1f} points.')
+
+    # 3. How live the total is. The sum is the everything-stops-at-once case, and
+    #    correlation is what says whether that is one event or several.
+    if correlation is not None:
+        out += (
+            f'<br><br><strong>How likely is all of it at once?</strong> These names '
+            f'move together {correlation:.2f}. '
+            + ("At that level they are genuinely separate positions, so the whole "
+               "total landing in one week is unlikely &mdash; but the cap is set "
+               "for the week it does."
+               if correlation < 0.5 else
+               "That is high enough to treat the total as a single trade rather "
+               "than several: they will not fail independently.")
+        )
+
+    return out + "</div>"
+
+
 def _ticket_section(orders: List[dict], fees, capital: float,
                     open_risk: Optional[dict] = None,
                     exit_cfg=None, book_state: Optional[dict] = None,
-                    ladder: Optional[dict] = None) -> str:
+                    ladder: Optional[dict] = None,
+                    book_correlation: Optional[float] = None) -> str:
     from portfolio.fees import FeeConfig, round_trip_cost
 
     # SELL first because a breached stop is the most urgent thing on the page,
@@ -566,6 +632,7 @@ def _ticket_section(orders: List[dict], fees, capital: float,
                f'not counted here.' if open_risk.get("n_without_stop") else "")
             + "</div>"
         )
+        callouts += _breach_memo(open_risk, book_correlation)
 
     # No batching callout here. `estimate_fees` already emits exactly this advice
     # through `fees.notes` whenever there is more than one sell, and adding a
@@ -954,6 +1021,7 @@ def render_brief(
     book_state: Optional[dict] = None,
     capital_ladder: Optional[dict] = None,
     sector_exposure: Optional[dict] = None,
+    factor_independence: Optional[dict] = None,
 ) -> str:
     """
     The terminal. One document, five destinations, nothing scrolls but panels.
@@ -1085,7 +1153,8 @@ def render_brief(
             T.panel("Do this today",
                     stale_note + placeholder_note
                     + _ticket_section(orders, fees, capital, open_risk,
-                                      exit_cfg, book_state, capital_ladder)
+                                      exit_cfg, book_state, capital_ladder,
+                                      book_correlation)
                     + granularity + missing_note + concentration
                     + ties_note(tie_groups, score_floor)
                     + evidence_note(verdict),
@@ -1189,7 +1258,7 @@ def render_brief(
             T.grid([T.column([T.panel(
                 "Why this is the answer",
                 f'<div class="method">'
-                f"{method.render_method(capital_ladder, sector_exposure, regime)}"
+                f"{method.render_method(capital_ladder, sector_exposure, regime, factor_independence)}"
                 f"</div>", grow=True)])]),
             "Capital, the rupiah, and the limits"))
     pages.append(T.Page(

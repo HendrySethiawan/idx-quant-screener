@@ -1,0 +1,54 @@
+# The suite this project's credibility rests on, run without anyone remembering to.
+#
+# windows-latest because that is the only platform this ships on: the app is a
+# PyInstaller onedir build driven by Edge WebView2, and a green run on Linux would
+# be evidence about a program nobody uses. Slower, and worth it.
+#
+# The build itself is deliberately not here. `packaging/build.py` needs the app
+# closed and produces a 91MB artefact nobody would download from a push; it stays
+# a local step.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  suite:
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # Pinned like the dependencies, and for the same reason.
+          python-version: "3.13.7"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Lint
+        # The project's own gate. The full default rule set flags several hundred
+        # pre-existing findings across the repo; widening it is its own piece of
+        # work, and a lint job that is red on arrival teaches everyone to ignore it.
+        run: python -m ruff check src/ tests/ --select F821,F811,E402
+
+      - name: Tests
+        # No network. Every test that would fetch is mocked, and a run that started
+        # reaching Yahoo would be a finding in itself.
+        run: python -m pytest -q

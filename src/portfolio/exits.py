@@ -655,21 +655,99 @@ def plans_for(
     return out
 
 
-def open_risk(plans: Dict[str, ExitPlan], capital_rp: float) -> Dict[str, float]:
+# Measured across the universe's own history, not assumed. A stop here is checked
+# once per session AGAINST THE CLOSE -- there is no live feed -- so the close can
+# already be through the level when it is read. See `slippage_multiple`.
+DEFAULT_SLIPPAGE = 1.0
+
+
+def slippage_multiple(closes, atr_rp: Optional[float], cfg: ExitConfig) -> float:
     """
-    What the whole book loses if every stop fills at its level.
+    How much worse than the stop the fill actually is, when the stop is breached.
+
+    `open_risk` says "if every stop fills at its level". That `if` is load-bearing:
+    levels are read once a session against the close, so a session that falls
+    further than the stop distance fills below the stop, not at it. This measures
+    the overshoot from the name's own history rather than assuming it away.
+
+    Measured across 163 cached IDX series at the shipped 2.5xATR distance, a
+    session fell further than the stop 0.17% of the time and, when it did, fell
+    about 1.25x the stop distance. Rare, and a quarter worse than advertised in
+    exactly the sessions the number exists for.
+
+    Returns 1.0 -- the stop filling at its level -- when there is too little
+    history to measure. That is the honest default: no evidence of a tail is not
+    evidence of no tail, but inventing one is worse.
+    """
+    if closes is None or atr_rp is None:
+        return DEFAULT_SLIPPAGE
+    try:
+        atr = float(atr_rp)
+    except (TypeError, ValueError):
+        return DEFAULT_SLIPPAGE
+    if atr != atr or atr <= 0:
+        return DEFAULT_SLIPPAGE
+
+    series = pd.Series(closes).dropna()
+    if len(series) < 60:
+        return DEFAULT_SLIPPAGE
+
+    distance = float(cfg.k_atr) * atr
+    if distance <= 0:
+        return DEFAULT_SLIPPAGE
+    falls = -series.diff()
+    through = falls[falls > distance]
+    if through.empty:
+        return DEFAULT_SLIPPAGE
+    return max(DEFAULT_SLIPPAGE, float((through / distance).mean()))
+
+
+def open_risk(plans: Dict[str, ExitPlan], capital_rp: float,
+              closes: Optional[Dict[str, object]] = None,
+              cfg: Optional[ExitConfig] = None) -> Dict[str, float]:
+    """
+    What the whole book loses if every stop fills at its level -- and if it does not.
 
     Per-position risk is the number that sizes a trade; this is the one that keeps
     you solvent. Four positions each risking a comfortable 1.5% is 6% of capital
     on one bad week, and nothing on the page said so before.
+
+    `gap_total_rp` is the same sum with each position's measured overshoot applied.
+    The stop-level figure is the best case and was being presented as the risk;
+    both are reported now, and `contributors` says which positions the total is
+    actually made of, because a breach you cannot attribute is one you cannot act
+    on.
     """
+    cfg = cfg or ExitConfig()
+    closes = closes or {}
     at_risk = [p.risk_rp for p in plans.values() if p.risk_rp is not None]
     total = float(sum(at_risk))
+
+    gap_total = 0.0
+    contributors = []
+    for ticker, plan in plans.items():
+        if plan.risk_rp is None:
+            continue
+        mult = slippage_multiple(closes.get(ticker), plan.atr_rp, cfg)
+        gap_total += float(plan.risk_rp) * mult
+        contributors.append({
+            "ticker": ticker,
+            "risk_rp": float(plan.risk_rp),
+            "gap_rp": float(plan.risk_rp) * mult,
+            "slippage": mult,
+            "pct_of_capital": (float(plan.risk_rp) / capital_rp * 100.0)
+            if capital_rp else 0.0,
+        })
+    contributors.sort(key=lambda c: -c["risk_rp"])
+
     return {
         "total_rp": total,
         "pct_of_capital": (total / capital_rp * 100.0) if capital_rp else 0.0,
+        "gap_total_rp": gap_total,
+        "gap_pct_of_capital": (gap_total / capital_rp * 100.0) if capital_rp else 0.0,
         "n_positions": len(at_risk),
         "n_without_stop": sum(1 for p in plans.values() if p.risk_rp is None),
+        "contributors": contributors,
     }
 
 

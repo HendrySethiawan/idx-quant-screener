@@ -401,9 +401,31 @@ def moves_section(regime, exposure: Dict[str, object]) -> str:
     )
 
 
-def limits_section(ladder: Dict[str, object]) -> str:
+def limits_section(ladder: Dict[str, object],
+                   factors: Optional[Dict[str, object]] = None) -> str:
     """Tab 3: concerns and blockers, worst first."""
-    return (
+    independence = ""
+    if factors and factors.get("effective"):
+        independence = (
+            '<div class="card">'
+            "<h3>Ten factors, fewer bets</h3>"
+            f"<p>The score is a weighted sum of <strong>{factors['declared']}</strong> "
+            f"factors, but they are not {factors['declared']} separate pieces of "
+            f"evidence. Measured on today's own correlation matrix they behave like "
+            f"<strong>{factors['effective']:.1f}</strong> independent ones, with the "
+            f"largest single component explaining {factors['top_share'] * 100:.0f}% "
+            "of the variation between them. Value, low volatility and dividend yield "
+            "move together: cheap names tend to be calm names tend to be high-yield "
+            "names.</p>"
+            + (f"<p>The consequence for the score: the weighted composite carries "
+               f"<strong>{factors['concentration']:.2f}x</strong> the variance it "
+               "would if the factors were independent. That is not a bug &mdash; a "
+               "composite of correlated factors is a legitimate design &mdash; but "
+               "reading ten weights as ten opinions overstates how diversified the "
+               "ranking is.</p>" if factors.get("concentration") else "")
+            + "</div>"
+        )
+    return (independence + (
         '<div class="card">'
         "<h3>The backtest does not test what you are running</h3>"
         "<p>The live path applies four selection stages before a name reaches the "
@@ -468,15 +490,15 @@ def limits_section(ladder: Dict[str, object]) -> str:
         "thing standing between you and being fully invested in an expensive "
         "market, and it is two moving averages.</p>"
         "</div>"
-    )
+    ))
 
 
 def render_method(ladder: Dict[str, object], exposure: Dict[str, object],
-                  regime) -> str:
+                  regime, factors: Optional[Dict[str, object]] = None) -> str:
     return layout.tabbed(
         [("Your capital", capital_section(ladder)),
          ("What moves it", moves_section(regime, exposure)),
-         ("Limits", limits_section(ladder))],
+         ("Limits", limits_section(ladder, factors))],
         group="method",
     )
 

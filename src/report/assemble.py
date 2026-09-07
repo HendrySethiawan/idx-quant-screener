@@ -11,6 +11,7 @@ portfolio rule rather than a per-name one.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -130,6 +131,9 @@ def build_candidates(
             # `score_floor` is measured on this one, and comparing the two scales
             # made every name in the universe read as tied with every other.
             "raw_score": float(row.get("raw_score", row.get("undervaluation_score", 0.0))),
+            # Sizing reads this: a position's share of the budget is set by how
+            # far its stop is, not by an equal split. See `sizing._allocate_for_n`.
+            "atr_rp": _num(row.get("atr_14")),
             "sector": row.get("sector", "Unknown"),
             "reason": reason_phrase(row),
             "quality_note": data_quality_note(row),
@@ -894,6 +898,7 @@ def assemble(settings, df: pd.DataFrame, regime, holdings: List[Holding],
         # time IDX turnover moved.
         "capital_ladder": capital_ladder(df, settings),
         "sector_exposure": sector_exposure(settings),
+        "factor_independence": _factor_independence(settings),
         # Filled by `build_candidates` from the full ranked list, so a tie that
         # straddles the shortlist boundary is still visible.
         "tie_groups": ties,
@@ -904,10 +909,54 @@ def assemble(settings, df: pd.DataFrame, regime, holdings: List[Holding],
         "bad_entries": bad_entries,
         # What the whole book loses if every stop fills. Per-position risk sizes a
         # trade; this is the one that keeps you solvent, and nothing said it before.
-        "open_risk": _open_risk(exit_plans, settings.capital_rp),
+        "open_risk": _open_risk(exit_plans, settings.capital_rp,
+                                risk_panel, exit_cfg, orders,
+                                float((settings.risk or {}).get("max_book_risk_pct", 0.0))),
     }
 
 
-def _open_risk(exit_plans, capital_rp: float):
+def _factor_independence(settings) -> dict:
+    """
+    How many independent bets the ten weights really are, from the matrix the
+    scoring step already saved. Measured rather than written down, so it moves
+    when the market does.
+    """
+    try:
+        from analysis.fundamental import effective_factors
+        path = Path(settings.output_dir) / "factor_correlations.csv"
+        if not path.exists():
+            return {}
+        corr = pd.read_csv(path, index_col=0)
+        return effective_factors(corr, getattr(settings, "factor_weights", None))
+    except Exception:
+        return {}
+
+
+def _open_risk(exit_plans, capital_rp: float, risk_panel=None, exit_cfg=None,
+               orders=None, cap_pct: float = 0.0):
+    """
+    The book's risk, what it is made of, and whether the plan breaches the cap.
+
+    `orders` is folded in because the question is not "what do you risk now" but
+    "what will you risk if you do what this page says" -- a BUY that pushes you
+    over should say so before you place it, not after.
+    """
     from portfolio.exits import open_risk
-    return open_risk(exit_plans, capital_rp) if exit_plans else None
+
+    if not exit_plans:
+        return None
+    closes = (risk_panel or {}).get("Close")
+    per_ticker = {t: closes[t] for t in closes.columns} if closes is not None else {}
+    out = open_risk(exit_plans, capital_rp, per_ticker, exit_cfg)
+
+    # What today's proposed buys would add on top.
+    adding = 0.0
+    for order in (orders or []):
+        if order.get("action") == "BUY" and order.get("risk_rp"):
+            adding += float(order["risk_rp"])
+    out["adding_rp"] = adding
+    out["planned_rp"] = out["total_rp"] + adding
+    out["planned_pct"] = (out["planned_rp"] / capital_rp * 100.0) if capital_rp else 0.0
+    out["cap_pct"] = float(cap_pct or 0.0)
+    out["over_cap"] = bool(cap_pct and out["planned_pct"] > cap_pct)
+    return out

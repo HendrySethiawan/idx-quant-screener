@@ -264,7 +264,10 @@ def cmd_mark(settings, on_date=None, logger=None) -> int:
 def cmd_backtest(settings, logger=None) -> int:
     """Run every cadence, write one HTML page, print each to the console."""
     from backtest import report as R
+    from analysis.selection import DEFAULT_MAX_CORRELATION
+    from market.liquidity import LiquidityConfig
     from backtest.engine import (BacktestConfig, build_atr_panel, build_price_panel,
+                                 build_turnover_panel,
                                  run_backtest)
     from fetchers.data_fetcher import DataFetcher
     from portfolio.exits import ExitConfig
@@ -285,6 +288,10 @@ def cmd_backtest(settings, logger=None) -> int:
     # it would be measuring a tighter rule than the terminal actually sets.
     exit_cfg = ExitConfig.from_settings(settings)
     atr_panel = build_atr_panel(price_data, exit_cfg.atr_window)
+    # What the liquidity gate reads. Close x Volume only, so it is
+    # reconstructible per date with no look-ahead.
+    turnover = build_turnover_panel(
+        price_data, int((settings.liquidity or {}).get('liquidity_window', 20)))
 
     regime_cfg = getattr(settings, "regime", None) or {}
     bench_ticker = regime_cfg.get("benchmark", "^JKSE")
@@ -313,23 +320,33 @@ def cmd_backtest(settings, logger=None) -> int:
             max_per_sector=int(getattr(settings, "max_per_sector", 2)),
             min_names=int(bt.get("min_names", 10)),
             risk_free_pct=float(getattr(settings, "risk_free_pct", 0.0) or 0.0),
+            # The three stages the live path applies. Passed from the same
+            # settings the ticket uses, so the simulation cannot quietly run a
+            # looser strategy than the one that reaches the reader.
+            liquidity=LiquidityConfig.from_settings(settings),
+            max_correlation=float((settings.selection or {}).get(
+                "max_correlation", DEFAULT_MAX_CORRELATION) or 0.0) or None,
         )
         args = (panel, settings.capital_rp, cfg, fee_cfg, settings.sectors,
                 benchmark, fx, int(regime_cfg.get("trend_ma", 200)),
                 regime_cfg.get("deploy_ladder", (0.30, 0.60, 1.00)))
+        # `atr_panel` is a SIZING input now, not just an exits one: positions
+        # are sized by the distance to their stop. Every report needs it, or
+        # the headline number would be sized differently from the ticket.
+        kwargs = {"turnover": turnover, "atr_panel": atr_panel}
 
         from backtest.engine import rebalance_dates
-        base = run_backtest(*args)
+        base = run_backtest(*args, **kwargs)
         surv = R.survivorship_check(panel, benchmark,
                                     rebalance_dates(panel, rule), settings.capital_rp)
-        factors = R.factor_report(*args)
-        costs = R.cost_report(*args)
-        regimes = R.regime_report(*args)
+        factors = R.factor_report(*args, **kwargs)
+        costs = R.cost_report(*args, **kwargs)
+        regimes = R.regime_report(*args, **kwargs)
         # `cfg.exits` stays None for every report above, so questions 1-3 keep
         # answering exactly what they answered before. The exits get their own
         # comparison rather than silently changing the others' baseline.
-        exits = R.exit_report(*args, atr_panel=atr_panel)
-        robustness = R.robustness_report(*args)
+        exits = R.exit_report(*args, **kwargs)
+        robustness = R.robustness_report(*args, **kwargs)
         verdict = R.robustness_verdict(robustness)
 
         label = {"M": "Monthly", "W": "Weekly"}.get(rule, rule)

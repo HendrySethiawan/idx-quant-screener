@@ -173,3 +173,122 @@ def test_min_position_can_be_disabled():
     alloc = choose_allocation(CANDIDATES, 10_000_000, deploy_pct=0.30,
                               min_position_rp=0)
     assert alloc.n_positions >= 3
+
+
+# ======================================================================
+# Equal RISK, not equal rupiah.
+#
+# Every position used to get budget/n, so the wildest name in the book carried
+# the most risk purely because it moved most. On the live book that spread
+# per-position risk from 0.5% to 0.9% of capital across four names that were all
+# meant to be the same size. This does not reduce risk -- it stops the book
+# concentrating by accident in whichever name happened to be most volatile.
+# ======================================================================
+def _mixed(atrs, price=1000.0):
+    """Same price, wildly different volatility."""
+    return [{"ticker": f"{k}.JK", "price": price, "atr_rp": a}
+            for k, a in atrs.items()]
+
+
+def _risk_spread(alloc, cands, k_atr=2.5):
+    """Rupiah at risk per position, as a fraction of the largest."""
+    atr = {c["ticker"]: c["atr_rp"] for c in cands}
+    risk = [p.shares * k_atr * atr[p.ticker] for p in alloc.positions]
+    return max(risk) / min(risk)
+
+
+def test_a_calm_name_gets_more_money_than_a_wild_one():
+    cands = _mixed({"CALM": 10.0, "MID": 30.0, "WILD": 90.0})
+    alloc = choose_allocation(cands, 60_000_000, 1.0, min_positions=3,
+                              max_positions=3, min_position_rp=0.0)
+    by = {p.ticker: p.rupiah for p in alloc.positions}
+    assert by["CALM.JK"] > by["MID.JK"] > by["WILD.JK"]
+
+
+def test_risk_comes_out_far_more_even_than_the_money():
+    """
+    The point of the change, measured against the thing it replaced rather than
+    against a threshold somebody picked. Equal rupiah on a book whose ATRs run
+    10 / 30 / 90 spreads risk 9x by construction; whole lots keep equal risk from
+    being exactly 1.0, so the honest claim is the ratio between the two.
+    """
+    atrs = {"CALM": 10.0, "MID": 30.0, "WILD": 90.0}
+    cands = _mixed(atrs)
+    budget = 60_000_000
+
+    risk_sized = choose_allocation(cands, budget, 1.0, min_positions=3,
+                                   max_positions=3, min_position_rp=0.0)
+    # The same book with nothing to size on: the old equal-rupiah behaviour.
+    flat = choose_allocation([{k: v for k, v in c.items() if k != "atr_rp"}
+                              for c in cands],
+                             budget, 1.0, min_positions=3, max_positions=3,
+                             min_position_rp=0.0)
+
+    assert _risk_spread(flat, cands) > 8.0, "fixture does not exercise the change"
+    assert _risk_spread(risk_sized, cands) < _risk_spread(flat, cands) / 5
+
+
+def test_the_budget_is_still_respected():
+    cands = _mixed({"CALM": 10.0, "MID": 30.0, "WILD": 90.0})
+    budget = 60_000_000
+    alloc = choose_allocation(cands, budget, 1.0, min_positions=3,
+                              max_positions=3, min_position_rp=0.0)
+    assert sum(p.rupiah for p in alloc.positions) <= budget
+
+
+def test_every_position_is_still_whole_lots():
+    cands = _mixed({"CALM": 10.0, "MID": 30.0, "WILD": 90.0})
+    alloc = choose_allocation(cands, 60_000_000, 1.0, min_positions=3,
+                              max_positions=3, min_position_rp=0.0)
+    for p in alloc.positions:
+        assert p.shares == p.lots * 100
+        assert p.lots >= 1
+
+
+def test_a_name_with_no_atr_still_gets_a_position():
+    """
+    `stop_level` refuses a stop without a measurable range, so those names cannot
+    be risk-sized. They take an ordinary slot rather than being dropped or handed
+    the whole book by a divide-by-nothing.
+    """
+    cands = [{"ticker": "A.JK", "price": 1000.0, "atr_rp": 20.0},
+             {"ticker": "B.JK", "price": 1000.0, "atr_rp": None},
+             {"ticker": "C.JK", "price": 1000.0, "atr_rp": 0.0}]
+    alloc = choose_allocation(cands, 60_000_000, 1.0, min_positions=3,
+                              max_positions=3, min_position_rp=0.0)
+    assert len(alloc.positions) == 3
+    for p in alloc.positions:
+        assert p.rupiah > 0
+
+
+def test_with_no_atr_anywhere_it_degrades_to_equal_rupiah():
+    """The behaviour it replaced, still reachable when there is nothing to size on."""
+    cands = [{"ticker": f"{c}.JK", "price": 1000.0} for c in "ABC"]
+    alloc = choose_allocation(cands, 60_000_000, 1.0, min_positions=3,
+                              max_positions=3, min_position_rp=0.0)
+    values = [p.rupiah for p in alloc.positions]
+    assert max(values) == min(values)
+
+
+def test_the_stop_cap_stops_a_wild_name_being_sized_to_nothing():
+    """
+    A name whose 2.5xATR exceeds `max_stop_pct` is stopped out at the cap, so it
+    must be sized against the cap too -- otherwise the position is smaller than
+    the risk it actually carries.
+    """
+    from portfolio.sizing import _risk_per_share
+
+    # 2.5 x 100 = 250, but 15% of 1000 is 150.
+    assert _risk_per_share({"price": 1000.0, "atr_rp": 100.0}, 2.5, 15.0) == 150.0
+    # Under the cap, the ATR governs.
+    assert _risk_per_share({"price": 1000.0, "atr_rp": 20.0}, 2.5, 15.0) == 50.0
+
+
+def test_target_weight_is_the_risk_implied_one():
+    """`max_weight_error` must keep measuring distance from the INTENDED book."""
+    cands = _mixed({"CALM": 10.0, "WILD": 90.0})
+    alloc = choose_allocation(cands, 60_000_000, 1.0, min_positions=2,
+                              max_positions=2, min_position_rp=0.0)
+    by = {p.ticker: p.target_weight for p in alloc.positions}
+    assert by["CALM.JK"] > by["WILD.JK"]
+    assert abs(sum(by.values()) - 1.0) < 0.02

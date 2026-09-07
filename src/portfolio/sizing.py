@@ -66,17 +66,80 @@ def affordable_lots(budget: float, price: float, lot_size: int = 100) -> int:
     return 0 if lp <= 0 else int(budget // lp)
 
 
+def _risk_per_share(cand: dict, k_atr: float, max_stop_pct: float) -> Optional[float]:
+    """
+    What one share costs you if the position is wrong: the distance to its stop.
+
+    `min(k x ATR, price x max_stop_pct)` mirrors `exits.stop_level`, minus the
+    round-trip floor -- that one depends on the position's value, which is what is
+    being solved for here, and it only binds below about Rp1 juta. Sizing off the
+    uncapped ATR would hand the wildest name in the book the most money.
+
+    None when the name has no measurable range, which is also when `stop_level`
+    refuses to produce a stop. Those names cannot be risk-sized and are given the
+    plain equal slot instead.
+    """
+    price = float(cand.get("price") or 0.0)
+    atr = cand.get("atr_rp")
+    if price <= 0 or atr is None:
+        return None
+    try:
+        atr = float(atr)
+    except (TypeError, ValueError):
+        return None
+    if atr != atr or atr <= 0:
+        return None
+    capped = price * float(max_stop_pct) / 100.0
+    rps = min(float(k_atr) * atr, capped) if capped > 0 else float(k_atr) * atr
+    return rps if rps > 0 else None
+
+
 def _allocate_for_n(
     candidates: Sequence[dict],
     budget: float,
     n: int,
     lot_size: int,
     max_lot_to_slot: float,
+    k_atr: float = 2.5,
+    max_stop_pct: float = 15.0,
 ) -> Optional[Allocation]:
-    """Allocate `budget` across the best `n` eligible candidates, whole lots only."""
-    slot = budget / n
-    chosen: List[dict] = []
+    """
+    Allocate `budget` across the best `n` eligible candidates, whole lots only.
 
+    **Sized by risk, not by rupiah.** Equal rupiah means the wildest name in the
+    book carries the most risk, purely because it moves most -- measured on the
+    live book, per-position risk spread 0.5% to 0.9% of capital across four names
+    that were all meant to be the same size. Each position now gets the money that
+    makes the distance to its stop cost about the same as every other, so a calm
+    name holds more of it and a violent one less.
+
+    This does not reduce risk. It stops the book concentrating by accident in
+    whichever name happened to be most volatile that week, which is the difference
+    between taking risk and having it taken for you.
+
+    Names with no measurable range keep the plain `budget/n` slot: they are placed
+    at the median risk profile of the ones that do have it, so the arithmetic below
+    needs no special case and they come out at about an equal slot.
+    """
+    slot = budget / n
+
+    rps_all = [_risk_per_share(c, k_atr, max_stop_pct) for c in candidates]
+    known = [r / float(c["price"]) for r, c in zip(rps_all, candidates)
+             if r is not None and float(c.get("price") or 0) > 0]
+    # The stand-in for a name with no ATR. Falling back to the median of what IS
+    # measurable puts it on an ordinary slot rather than an invented one; with
+    # nothing measurable anywhere, every name shares it and this degrades exactly
+    # to the equal-rupiah sizing it replaced.
+    typical = sorted(known)[len(known) // 2] if known else None
+
+    def rps_of(cand: dict) -> Optional[float]:
+        direct = _risk_per_share(cand, k_atr, max_stop_pct)
+        if direct is not None:
+            return direct
+        price = float(cand.get("price") or 0.0)
+        return price * typical if (typical and price > 0) else None
+
+    chosen: List[dict] = []
     for cand in candidates:
         if len(chosen) == n:
             break
@@ -93,18 +156,35 @@ def _allocate_for_n(
     if len(chosen) < n:
         return None
 
+    # R is the rupiah each position may lose at its stop. Solved so the whole
+    # budget is deployed: value_i = R x price_i / rps_i, and the values must sum to
+    # the budget. Falls back to the equal slot when no name can be risk-sized.
+    ratios = {c["ticker"]: (float(c["price"]) / rps_of(c)) if rps_of(c) else None
+              for c in chosen}
+    usable = [v for v in ratios.values() if v]
+    risk_each = (budget / sum(usable)) if len(usable) == len(chosen) and usable else None
+
     positions: List[Position] = []
     spent = 0.0
     for cand in chosen:
         price = float(cand["price"])
-        lots = affordable_lots(slot, price, lot_size)
+        ratio = ratios.get(cand["ticker"])
+        if risk_each and ratio:
+            intended = risk_each * ratio
+        else:
+            intended = slot
+        lots = affordable_lots(intended, price, lot_size)
         if lots < 1:
             return None
         value = lots * lot_price(price, lot_size)
         spent += value
         positions.append(Position(
             ticker=cand["ticker"], price=price, lots=lots, shares=lots * lot_size,
-            rupiah=value, weight=0.0, target_weight=1.0 / n,
+            rupiah=value, weight=0.0,
+            # The weight this position was MEANT to have, which is now risk-implied
+            # rather than 1/n -- so `max_weight_error` and the lot-rounding note go
+            # on measuring the distance from the intended book.
+            target_weight=(intended / budget) if budget else 0.0,
             lot_price=lot_price(price, lot_size),
         ))
 
@@ -120,7 +200,7 @@ def _allocate_for_n(
         affordable = [p for p in positions if p.lot_price <= leftover]
         if not affordable:
             break
-        pos = min(affordable, key=lambda p: p.rupiah - slot)
+        pos = min(affordable, key=lambda p: p.rupiah - p.target_weight * budget)
         pos.lots += 1
         pos.shares += lot_size
         pos.rupiah += pos.lot_price
@@ -151,6 +231,8 @@ def choose_allocation(
     max_lot_to_slot: float = 1.0,
     deviation_penalty: float = 0.5,
     min_position_rp: float = 1_000_000.0,
+    k_atr: float = 2.5,
+    max_stop_pct: float = 15.0,
 ) -> Allocation:
     """
     Pick both the position count and the lot counts.
@@ -172,6 +254,11 @@ def choose_allocation(
         min_position_rp = float(account.get("min_position_rp", min_position_rp))
         broker = getattr(settings, "broker", None) or {}
         lot_size = int(broker.get("lot_size", lot_size))
+        # The same two numbers `exits.stop_level` uses, so the distance this sizes
+        # against is the distance the ticket will actually show.
+        risk = getattr(settings, "risk", None) or {}
+        k_atr = float(risk.get("k_atr", k_atr))
+        max_stop_pct = float(risk.get("max_stop_pct", max_stop_pct))
 
     budget = max(0.0, float(capital_rp) * float(deploy_pct))
     rejected: Dict[str, str] = {}
@@ -189,7 +276,8 @@ def choose_allocation(
         # juta one. Refuse to create positions too small to outrun their own costs.
         if min_position_rp > 0 and budget / n < min_position_rp:
             continue
-        alloc = _allocate_for_n(candidates, budget, n, lot_size, max_lot_to_slot)
+        alloc = _allocate_for_n(candidates, budget, n, lot_size, max_lot_to_slot,
+                                k_atr=k_atr, max_stop_pct=max_stop_pct)
         if alloc is None:
             continue
         score = alloc.deployed_pct - deviation_penalty * alloc.max_weight_error
