@@ -107,7 +107,8 @@ def survivorship_text(s: Dict[str, Optional[float]]) -> str:
 
 # ------------------------------------------------- 1. do the factors add value?
 def factor_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
-                  trend_ma=200, deploy_ladder=(0.30, 0.60, 1.00)) -> List[Comparison]:
+                  trend_ma=200, deploy_ladder=(0.30, 0.60, 1.00),
+                  turnover=None) -> List[Comparison]:
     """
     Strategy versus the index versus an equal-weight universe.
 
@@ -126,9 +127,9 @@ def factor_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
 
     gross_cfg = BacktestConfig(**{**cfg.__dict__, "charge_fees": False, "whole_lots": False})
     gross = run_backtest(panel, capital, gross_cfg, fee_cfg, sectors, benchmark, fx,
-                         trend_ma, deploy_ladder)
+                         trend_ma, deploy_ladder, turnover=turnover)
     net = run_backtest(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
-                       trend_ma, deploy_ladder)
+                       trend_ma, deploy_ladder, turnover=turnover)
 
     out = [
         Comparison("Strategy (gross, frictionless)", gross.equity, gross.metrics(),
@@ -158,7 +159,8 @@ def factor_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
 
 # ------------------------------------------------ 2. what does being small cost?
 def cost_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
-                trend_ma=200, deploy_ladder=(0.30, 0.60, 1.00)) -> pd.DataFrame:
+                trend_ma=200, deploy_ladder=(0.30, 0.60, 1.00),
+                turnover=None) -> pd.DataFrame:
     """
     Separate the true costs from the noise, because they behave differently.
 
@@ -182,7 +184,7 @@ def cost_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
     def run(**over):
         c = BacktestConfig(**{**cfg.__dict__, **over})
         return run_backtest(panel, capital, c, fee_cfg, sectors, benchmark, fx,
-                            trend_ma, deploy_ladder)
+                            trend_ma, deploy_ladder, turnover=turnover)
 
     exact = run(charge_fees=False, whole_lots=False, min_position_rp=0)
     lots = run(charge_fees=False, whole_lots=True, min_position_rp=0)
@@ -216,7 +218,8 @@ def cost_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
 
 # ---------------------------------------------------- 3. does the ladder help?
 def regime_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
-                  trend_ma=200, deploy_ladder=(0.30, 0.60, 1.00)) -> pd.DataFrame:
+                  trend_ma=200, deploy_ladder=(0.30, 0.60, 1.00),
+                  turnover=None) -> pd.DataFrame:
     """
     Always-invested versus the deploy ladder, on return AND drawdown.
 
@@ -227,7 +230,7 @@ def regime_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
     for label, use_regime in (("Always 100% deployed", False), ("Regime ladder 30/60/100", True)):
         c = BacktestConfig(**{**cfg.__dict__, "use_regime": use_regime})
         r = run_backtest(panel, capital, c, fee_cfg, sectors, benchmark, fx,
-                         trend_ma, deploy_ladder)
+                         trend_ma, deploy_ladder, turnover=turnover)
         if r.equity.empty:
             continue
         m = r.metrics()
@@ -244,7 +247,7 @@ def regime_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
 # -------------------------------------------------------- 3b. do the exits help?
 def exit_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
                 trend_ma=200, deploy_ladder=(0.30, 0.60, 1.00),
-                atr_panel=None) -> pd.DataFrame:
+                atr_panel=None, turnover=None) -> pd.DataFrame:
     """
     Holding to the next rebalance, against stopping out and taking profit in stages.
 
@@ -275,7 +278,7 @@ def exit_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
     for label, ecfg in variants:
         c = BacktestConfig(**{**cfg.__dict__, "exits": ecfg})
         r = run_backtest(panel, capital, c, fee_cfg, sectors, benchmark, fx,
-                         trend_ma, deploy_ladder, atr_panel=atr_panel)
+                         trend_ma, deploy_ladder, atr_panel=atr_panel, turnover=turnover)
         if r.equity.empty:
             continue
         m = r.metrics()
@@ -336,7 +339,7 @@ def exit_verdict(exits: pd.DataFrame) -> Dict[str, Optional[float]]:
 # ------------------------------------------------------------- 4. robustness
 def robustness_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
                       trend_ma=200, deploy_ladder=(0.30, 0.60, 1.00),
-                      atr_panel=None) -> pd.DataFrame:
+                      atr_panel=None, turnover=None) -> pd.DataFrame:
     """
     Vary the settings and the window. An edge that survives only one configuration
     is not an edge.
@@ -346,7 +349,7 @@ def robustness_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
     def add(variant, over, start=None, end=None):
         c = BacktestConfig(**{**cfg.__dict__, **over, "start": start, "end": end})
         r = run_backtest(panel, capital, c, fee_cfg, sectors, benchmark, fx,
-                         trend_ma, deploy_ladder, atr_panel=atr_panel)
+                         trend_ma, deploy_ladder, atr_panel=atr_panel, turnover=turnover)
         if r.equity.empty:
             return
         m = r.metrics()

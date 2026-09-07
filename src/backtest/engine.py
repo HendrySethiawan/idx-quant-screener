@@ -9,10 +9,19 @@ stocks by today's P/E would be look-ahead. The strategy simulated here is theref
 a third of the live score, and a good result means "the price component was not
 obviously broken on one flattered window" -- not that the tool works.
 
-**It reuses the live code path.** Sizing, fees, the regime ladder, the sector cap
-and the liquidity gate are the same functions that produce the daily ticket. A
-backtest that re-implemented position sizing would be measuring a strategy nobody
-runs, and would hide bugs in the one they do.
+**It reuses the live code path.** Sizing, fees, the regime ladder, the sector cap,
+the liquidity gate, the decorrelation step and the score floor are the same
+functions that produce the daily ticket. A backtest that re-implemented position
+sizing would be measuring a strategy nobody runs, and would hide bugs in the one
+they do.
+
+That sentence was false for a long time. It named the liquidity gate while the
+word "liquidity" appeared exactly once in this package -- in the sentence itself.
+`decorrelated_pick` and the score floor were absent too, so the simulation applied
+one of the live path's four selection stages and the headline number described a
+strategy that could hold names the reader's account could not exit. `test_backtest`
+now asserts every stage this paragraph claims, by name, so the claim cannot drift
+from the code again.
 
 **The look-ahead guard is asserted, not assumed.** At rebalance date T the signal
 sees only `panel.index < T`, checked on every iteration. Names that had not yet
@@ -27,7 +36,9 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
-from analysis.selection import sector_capped_pick
+from analysis.selection import (break_ties, decorrelated_pick,
+                                sector_capped_pick, tie_groups)
+from market.liquidity import assess
 from market.regime import above_sma
 from portfolio.fees import FeeConfig, estimate_fees
 from portfolio.sizing import choose_allocation
@@ -40,6 +51,10 @@ _VOL = 60
 
 # Only these carry weight here. The rest of the composite is not reconstructible.
 BACKTESTABLE_FACTORS = ("mom_1m", "mom_6m", "mom_12m", "realized_vol")
+
+# The live default in configs/default.yaml. Correlations are measured over the
+# same trailing window there.
+_CORR_WINDOW = 120
 
 _PERIODS_PER_YEAR = {"M": 12, "W": 52}
 _RESAMPLE_RULE = {"M": "ME", "W": "W"}
@@ -56,6 +71,12 @@ class BacktestConfig:
     max_positions: int = 6
     min_position_rp: float = 1_000_000.0
     max_per_sector: int = 2
+    # The three selection stages the live path applies and this simulation used
+    # not to. Default ON, so the strategy measured is the shipped one and a
+    # variant has to be asked for -- `selection_report` asks, to price each stage.
+    liquidity: Optional[object] = None      # a LiquidityConfig, or None to skip
+    max_correlation: Optional[float] = None
+    use_score_floor: bool = True
     min_names: int = 10              # skip dates with too few listed names
     start: Optional[pd.Timestamp] = None
     end: Optional[pd.Timestamp] = None
@@ -136,6 +157,75 @@ def build_atr_panel(price_data: Dict[str, pd.DataFrame], window: int = 14) -> pd
     if not series:
         return pd.DataFrame()
     return pd.DataFrame(series).sort_index()
+
+
+def _finite(v) -> Optional[float]:
+    """A usable number, or None. NaN turnover means "cannot see", not "cannot trade"."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return None if f != f else f
+
+
+def build_turnover_panel(price_data: Dict[str, pd.DataFrame],
+                         window: int = 20) -> pd.DataFrame:
+    """
+    Median daily traded value per ticker per date -- what the liquidity gate reads.
+
+    `Close x Volume`, rolling median, with the same `min_periods` rule as
+    `analysis.technical`: a single missing session must not blank the whole window,
+    because the gate reads None as "cannot trade" and would empty the book against
+    the entire universe.
+
+    Entirely price and volume data, so it is reconstructible per date with no
+    look-ahead -- which is why the gate can be simulated at all. The live figure is
+    computed by `technical.add_indicators`; this is the panel form of the same
+    arithmetic, built here for the same reason `build_atr_panel` exists.
+    """
+    n = max(1, int(window))
+    series = {}
+    for ticker, frame in (price_data or {}).items():
+        if frame is None or getattr(frame, "empty", True):
+            continue
+        if "Close" not in frame or "Volume" not in frame:
+            continue
+        value = (frame["Close"] * frame["Volume"]).dropna()
+        if value.empty:
+            continue
+        med = value.rolling(n, min_periods=max(2, n // 2)).median().dropna()
+        if med.empty:
+            continue
+        med.index = pd.to_datetime(med.index).tz_localize(None)
+        series[ticker] = med[~med.index.duplicated(keep="last")]
+    if not series:
+        return pd.DataFrame()
+    return pd.DataFrame(series).sort_index()
+
+
+def price_score_floor(hist: pd.DataFrame, weight_scale: float = 1.0,
+                      quantile: float = 0.9) -> float:
+    """
+    How far a name's price score moves when the universe gains or loses one member.
+
+    The live floor is a jackknife over the fundamental composite; this is the same
+    idea on the only score this simulation has. Measured ONCE per run rather than
+    per rebalance -- 74 re-scorings against 260 dates would be 19,000 passes over
+    the panel for a number that barely moves. The approximation is stated here
+    rather than hidden: it is a representative floor, not a per-date one.
+    """
+    full = price_signal(hist, weight_scale).dropna()
+    if len(full) < 3:
+        return 0.0
+    moves = []
+    for dropped in full.index:
+        without = price_signal(hist.drop(columns=[dropped]), weight_scale)
+        common = full.index.intersection(without.dropna().index)
+        if len(common) > 1:
+            moves.extend((full[common] - without[common]).abs().tolist())
+    if not moves:
+        return 0.0
+    return float(pd.Series(moves).quantile(quantile))
 
 
 def rebalance_dates(panel: pd.DataFrame, rule: str = "M") -> List[pd.Timestamp]:
@@ -452,6 +542,7 @@ def run_backtest(
     trend_ma: int = 200,
     deploy_ladder: Sequence[float] = (0.30, 0.60, 1.00),
     atr_panel: Optional[pd.DataFrame] = None,
+    turnover: Optional[pd.DataFrame] = None,
 ) -> BacktestResult:
     result = BacktestResult(config=cfg)
     if panel is None or panel.empty:
@@ -484,6 +575,15 @@ def run_backtest(
     # at Rp10 juta is that sales sharing a day share the stamp.
     charged: set = set()
 
+    # Measured once on the whole window; see `price_score_floor`. Zero disables
+    # the tie step, which is what a universe too small to jackknife should do.
+    score_floor = 0.0
+    if cfg.use_score_floor:
+        try:
+            score_floor = price_score_floor(panel, cfg.weight_scale)
+        except Exception:
+            score_floor = 0.0
+
     for t, t_next in zip(dates[:-1], dates[1:]):
         hist = panel[panel.index < t]
         # The guard that makes every number below trustworthy.
@@ -497,10 +597,52 @@ def run_backtest(
         names_seen.append(len(eligible))
 
         if len(eligible) >= cfg.min_names:
+            # Same order as the live path: liquidity, then ties, then the sector
+            # cap, then decorrelation. Getting the order wrong would measure a
+            # different strategy just as surely as skipping a stage.
+            #
+            # LIQUIDITY. The slot is the book's own value divided by the position
+            # count -- the backtest's analogue of capital, and the same question
+            # the live gate asks: could this position be got out of?
+            if cfg.liquidity is not None and turnover is not None and not turnover.empty:
+                tv = turnover[turnover.index < t]
+                if not tv.empty:
+                    latest = tv.iloc[-1]
+                    slot = value / max(1, cfg.max_positions)
+                    eligible = [
+                        tk for tk in eligible
+                        if assess(tk, _finite(latest.get(tk)), slot, cfg.liquidity).ok
+                    ]
+
+            # Correlations from the same trailing window the live path uses, and
+            # from `hist`, so they cannot see past the rebalance date either.
+            corr = None
+            if len(eligible) > 1 and (cfg.max_correlation or score_floor > 0):
+                window = hist[eligible].tail(_CORR_WINDOW)
+                if len(window) > 2:
+                    corr = window.pct_change().corr()
+
+            # TIES. Where the score cannot separate two names, prefer the one that
+            # least duplicates what has already been taken.
+            if score_floor > 0 and corr is not None and len(eligible) > 1:
+                raw = {tk: float(score.get(tk, 0.0)) for tk in eligible}
+                groups = tie_groups(eligible, raw, score_floor)
+                if any(len(g) > 1 for g in groups):
+                    eligible = break_ties(eligible, raw, corr, score_floor,
+                                          groups=groups)
+
             if cfg.max_per_sector and sectors:
                 eligible = sector_capped_pick(
                     eligible, sectors, top_n=len(eligible), max_per_sector=cfg.max_per_sector
                 )[: cfg.max_positions * 3]
+
+            # DECORRELATION, after the sector cap, so the two explanations compose
+            # rather than compete -- exactly as `build_candidates` orders them.
+            if cfg.max_correlation and corr is not None and len(eligible) > 1:
+                eligible = decorrelated_pick(
+                    eligible, corr, top_n=len(eligible),
+                    max_correlation=float(cfg.max_correlation),
+                )
 
             deploy = 1.0
             if cfg.use_regime:
