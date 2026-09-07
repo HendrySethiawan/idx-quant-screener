@@ -13,24 +13,25 @@ from pathlib import Path
 import pytest
 import yaml
 
-from first_run import (PLACEHOLDER_CAPITAL, apply_capital, has_user_capital,
-                       is_placeholder_capital, should_ask, warn_text)
+from first_run import (PLACEHOLDER_CAPITAL, apply_capital,
+                        capital_equals_placeholder, has_recorded_cash,
+                        has_user_capital, should_ask, warn_text)
 
 
 # ------------------------------------------------------------ detecting it
 def test_the_shipped_default_is_recognised_as_unset(settings_mock):
     settings_mock.account = {**settings_mock.account, "capital_rp": PLACEHOLDER_CAPITAL}
-    assert is_placeholder_capital(settings_mock) is True
+    assert capital_equals_placeholder(settings_mock) is True
 
 
 def test_a_real_figure_is_not_the_placeholder(settings_mock):
     settings_mock.account = {**settings_mock.account, "capital_rp": 10_000_000}
-    assert is_placeholder_capital(settings_mock) is False
+    assert capital_equals_placeholder(settings_mock) is False
 
 
 def test_a_broken_capital_is_not_mistaken_for_the_placeholder(settings_mock):
     settings_mock.account = {**settings_mock.account, "capital_rp": "lots"}
-    assert is_placeholder_capital(settings_mock) is False
+    assert capital_equals_placeholder(settings_mock) is False
 
 
 def test_someone_whose_capital_really_is_the_placeholder_is_not_asked_twice(
@@ -99,7 +100,7 @@ def test_nothing_here_reads_stdin(monkeypatch, settings_mock):
 
     monkeypatch.setattr(builtins, "input", boom)
     should_ask(settings_mock)
-    is_placeholder_capital(settings_mock)
+    capital_equals_placeholder(settings_mock)
     warn_text(settings_mock)
 
 
@@ -170,3 +171,75 @@ def test_the_banner_sits_with_the_ticket_not_in_a_footnote():
     out = _brief(placeholder_capital=True)
     ticket = out.split('id="panel-ticket"')[1].split("</section>")[0]
     assert "placeholder capital, not your money" in ticket
+
+
+# =====================================================================
+# The banner that would not go away.
+#
+# The shipped placeholder is Rp100,000,000. Somebody whose real capital is
+# Rp100,000,000 -- an ordinary round number -- set it in Settings, and every page
+# went on telling them the figures were sized for money that was not theirs, with
+# no way to dismiss it. The value alone cannot tell those two apart; only "has a
+# choice been made" can, and there are two ways to make one.
+# =====================================================================
+def test_choosing_the_same_number_the_app_ships_with_is_still_choosing(
+        settings_mock, tmp_path):
+    settings_mock.account = {**settings_mock.account,
+                             "capital_rp": PLACEHOLDER_CAPITAL}
+    user = tmp_path / "user.yaml"
+    user.write_text("account:\n  capital_rp: 100000000\n", encoding="utf-8")
+    assert capital_equals_placeholder(settings_mock) is True     # the value matches
+    assert should_ask(settings_mock, str(user)) is False         # and it is still set
+
+
+def test_a_recorded_deposit_counts_as_setting_your_capital(settings_mock, tmp_path):
+    """
+    Capital comes from the ledger once a row exists, and that path writes nothing
+    to user.yaml. Without this, doing exactly what the banner asks for leaves the
+    banner up.
+    """
+    import pandas as pd
+
+    cash = tmp_path / "cash.csv"
+    pd.DataFrame([{"date": "2026-09-01", "kind": "DEPOSIT",
+                   "amount_rp": PLACEHOLDER_CAPITAL, "note": "opening"}]
+                 ).to_csv(cash, index=False)
+    settings_mock.account = {**settings_mock.account,
+                             "capital_rp": PLACEHOLDER_CAPITAL,
+                             "cash_path": str(cash)}
+
+    assert has_recorded_cash(settings_mock) is True
+    assert should_ask(settings_mock, str(tmp_path / "absent.yaml")) is False
+
+
+def test_an_empty_ledger_and_no_config_still_asks(settings_mock, tmp_path):
+    """The guard must be made accurate, not disarmed."""
+    settings_mock.account = {**settings_mock.account,
+                             "capital_rp": PLACEHOLDER_CAPITAL,
+                             "cash_path": str(tmp_path / "no-such-cash.csv")}
+    assert has_recorded_cash(settings_mock) is False
+    assert should_ask(settings_mock, str(tmp_path / "absent.yaml")) is True
+
+
+def test_a_real_figure_is_never_questioned(settings_mock, tmp_path):
+    settings_mock.account = {**settings_mock.account, "capital_rp": 10_000_000,
+                             "cash_path": str(tmp_path / "none.csv")}
+    assert should_ask(settings_mock, str(tmp_path / "absent.yaml")) is False
+
+
+def test_the_config_path_is_resolved_at_call_time(settings_mock, tmp_path,
+                                                  monkeypatch):
+    """
+    The autouse fixture redirects `USER_CONFIG_PATH` so no test can touch the
+    reader's real file. A literal default here would walk past that redirect and
+    make the answer depend on the developer's own account settings.
+    """
+    from core import config
+
+    redirected = tmp_path / "elsewhere.yaml"
+    redirected.write_text("account:\n  capital_rp: 100000000\n", encoding="utf-8")
+    monkeypatch.setattr(config, "USER_CONFIG_PATH", str(redirected))
+    assert has_user_capital() is True
+
+    monkeypatch.setattr(config, "USER_CONFIG_PATH", str(tmp_path / "gone.yaml"))
+    assert has_user_capital() is False

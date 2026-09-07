@@ -1089,3 +1089,33 @@ def test_the_ticket_no_longer_says_no_longer_in_the_target_book():
         "note": "cutting the book back to today's Rp3,000,000 budget",
     }])
     assert "no longer in the target book" not in out
+
+
+# =====================================================================
+# The banner is a rendered consequence, so it is asserted on the rendered page.
+# `runner.render` used to pass the value-only check into this flag, so setting
+# your capital to the one number the app ships with left the warning up forever.
+# =====================================================================
+def test_the_page_warns_when_capital_was_never_set():
+    out = _render(placeholder_capital=True)
+    assert "PLACEHOLDER CAPITAL" in out
+    assert "not your money" in out
+
+
+def test_the_page_says_nothing_once_capital_is_yours():
+    out = _render(placeholder_capital=False)
+    assert "PLACEHOLDER CAPITAL" not in out
+    assert "not your money" not in out
+
+
+def test_the_runner_asks_the_whole_question_not_half_of_it():
+    """
+    The bug, pinned at its source: `render` must use the verdict, not the value
+    comparison. Reverting the call site fails here.
+    """
+    import inspect
+
+    import runner
+    src = inspect.getsource(runner.render)
+    assert "placeholder_capital=should_ask(settings)" in src
+    assert "capital_equals_placeholder" not in src

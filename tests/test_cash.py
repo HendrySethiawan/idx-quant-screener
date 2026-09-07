@@ -217,16 +217,41 @@ def test_syncing_does_not_disturb_the_other_account_settings(settings_mock, tmp_
 
 
 def test_the_placeholder_banner_goes_away_once_money_is_recorded(settings_mock, tmp_path):
-    from first_run import is_placeholder_capital
+    """
+    Asserted on `should_ask`, the verdict the banner actually reads -- not on the
+    value comparison. The two agree here only because Rp10 juta differs from the
+    shipped figure; the test below is the one where they part company.
+    """
+    from first_run import should_ask
 
-    settings_mock.account = {**settings_mock.account, "capital_rp": 100_000_000}
-    assert is_placeholder_capital(settings_mock)
+    absent = str(tmp_path / "no-user.yaml")
+    settings_mock.account = {**settings_mock.account, "capital_rp": 100_000_000,
+                             "cash_path": str(tmp_path / "none.csv")}
+    assert should_ask(settings_mock, absent)
 
     path = _ledger(tmp_path, [("DEPOSIT", 10_000_000, "2026-08-12")])
     settings_mock.account = {**settings_mock.account, "cash_path": str(path)}
     C.sync_capital(settings_mock)
 
-    assert not is_placeholder_capital(settings_mock)
+    assert not should_ask(settings_mock, absent)
+
+
+def test_a_deposit_that_lands_on_the_shipped_figure_still_counts(settings_mock,
+                                                                 tmp_path):
+    """
+    Pay in exactly Rp100,000,000 and the value comparison cannot tell you from a
+    fresh install -- so the banner told people who had done precisely what it
+    asked that their capital was unset.
+    """
+    from first_run import capital_equals_placeholder, should_ask
+
+    absent = str(tmp_path / "no-user.yaml")
+    path = _ledger(tmp_path, [("DEPOSIT", 100_000_000, "2026-08-12")])
+    settings_mock.account = {**settings_mock.account, "cash_path": str(path)}
+    C.sync_capital(settings_mock)
+
+    assert capital_equals_placeholder(settings_mock)      # the value matches
+    assert not should_ask(settings_mock, absent)          # and it is still yours
 
 
 def test_cash_path_follows_settings_like_every_other_file(settings_mock):

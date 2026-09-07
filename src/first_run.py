@@ -15,28 +15,49 @@ at it. What remains here is the detection and the wording.
 """
 from __future__ import annotations
 
+from typing import Optional
+
 # The value shipped in configs/default.yaml. Anything equal to it means "not set".
 PLACEHOLDER_CAPITAL = 100_000_000.0
 
 
-def is_placeholder_capital(settings) -> bool:
-    """True while the reader is still on the shipped placeholder."""
+def capital_equals_placeholder(settings) -> bool:
+    """
+    Whether the VALUE happens to equal the shipped figure. Not a verdict.
+
+    Deliberately not called `is_placeholder_capital` any more. Under that name it
+    read like the complete test and was used as one: the banner on every page ran
+    off it, so a reader whose capital genuinely is Rp100,000,000 -- a perfectly
+    ordinary round number, and the one the app ships with -- was told on every
+    launch that the figures were sized for money that was not theirs, with no way
+    to dismiss it. `should_ask` is the verdict. This is one of its two halves.
+    """
     try:
         return abs(float(settings.capital_rp) - PLACEHOLDER_CAPITAL) < 1.0
     except (TypeError, ValueError):
         return False
 
 
-def has_user_capital(user_config_path: str = "configs/user.yaml") -> bool:
+def has_user_capital(user_config_path: Optional[str] = None) -> bool:
     """
     Whether `configs/user.yaml` already carries a capital.
 
     Checked separately from the value: somebody whose real capital genuinely is
     Rp100,000,000 has chosen it, and must not be asked again on every launch.
+
+    The path is resolved from `core.config.USER_CONFIG_PATH` at call time rather
+    than bound as a literal default. The autouse test fixture redirects that
+    constant to a tmp file so no test can read or write the reader's real config,
+    and a literal here would walk straight past the redirect -- making the result
+    depend on whatever happens to be in the developer's own account settings.
     """
     from pathlib import Path
 
     import yaml
+
+    if user_config_path is None:
+        from core.config import USER_CONFIG_PATH
+        user_config_path = USER_CONFIG_PATH
 
     path = Path(user_config_path)
     if not path.exists():
@@ -48,8 +69,36 @@ def has_user_capital(user_config_path: str = "configs/user.yaml") -> bool:
     return "capital_rp" in (data.get("account") or {})
 
 
-def should_ask(settings, user_config_path: str = "configs/user.yaml") -> bool:
-    return is_placeholder_capital(settings) and not has_user_capital(user_config_path)
+def has_recorded_cash(settings) -> bool:
+    """
+    Whether the cash ledger has anything in it.
+
+    Recording a deposit *is* setting your capital -- `portfolio.cash.sync_capital`
+    derives the figure from the ledger and `save_setting` refuses the config route
+    once a row exists. But that path writes no `capital_rp` to `user.yaml`, so
+    somebody whose deposits total exactly Rp100,000,000 would be told their
+    capital was unset for having done the very thing the banner asks for.
+    """
+    try:
+        from portfolio.cash import cash_path, load_cash
+        return not load_cash(cash_path(settings)).empty
+    except Exception:
+        # A missing or unreadable ledger is not evidence of a choice, and it must
+        # never be the reason a run fails to start.
+        return False
+
+
+def should_ask(settings, user_config_path: Optional[str] = None) -> bool:
+    """
+    The verdict: is capital still unset?
+
+    Both halves matter. The value alone cannot tell the shipped default from a
+    reader who chose that same number, and the config file alone misses anyone
+    whose capital comes from the cash ledger instead.
+    """
+    if not capital_equals_placeholder(settings):
+        return False
+    return not (has_user_capital(user_config_path) or has_recorded_cash(settings))
 
 
 def warn_text(settings) -> str:
