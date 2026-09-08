@@ -212,7 +212,7 @@ def evidence_note(verdict: Optional[dict], settings=None) -> str:
             )
         else:
             bits.append(
-                f"<strong>What this ranking is worth has not been established.</strong> "
+                f"<strong>It has not been established.</strong> "
                 f"{span} did not measurably beat holding every name in the list "
                 f"equally"
                 + (" &mdash; and the comparison was not even consistent between the "
