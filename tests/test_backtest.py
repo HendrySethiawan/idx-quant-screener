@@ -875,3 +875,28 @@ def test_a_frame_without_volume_is_skipped_not_guessed():
     idx = pd.bdate_range("2024-01-01", periods=30)
     no_vol = pd.DataFrame({"Close": [100.0] * 30}, index=idx)
     assert build_turnover_panel({"X.JK": no_vol}).empty
+
+
+def test_the_score_floor_is_measured_from_history_not_the_whole_window():
+    """
+    My own bug, pinned. A floor measured over five years and compared against a
+    single cross-section is far too wide, so the tie step never fired once in 260
+    rebalances -- and the ablation then reported both it and decorrelation as
+    "never binds", which nearly got two working components deleted.
+    """
+    panel = _panel(n_days=1300, tickers=tuple(f"T{i}.JK" for i in range(10)))
+    r = run_backtest(panel, CAPITAL, _cfg(rebalance="W", use_score_floor=True), FEE)
+    assert r.score_floors_measured > 1, "the floor must be re-measured as history grows"
+
+
+def test_the_floor_is_not_measured_at_every_single_date():
+    """Sampled on purpose: a jackknife per date is ~19,000 passes over the panel."""
+    panel = _panel(n_days=1300, tickers=tuple(f"T{i}.JK" for i in range(10)))
+    r = run_backtest(panel, CAPITAL, _cfg(rebalance="W", use_score_floor=True), FEE)
+    assert r.score_floors_measured < r.n_rebalances
+
+
+def test_turning_the_floor_off_measures_nothing():
+    panel = _panel(n_days=1300, tickers=tuple(f"T{i}.JK" for i in range(10)))
+    r = run_backtest(panel, CAPITAL, _cfg(rebalance="W", use_score_floor=False), FEE)
+    assert r.score_floors_measured == 0

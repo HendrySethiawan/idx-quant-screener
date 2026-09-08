@@ -17,7 +17,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 
 from backtest.engine import (BacktestConfig, buy_and_hold, equal_weight_universe,
-                             rebalance_dates, run_backtest)
+                             rebalance_dates, run_backtest, max_drawdown)
 from portfolio.fees import FeeConfig
 from report.brief import _e, _kpi, _table, rp
 from report.terminal import DOC_CSS, THEME_CSS
@@ -341,6 +341,69 @@ def exit_verdict(exits: pd.DataFrame) -> Dict[str, Optional[float]]:
     return out
 
 
+# -------------------------------------------------- 5. what each part is worth
+def ablation_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
+                    trend_ma=200, deploy_ladder=(0.30, 0.60, 1.00),
+                    atr_panel=None, turnover=None) -> pd.DataFrame:
+    """
+    Turn each component off in turn and report what it was worth.
+
+    **Read the stability column before the number.** This table exists because a
+    hand-rolled version of it produced a confident recommendation to delete the
+    regime ladder: +26.8pp of CAGR at t = 2.99. The whole effect was in the second
+    half of the window -- a rally, during which holding more of anything earned
+    more. Every component that lets you hold more will look good on that half, and
+    the t-statistic cannot see it because it treats each week as independent
+    evidence when the effect is one episode.
+
+    So each row carries both halves and a verdict from `backtest.stats`, and a row
+    that reverses or concentrates is called unstable however good its t.
+
+    The baseline is `cfg` exactly as the caller built it -- which `cmd_backtest`
+    builds from `settings`. Measuring a config nobody runs is the specific error
+    this table is here to stop.
+    """
+    from backtest.stats import verdict as stat_verdict
+
+    base = run_backtest(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
+                        trend_ma, deploy_ladder, atr_panel=atr_panel,
+                        turnover=turnover)
+    if base.equity.empty:
+        return pd.DataFrame(), None
+
+    ppy = cfg.periods_per_year
+    rows = []
+    for label, over in (
+        ("regime ladder", {"use_regime": False}),
+        ("stops + profit ladder", {"exits": None}),
+        ("liquidity gate", {"liquidity": None}),
+        ("sector cap", {"max_per_sector": 0}),
+        ("decorrelation", {"max_correlation": None}),
+        ("score floor / ties", {"use_score_floor": False}),
+    ):
+        c = BacktestConfig(**{**cfg.__dict__, **over})
+        r = run_backtest(panel, capital, c, fee_cfg, sectors, benchmark, fx,
+                         trend_ma, deploy_ladder, atr_panel=atr_panel,
+                         turnover=turnover)
+        if r.equity.empty:
+            continue
+        v = stat_verdict(base.equity, r.equity, ppy)
+        rows.append({
+            "removing": label,
+            "cagr_effect_pp": None if v["gap_pp"] is None else round(v["gap_pp"], 1),
+            "first_half_pp": None if v["half_first_pp"] is None else round(v["half_first_pp"], 1),
+            "second_half_pp": None if v["half_second_pp"] is None else round(v["half_second_pp"], 1),
+            "t": None if v["t"] is None else round(v["t"], 2),
+            "mde_pp": None if v["mde_pp"] is None else round(v["mde_pp"], 1),
+            "drawdown_pp": round(max_drawdown(r.equity) - max_drawdown(base.equity), 1),
+            "verdict": v["verdict"],
+        })
+    # The baseline equity comes back with the table: the edge is measured against
+    # this same run, so it costs no extra simulation and cannot describe a
+    # different strategy from the one the table ablates.
+    return pd.DataFrame(rows), base.equity
+
+
 # ------------------------------------------------------------- 4. robustness
 def robustness_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
                       trend_ma=200, deploy_ladder=(0.30, 0.60, 1.00),
@@ -387,7 +450,11 @@ VERDICT_FILE = "backtest_verdict.json"
 def verdict_payload(factors: List[Comparison], robustness: pd.DataFrame,
                     survivorship: Dict[str, Optional[float]], cadence: str,
                     costs: Optional[pd.DataFrame] = None,
-                    exits: Optional[pd.DataFrame] = None) -> dict:
+                    exits: Optional[pd.DataFrame] = None,
+                    # Appended, never inserted: existing callers pass the first six
+                    # positionally, and a parameter added in the middle silently
+                    # binds a DataFrame to `cfg`.
+                    cfg=None, edge_factors=None) -> dict:
     """
     What the backtest concluded, small enough for the brief to read on every run.
 
@@ -414,6 +481,14 @@ def verdict_payload(factors: List[Comparison], robustness: pd.DataFrame,
         a, b = gross.get(key), equal.get(key)
         return None if a is None or b is None else round(a - b, 2)
 
+    ppy = cfg.periods_per_year if cfg is not None else 52
+    # `edge_factors` is the run WITH exits -- the strategy the ticket
+    # produces. `factors` keeps its historical no-exits meaning for the
+    # comparisons above it.
+    edge = (edge_factors if isinstance(edge_factors, dict)
+            else edge_verdict(edge_factors if edge_factors is not None else factors, ppy))
+    fingerprint = config_fingerprint(cfg) if cfg is not None else {}
+
     return {
         "cadence": cadence,
         "generated": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
@@ -434,6 +509,13 @@ def verdict_payload(factors: List[Comparison], robustness: pd.DataFrame,
         # rebalance. The exit panel puts a level to sell at on every position; this
         # is what lets the page say whether following one has ever been worth it.
         "exits": exit_verdict(exits),
+        # What the ranking itself is worth, stability first. Never a literal: the
+        # page reads these and cannot disagree with them.
+        "edge": edge,
+        # The settings this whole verdict describes. `evidence_note` refuses to
+        # quote it when these no longer match, rather than printing a number
+        # measured under a strategy the reader is not running.
+        "config": fingerprint,
     }
 
 
@@ -459,6 +541,62 @@ def _cost_summary(costs: Optional[pd.DataFrame]) -> dict:
         out["fee_share_of_gross_pct"] = round(abs(effect) / gross * 100, 1)
     out["detail"] = str(row.get("detail") or "")
     return out
+
+
+def config_fingerprint(cfg) -> Dict[str, object]:
+    """
+    Which strategy this verdict actually describes.
+
+    Recorded because three separate conclusions in one afternoon came from
+    measuring a configuration nobody runs -- most memorably a "+13.6pp edge" that
+    was computed with the stops switched off, and would have gone on the front
+    page. A number is only meaningful next to the settings that produced it, so
+    the page refuses to quote a verdict whose fingerprint no longer matches.
+    """
+    return {
+        "exits": cfg.exits is not None,
+        "liquidity": cfg.liquidity is not None,
+        "max_per_sector": int(cfg.max_per_sector or 0),
+        "max_correlation": None if cfg.max_correlation is None else round(float(cfg.max_correlation), 4),
+        "use_regime": bool(cfg.use_regime),
+        "use_score_floor": bool(cfg.use_score_floor),
+        "min_positions": int(cfg.min_positions),
+        "max_positions": int(cfg.max_positions),
+        "rebalance": str(cfg.rebalance),
+    }
+
+
+def edge_from_equity(strategy_equity, equal_equity,
+                     periods_per_year: int = 52) -> Dict[str, object]:
+    """The edge, measured straight from two curves the caller already has."""
+    from backtest.stats import verdict as stat_verdict
+
+    if strategy_equity is None or equal_equity is None:
+        return {"verdict": "cannot tell", "reason": "no comparison available"}
+    return stat_verdict(equal_equity, strategy_equity, periods_per_year)
+
+
+def edge_verdict(factors, periods_per_year: int = 52) -> Dict[str, object]:
+    """
+    What the ranking is worth against holding every name equally -- with the
+    stability test in front of the significance test.
+
+    The comparison is informative rather than actionable: holding all 74 names is
+    frictionless here and unavailable at this account size. It answers "does the
+    ranking add anything", not "what should I have bought instead".
+    """
+    from backtest.stats import verdict as stat_verdict
+
+    def equity_of(prefix):
+        for c in factors or []:
+            if c.label.startswith(prefix):
+                return c.equity
+        return None
+
+    strat, equal = equity_of("Strategy (gross"), equity_of("Equal-weight")
+    if strat is None or equal is None:
+        return {"verdict": "cannot tell", "reason": "no comparison available"}
+    return stat_verdict(equal, strat, periods_per_year)
 
 
 def write_verdict(payload: dict, output_dir) -> Path:
@@ -515,7 +653,7 @@ def robustness_verdict(table: pd.DataFrame) -> str:
 
 # ------------------------------------------------------------------- rendering
 def console_block(factors, costs, regimes, robustness, verdict, cadence, avg_names,
-                  survivorship=None, exits=None) -> str:
+                  survivorship=None, exits=None, ablation=None) -> str:
     L = ["", "=" * 68, f"BACKTEST - {cadence} rebalance", "=" * 68, ""]
     for line in _wrap(CAVEAT, 66):
         L.append("  " + line)
@@ -578,6 +716,31 @@ def console_block(factors, costs, regimes, robustness, verdict, cadence, avg_nam
         L.append(f"   {r['variant']:<38s} {_pct(r['cagr_pct']):>8s} "
                  f"{_pct(r['max_drawdown_pct']):>8s}")
     L.append("")
+    for line in _wrap(
+            "Nine variants tested at 95% expects roughly one false positive in "
+            "twenty. Read this table for whether the strategy survives being "
+            "poked, not for which variant looks best.", 66):
+        L.append("  " + line)
+    L.append("")
+
+    if ablation is not None and not ablation.empty:
+        L.append("6. WHAT IS EACH PART WORTH?")
+        L.append(f"   {'removing':<24s} {'CAGR':>8s} {'1st half':>9s} "
+                 f"{'2nd half':>9s} {'drawdown':>9s}  verdict")
+        for _, r in ablation.iterrows():
+            L.append(f"   {r['removing']:<24s} {_pct(r['cagr_effect_pp']):>8s} "
+                     f"{_pct(r['first_half_pp']):>9s} {_pct(r['second_half_pp']):>9s} "
+                     f"{_pct(r['drawdown_pp']):>9s}  {r['verdict']}")
+        L.append("")
+        for line in _wrap(
+                "Read the verdict before the number. An effect that lives in one "
+                "half of the window is one market episode, however convincing its "
+                "t-statistic -- and every component that lets you hold more will "
+                "look good on a half that rallied. 'never binds' means the step "
+                "changed no outcome in this simulation, which is not the same as "
+                "it doing nothing live.", 66):
+            L.append("  " + line)
+        L.append("")
     for line in _wrap(verdict, 66):
         L.append("  " + line)
     L.append("=" * 68)
