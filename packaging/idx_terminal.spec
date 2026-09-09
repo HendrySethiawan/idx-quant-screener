@@ -27,6 +27,14 @@ datas = [
     (str(ROOT / "current_holdings.example.yaml"), "."),
 ]
 
+# The commit this was built from, written by packaging/build.py just before
+# PyInstaller runs. Conditional because PyInstaller aborts on a missing data file,
+# and running this spec directly -- without build.py -- is a reasonable thing to do.
+# A build with no stamp reports "dev", which is the truth about it.
+_stamp = ROOT / "_build.txt"
+if _stamp.exists():
+    datas.append((str(_stamp), "."))
+
 # ------------------------------------------------------------- hidden imports
 # The project imports a lot inside functions, to keep the journal subcommands from
 # paying for the screener's imports. PyInstaller's static analysis finds most of it,

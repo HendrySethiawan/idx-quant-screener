@@ -410,9 +410,12 @@ return and Sharpe, and the ladder costs 10 points.
 > ladder lost at both cadences and this section said so. With 74 names across 11
 > properly scored sectors there are more independent trends, so trimming one winner
 > no longer removes the whole edge while the drawdown protection still compounds.
-> The ranking itself moved the same way: it went from **costing** 0.6pp a year
-> against an equal-weight universe to **adding 9.3pp**. Re-run `--backtest` after any
-> universe change; these numbers are not constants.
+>
+> **And it may reverse again.** Split across the two halves of the window, the
+> ladder's measured effect sits almost entirely in the second half — one market
+> episode, sampled weekly. `--backtest` prints that stability column beside every
+> row now. Read it before treating anything in this section as settled, and re-run
+> it after any universe change; these numbers are not constants.
 
 **One line turns the ladder off** if you prefer the monthly-style result. In
 `configs/user.yaml`:
@@ -731,9 +734,11 @@ compare these two lines after any change to the list.
 
 Two side effects worth knowing:
 
-* **The ranking started working.** Against an equal-weight universe it went from
-  costing 0.6pp a year to **adding 9.3pp**. A ten-factor z-score needs a cross
-  section; 49 names with six broken sectors was not one.
+* **The cross section got wide enough to score against.** A ten-factor z-score needs
+  peers, and 49 names with six broken sectors was not a cross section. Whether that
+  turned into an edge over an equal-weight universe is *not established*: the
+  comparison does not hold its sign across the two halves of the window. Run
+  `--backtest` for the current figures and the stability column beside them.
 * **A full Update takes about a minute** instead of forty seconds, dominated by
   fundamentals (0.61s a ticker against 0.07s for prices). Launches are unaffected —
   they read the saved screen.

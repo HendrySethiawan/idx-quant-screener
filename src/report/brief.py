@@ -18,6 +18,7 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
+from core.version import build_stamp
 from report import guide, layout, method, terminal as T
 from report.terminal import SHELL_JS, THEME_CSS
 
@@ -1202,7 +1203,11 @@ def render_brief(
         "names are missing at least one data point and were scored neutral on it. "
         "Prices come from Yahoo Finance and can be stale &mdash; check the live price "
         "in your broker before sending an order. Fees use Indopremier's schedule and "
-        "are an estimate. A personal research tool, not investment advice.</div>"
+        "are an estimate. A personal research tool, not investment advice. "
+        # Which build wrote this page. A brief saved to disk and re-read months later
+        # otherwise carries nothing tying its numbers to the code that produced them,
+        # which is the first thing worth knowing about an old report.
+        f"Built by {build_stamp()}.</div>"
     )
 
     # ---- Markets: the decision, and the ticket comes first --------------------

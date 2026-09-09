@@ -260,8 +260,17 @@ def test_a_snapshot_written_before_a_code_change_is_refused(settings, tmp_path,
     path = tmp_path / "run.joblib"
     assert load_snapshot(settings, args=None) is not None, "sanity: it loads first"
 
-    # Age the snapshot so every source file is newer than it.
-    old = time.time() - 3600
+    # Age the snapshot past every source file -- relative to the newest one, never
+    # to the wall clock. `time.time() - 3600` only works while somebody is actively
+    # editing: on a tree left alone overnight every source file is hours old, the
+    # "aged" snapshot is still newer than all of them, and the snapshot loads. The
+    # test then fails for a reason unrelated to the guard it is checking, which is
+    # exactly what it did. `src` is resolved the way `runner` resolves it, so the
+    # two cannot drift apart.
+    import runner
+
+    src = Path(runner.__file__).resolve().parent
+    old = min(f.stat().st_mtime for f in src.rglob("*.py")) - 60
     os.utime(path, (old, old))
 
     assert load_snapshot(settings, args=None) is None

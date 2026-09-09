@@ -26,6 +26,7 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
+from core.paths import keep_a_copy
 from portfolio.journal import normalize_ticker
 
 DIVIDEND_COLS = ["date", "ticker", "amount_rp", "note"]
@@ -51,7 +52,9 @@ def load_dividends(path: str | Path) -> pd.DataFrame:
 
 
 def save_dividends(df: pd.DataFrame, path: str | Path) -> Path:
+    """Overwrite the dividend ledger, keeping the previous version aside first."""
     p = Path(path)
+    keep_a_copy(p)
     p.parent.mkdir(parents=True, exist_ok=True)
     out = df.copy()
     if "date" in out.columns and len(out):

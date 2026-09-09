@@ -26,6 +26,8 @@ from typing import Dict, Optional
 
 import pandas as pd
 
+from core.paths import keep_a_copy
+
 CASH_COLS = ["date", "kind", "amount_rp", "note"]
 
 VALID_KINDS = ("DEPOSIT", "WITHDRAW")
@@ -51,7 +53,9 @@ def load_cash(path: str | Path) -> pd.DataFrame:
 
 
 def save_cash(df: pd.DataFrame, path: str | Path) -> Path:
+    """Overwrite the cash ledger, keeping the previous version aside first."""
     p = Path(path)
+    keep_a_copy(p)
     p.parent.mkdir(parents=True, exist_ok=True)
     out = df.copy()
     if "date" in out.columns and len(out):

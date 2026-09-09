@@ -644,7 +644,7 @@ def test_the_two_benchmarks_state_which_basis_they_use():
 # emitted a sale for one reason only -- the name fell out of the target book on a
 # re-rank -- so a position could halve with nothing on the page mentioning it.
 
-def _plan_for(ticker="SRTG.JK", lots=10, entry=1938.68, price=1795.0, atr=55.42,
+def _plan_for(ticker="STOPPED.JK", lots=10, entry=2000.0, price=1840.0, atr=60.0,
               original=None):
     from portfolio.exits import ExitConfig, plan_for
     from portfolio.fees import FeeConfig
@@ -660,16 +660,16 @@ def test_a_breached_stop_becomes_a_sell_in_the_ticket():
     """The live case: SRTG bought at 1,938.68, stop 1,800, last close 1,795."""
     plan = _plan_for()
     alloc = Allocation(positions=[], budget=0, capital=10_000_000)
-    holdings = [Holding("SRTG.JK", lots=10, avg_price=1938.68)]
+    holdings = [Holding("STOPPED.JK", lots=10, avg_price=2000.0)]
 
-    orders = build_orders(alloc, holdings, {"SRTG.JK": 1795.0},
-                          exit_plans={"SRTG.JK": plan})
-    sells = [o for o in orders if o["ticker"] == "SRTG.JK"]
+    orders = build_orders(alloc, holdings, {"STOPPED.JK": 1840.0},
+                          exit_plans={"STOPPED.JK": plan})
+    sells = [o for o in orders if o["ticker"] == "STOPPED.JK"]
     assert len(sells) == 1
     assert sells[0]["action"] == "SELL"
     assert sells[0]["lots"] == 10
-    assert "1,800" in sells[0]["note"]
-    assert sells[0]["stop_rp"] == pytest.approx(1800.13, abs=0.02)
+    assert "1,850" in sells[0]["note"]
+    assert sells[0]["stop_rp"] == pytest.approx(1850.00, abs=0.02)
 
 
 def test_an_exit_is_not_also_emitted_by_the_rebalance():
@@ -680,24 +680,24 @@ def test_an_exit_is_not_also_emitted_by_the_rebalance():
     """
     plan = _plan_for()
     alloc = Allocation(positions=[], budget=0, capital=10_000_000)
-    holdings = [Holding("SRTG.JK", lots=10, avg_price=1938.68)]
+    holdings = [Holding("STOPPED.JK", lots=10, avg_price=2000.0)]
 
-    orders = build_orders(alloc, holdings, {"SRTG.JK": 1795.0},
-                          exit_plans={"SRTG.JK": plan})
-    assert [o["ticker"] for o in orders].count("SRTG.JK") == 1
+    orders = build_orders(alloc, holdings, {"STOPPED.JK": 1840.0},
+                          exit_plans={"STOPPED.JK": plan})
+    assert [o["ticker"] for o in orders].count("STOPPED.JK") == 1
 
 
 def test_a_trim_sells_only_the_stage():
     from portfolio.exits import TRIM
 
-    plan = _plan_for(price=2100.0)      # past the +1R level of 2,077
+    plan = _plan_for(price=2200.0)      # past the +1R level of 2,150
     assert plan.action == TRIM
     alloc = Allocation(positions=[], budget=0, capital=10_000_000)
-    holdings = [Holding("SRTG.JK", lots=10, avg_price=1938.68)]
+    holdings = [Holding("STOPPED.JK", lots=10, avg_price=2000.0)]
 
-    orders = build_orders(alloc, holdings, {"SRTG.JK": 2100.0},
-                          exit_plans={"SRTG.JK": plan})
-    row = next(o for o in orders if o["ticker"] == "SRTG.JK")
+    orders = build_orders(alloc, holdings, {"STOPPED.JK": 2200.0},
+                          exit_plans={"STOPPED.JK": plan})
+    row = next(o for o in orders if o["ticker"] == "STOPPED.JK")
     assert row["action"] == "SELL" and row["exit_kind"] == "TRIM"
     assert row["lots"] == 4 and row["shares"] == 400
 
@@ -705,11 +705,11 @@ def test_a_trim_sells_only_the_stage():
 def test_the_cooldown_blocks_a_re_buy():
     from portfolio.sizing import Position
 
-    pos = Position("SRTG.JK", 1795.0, 5, 500, 897_500, 1.0, 1.0, 179_500)
+    pos = Position("STOPPED.JK", 1840.0, 5, 500, 920_000, 1.0, 1.0, 184_000)
     alloc = Allocation(positions=[pos], budget=1_000_000, capital=10_000_000)
 
-    orders = build_orders(alloc, [], {"SRTG.JK": 1795.0}, cooling={"SRTG.JK": 7})
-    row = next(o for o in orders if o["ticker"] == "SRTG.JK")
+    orders = build_orders(alloc, [], {"STOPPED.JK": 1840.0}, cooling={"STOPPED.JK": 7})
+    row = next(o for o in orders if o["ticker"] == "STOPPED.JK")
     assert row["action"] == "WAIT"
     assert row["lots"] == 0 and row["rupiah"] == 0.0
     assert "7 more sessions" in row["note"]
@@ -723,13 +723,13 @@ def test_the_cooldown_also_blocks_topping_a_trimmed_position_back_up():
     """
     from portfolio.sizing import Position
 
-    pos = Position("SRTG.JK", 1795.0, 10, 1000, 1_795_000, 1.0, 1.0, 179_500)
+    pos = Position("STOPPED.JK", 1840.0, 10, 1000, 1_840_000, 1.0, 1.0, 184_000)
     alloc = Allocation(positions=[pos], budget=2_000_000, capital=10_000_000)
-    holdings = [Holding("SRTG.JK", lots=6, avg_price=1938.68)]
+    holdings = [Holding("STOPPED.JK", lots=6, avg_price=2000.0)]
 
-    orders = build_orders(alloc, holdings, {"SRTG.JK": 1795.0},
-                          cooling={"SRTG.JK": 8})
-    row = next(o for o in orders if o["ticker"] == "SRTG.JK")
+    orders = build_orders(alloc, holdings, {"STOPPED.JK": 1840.0},
+                          cooling={"STOPPED.JK": 8})
+    row = next(o for o in orders if o["ticker"] == "STOPPED.JK")
     assert row["action"] == "HOLD"
     assert row["lots"] == 6                     # not topped back up to 10
     assert "not topping this back up" in row["note"]
@@ -792,8 +792,8 @@ def test_the_ticket_never_scrolls_sideways():
 
 def test_a_trim_still_reads_as_a_trim():
     out = _render(orders=[{
-        "action": "SELL", "ticker": "AMRT.JK", "lots": 28, "shares": 2800,
-        "price": 1310.0, "rupiah": 3_668_000, "exit_kind": "TRIM",
+        "action": "SELL", "ticker": "TYPO.JK", "lots": 28, "shares": 2800,
+        "price": 1200.0, "rupiah": 3_668_000, "exit_kind": "TRIM",
         "note": "1,310 has reached the +2R level of 1,131",
     }])
     assert "TRIM" in out
@@ -814,10 +814,10 @@ def test_a_position_over_the_risk_budget_is_flagged():
 def test_the_exit_panel_lists_the_whole_ladder():
     from portfolio.exits import ExitConfig
 
-    out = _render(exit_plans={"SRTG.JK": _plan_for()}, exit_cfg=ExitConfig())
+    out = _render(exit_plans={"STOPPED.JK": _plan_for()}, exit_cfg=ExitConfig())
     assert "Exit plan" in out
     assert "SELL all 10" in out
-    assert "Rp2,077" in out and "Rp2,216" in out     # both rungs
+    assert "Rp2,150" in out and "Rp2,300" in out     # both rungs
     assert "runs on the trailing stop" in out
     assert "cannot watch these for you" in out
 
@@ -1000,7 +1000,7 @@ def test_no_tie_note_when_nothing_is_tied():
 # deciding which of your records to count, and if the price were merely unusual
 # rather than wrong it would be hiding a real position.
 
-BAD_ENTRY = ("recorded at Rp50, which is 96% from the Rp1,310 close on 05 Sep 26 "
+BAD_ENTRY = ("recorded at Rp50, which is 96% from the Rp1,200 close on 05 Sep 26 "
              "- check the entry against your broker")
 
 
@@ -1009,25 +1009,25 @@ def _flagged_plan():
     from portfolio.fees import FeeConfig
 
     idx = pd.bdate_range("2026-09-05", periods=3)
-    closes = pd.Series([1310.0] * 3, index=idx)
-    return plan_for("AMRT.JK", 1, 50.0, closes, ExitConfig(), FeeConfig(),
-                    atr_rp=45.79, entry_date=idx[0], high=closes,
+    closes = pd.Series([1200.0] * 3, index=idx)
+    return plan_for("TYPO.JK", 1, 50.0, closes, ExitConfig(), FeeConfig(),
+                    atr_rp=50.0, entry_date=idx[0], high=closes,
                     capital_rp=10_000_000, entry_note=BAD_ENTRY)
 
 
 def test_the_exit_panel_says_check_the_entry_instead_of_a_plan():
     from portfolio.exits import ExitConfig
 
-    out = _render(exit_plans={"AMRT.JK": _flagged_plan()}, exit_cfg=ExitConfig())
+    out = _render(exit_plans={"TYPO.JK": _flagged_plan()}, exit_cfg=ExitConfig())
     assert "check the entry" in out
-    assert "Rp1,310" in out
+    assert "Rp1,200" in out
     assert "CHECK ENTRY" in out
 
 
 def test_a_flagged_position_shows_no_stop_and_no_trim_level():
     from portfolio.exits import ExitConfig
 
-    out = _render(exit_plans={"AMRT.JK": _flagged_plan()}, exit_cfg=ExitConfig())
+    out = _render(exit_plans={"TYPO.JK": _flagged_plan()}, exit_cfg=ExitConfig())
     # Scoped to the exit table. The Guide page defines "trailing stop" and every
     # other term in the app, so a whole-document `not in` here would only be
     # asserting that the glossary does not exist.
@@ -1042,12 +1042,12 @@ def test_the_headline_names_what_the_totals_contain():
     from report.journal_view import _bad_entry_note
 
     positions = pd.DataFrame([
-        {"ticker": "AMRT.JK", "unrealized_pnl": 125_990.50},
+        {"ticker": "TYPO.JK", "unrealized_pnl": 125_990.50},
         {"ticker": "TINS.JK", "unrealized_pnl": 31_221.00},
     ])
-    note = _bad_entry_note({"AMRT.JK": BAD_ENTRY}, positions)
+    note = _bad_entry_note({"TYPO.JK": BAD_ENTRY}, positions)
 
-    assert "AMRT" in note
+    assert "TYPO" in note
     assert "Rp125,991" in note or "Rp125,990" in note
     assert "Nothing has been removed" in note
     assert "check the entry" in note
@@ -1180,7 +1180,7 @@ def _risk(**kw):
                 gap_pct_of_capital=10.5, n_positions=4, n_without_stop=0,
                 adding_rp=0.0, planned_rp=8_400_000, planned_pct=8.4,
                 cap_pct=6.0, over_cap=True,
-                contributors=[{"ticker": "AMRT.JK", "risk_rp": 4_700_000,
+                contributors=[{"ticker": "TYPO.JK", "risk_rp": 4_700_000,
                                "gap_rp": 5_875_000, "slippage": 1.25,
                                "pct_of_capital": 4.7}])
     base.update(kw)
@@ -1196,7 +1196,7 @@ def test_a_breach_is_stated_with_both_numbers():
 
 def test_a_breach_names_its_largest_contributor():
     out = _render(open_risk=_risk())
-    assert "AMRT.JK" in out
+    assert "TYPO.JK" in out
     assert "4.7 of the 8.4 points" in out
 
 

@@ -1,10 +1,22 @@
 """
 The exit rules: a stop, a staged trim, and a trailing runner.
 
-Pinned to the live position wherever possible. The journal holds one trade --
-SRTG, 10 lots bought 26 Aug 2026 at Rp1,935, fee-inclusive cost Rp1,938.68, ATR
-Rp55.42 -- and it was already through its stop at the 4 Sept close of Rp1,795.
-A test that reproduces that arithmetic is checkable against the terminal by eye.
+**Every position here is invented.** These fixtures used to be the author's real
+holdings -- ticker, lot count and average cost, to the rupiah -- in a public
+repository, which published what they owned and what they paid for it to anyone who
+read the tests. Nothing is lost by inventing them: the rules under test care about
+the arithmetic, not about which company it belongs to.
+
+The numbers are chosen so the arithmetic is exact and checkable by hand rather than
+by rerunning the code:
+
+    STOPPED.JK   10 lots, cost 2,000.00, ATR 60.00
+                 stop = 2000 - 2.5 x 60 = 1,850.00 exactly
+                 risk = 1000 shares x 150.00 = Rp150,000, or 1.5% of Rp10 juta
+
+    WINNER.JK    40 lots, cost 1,000.00, ATR 50.00, now 1,450.00
+                 rungs at 1,050 and 1,100, both cleared
+                 trims 0.4 + 0.3 of 40 = 28 lots, keeping 12 -> Rp1.74 juta
 """
 import numpy as np
 import pandas as pd
@@ -20,10 +32,19 @@ FEES = FeeConfig()
 CFG = ExitConfig()
 CAPITAL = 10_000_000
 
-# The real position, to the rupiah.
-SRTG_ENTRY = 1938.6765
-SRTG_ATR = 55.42
-SRTG_LOTS = 10
+# A position already through its stop. Invented -- see the module docstring.
+STOPPED = "STOPPED.JK"
+STOPPED_ENTRY = 2000.00
+STOPPED_ATR = 60.00
+STOPPED_LOTS = 10
+STOPPED_STOP = 1850.00          # entry - k_atr x ATR, with neither clamp binding
+
+# A position well past both ladder rungs.
+WINNER = "WINNER.JK"
+WINNER_ENTRY = 1000.00
+WINNER_ATR = 50.00
+WINNER_LOTS = 40
+WINNER_NOW = 1450.00
 
 
 def _series(values, start="2026-08-01"):
@@ -33,9 +54,9 @@ def _series(values, start="2026-08-01"):
 
 # ------------------------------------------------------------------- the stop
 def test_stop_is_k_atr_below_entry():
-    stop = stop_level(SRTG_ENTRY, SRTG_ATR, CFG, FEES, SRTG_LOTS * 100 * SRTG_ENTRY)
-    assert stop == pytest.approx(SRTG_ENTRY - 2.5 * SRTG_ATR, abs=0.01)
-    assert stop == pytest.approx(1800.13, abs=0.02)
+    stop = stop_level(STOPPED_ENTRY, STOPPED_ATR, CFG, FEES, STOPPED_LOTS * 100 * STOPPED_ENTRY)
+    assert stop == pytest.approx(STOPPED_ENTRY - 2.5 * STOPPED_ATR, abs=0.01)
+    assert stop == pytest.approx(STOPPED_STOP, abs=0.02)      # 2000 - 2.5 x 60
 
 
 def test_stop_is_never_inside_the_round_trip_cost():
@@ -71,31 +92,34 @@ def test_break_even_is_above_the_entry_price():
     Entry already paid 0.19%; getting out pays 0.29% and the stamp. Stopping at
     the entry price is a small loss dressed up as break-even.
     """
-    be = break_even_level(SRTG_ENTRY, 600, FEES)
-    assert be > SRTG_ENTRY
-    assert be == pytest.approx(1965.0, abs=1.0)
+    be = break_even_level(STOPPED_ENTRY, 600, FEES)
+    assert be > STOPPED_ENTRY
+    # 2000 x (1 + 0.0019 + 0.0029) + 10,000/600 -- both fees, and the stamp spread
+    # across the 600 shares it is charged on.
+    assert be == pytest.approx(2026.27, abs=0.01)
 
 
 # ----------------------------------------------------------------- the ladder
 def test_ladder_is_whole_lots_and_leaves_a_runner():
-    risk = 2.5 * SRTG_ATR
-    stages = build_ladder(SRTG_LOTS, SRTG_ENTRY, risk, CFG, FEES)
+    risk = 2.5 * STOPPED_ATR
+    stages = build_ladder(STOPPED_LOTS, STOPPED_ENTRY, risk, CFG, FEES)
 
     assert len(stages) == 2
     assert [s.lots for s in stages] == [4, 3]
-    assert sum(s.lots for s in stages) < SRTG_LOTS      # 3 lots run
+    assert sum(s.lots for s in stages) < STOPPED_LOTS      # 3 lots run
     for s in stages:
         assert s.shares == s.lots * 100
-    assert stages[0].level_rp == pytest.approx(SRTG_ENTRY + risk, abs=0.01)
-    assert stages[1].level_rp == pytest.approx(SRTG_ENTRY + 2 * risk, abs=0.01)
+    assert stages[0].level_rp == pytest.approx(STOPPED_ENTRY + risk, abs=0.01)
+    assert stages[1].level_rp == pytest.approx(STOPPED_ENTRY + 2 * risk, abs=0.01)
 
 
 def test_ladder_quotes_the_stamp_both_ways():
     """
-    The stamp is per sell DAY, so the same trim costs Rp2,410 sharing a day and
-    Rp12,410 alone. Both are carried; quoting one would hide or overstate it.
+    The stamp is per sell DAY, so the same trim costs Rp2,494 sharing a day and
+    Rp12,494 alone -- 4 lots at the 2,150 rung is Rp860,000, and 0.29% of that is
+    Rp2,494. Both are carried; quoting one would hide or overstate it.
     """
-    stages = build_ladder(SRTG_LOTS, SRTG_ENTRY, 2.5 * SRTG_ATR, CFG, FEES)
+    stages = build_ladder(STOPPED_LOTS, STOPPED_ENTRY, 2.5 * STOPPED_ATR, CFG, FEES)
     s = stages[0]
     assert s.cost_alone_rp == pytest.approx(s.cost_batched_rp + FEES.stamp_duty_rp)
     assert s.cost_batched_rp == pytest.approx(s.proceeds_rp * FEES.sell_fee)
@@ -162,11 +186,11 @@ def test_a_rung_is_done_only_when_its_lots_have_actually_left():
     Tuesday and not acted on is still a level you can act on today, and inferring
     "done" from the high would silently retire an instruction you never followed.
     """
-    risk = 2.5 * SRTG_ATR
-    untouched = build_ladder(SRTG_LOTS, SRTG_ENTRY, risk, CFG, FEES, sold_lots=0)
+    risk = 2.5 * STOPPED_ATR
+    untouched = build_ladder(STOPPED_LOTS, STOPPED_ENTRY, risk, CFG, FEES, sold_lots=0)
     assert [s.done for s in untouched] == [False, False]
 
-    trimmed = build_ladder(SRTG_LOTS, SRTG_ENTRY, risk, CFG, FEES, sold_lots=4)
+    trimmed = build_ladder(STOPPED_LOTS, STOPPED_ENTRY, risk, CFG, FEES, sold_lots=4)
     assert [s.done for s in trimmed] == [True, False]
 
 
@@ -176,39 +200,42 @@ def test_the_ladder_does_not_move_when_the_position_is_trimmed():
     surviving 6 lots it would put its first rung at 2 lots and ask for a trim the
     price has already been through.
     """
-    risk = 2.5 * SRTG_ATR
-    before = build_ladder(SRTG_LOTS, SRTG_ENTRY, risk, CFG, FEES, sold_lots=0)
-    after = build_ladder(SRTG_LOTS, SRTG_ENTRY, risk, CFG, FEES, sold_lots=4)
+    risk = 2.5 * STOPPED_ATR
+    before = build_ladder(STOPPED_LOTS, STOPPED_ENTRY, risk, CFG, FEES, sold_lots=0)
+    after = build_ladder(STOPPED_LOTS, STOPPED_ENTRY, risk, CFG, FEES, sold_lots=4)
     assert [s.level_rp for s in before] == [s.level_rp for s in after]
     assert [s.lots for s in before] == [s.lots for s in after]
 
 
 # ---------------------------------------------------------------- the verdict
-def test_the_live_srtg_position_says_get_out():
+def test_a_position_through_its_stop_says_get_out():
     """
-    Entry 1,938.68, ATR 55.42, stop 1,800.13, last close 1,795. The terminal has
-    been silent about this since 4 September.
+    Entry 2,000.00, ATR 60.00, stop 1,850.00, last close 1,840 -- through it.
+
+    Every expected number here is arithmetic done by hand, not a value read back
+    out of the code: the stop is 2000 - 2.5 x 60, the risk is 1,000 shares times
+    the 150.00 distance, and 150,000 is 1.5% of Rp10 juta.
     """
-    closes = _series([1935, 1960, 1900, 1880, 1850, 1820, 1810, 1795],
+    closes = _series([2000, 2030, 1970, 1950, 1920, 1890, 1870, 1840],
                      start="2026-08-26")
-    plan = plan_for("SRTG.JK", SRTG_LOTS, SRTG_ENTRY, closes, CFG, FEES,
-                    atr_rp=SRTG_ATR, entry_date="2026-08-26",
+    plan = plan_for(STOPPED, STOPPED_LOTS, STOPPED_ENTRY, closes, CFG, FEES,
+                    atr_rp=STOPPED_ATR, entry_date="2026-08-26",
                     high=closes, capital_rp=CAPITAL)
 
     assert plan.action == EXIT
-    assert plan.action_lots == SRTG_LOTS
-    assert plan.stop_rp == pytest.approx(1800.13, abs=0.02)
-    assert plan.risk_rp == pytest.approx(138_546, abs=50)
-    assert plan.risk_pct_of_capital == pytest.approx(1.39, abs=0.02)
-    assert "1,800" in plan.reason
+    assert plan.action_lots == STOPPED_LOTS
+    assert plan.stop_rp == pytest.approx(STOPPED_STOP, abs=0.02)
+    assert plan.risk_rp == pytest.approx(150_000, abs=50)
+    assert plan.risk_pct_of_capital == pytest.approx(1.50, abs=0.02)
+    assert "1,850" in plan.reason
 
 
 def test_a_price_at_the_first_target_says_trim():
-    risk = 2.5 * SRTG_ATR
-    target = SRTG_ENTRY + risk
-    closes = _series([SRTG_ENTRY, target + 5], start="2026-08-26")
-    plan = plan_for("SRTG.JK", SRTG_LOTS, SRTG_ENTRY, closes, CFG, FEES,
-                    atr_rp=SRTG_ATR, entry_date="2026-08-26", high=closes,
+    risk = 2.5 * STOPPED_ATR
+    target = STOPPED_ENTRY + risk
+    closes = _series([STOPPED_ENTRY, target + 5], start="2026-08-26")
+    plan = plan_for(STOPPED, STOPPED_LOTS, STOPPED_ENTRY, closes, CFG, FEES,
+                    atr_rp=STOPPED_ATR, entry_date="2026-08-26", high=closes,
                     capital_rp=CAPITAL)
 
     assert plan.action == TRIM
@@ -221,12 +248,12 @@ def test_a_hand_trimmed_position_is_only_asked_for_the_difference():
     The ladder states a TARGET holding at each price, not "sell the next rung".
     Sell 2 lots by hand and the plan must ask for the remaining 2, not another 4.
     """
-    risk = 2.5 * SRTG_ATR
-    target = SRTG_ENTRY + risk
-    closes = _series([SRTG_ENTRY, target + 5], start="2026-08-26")
-    plan = plan_for("SRTG.JK", 8, SRTG_ENTRY, closes, CFG, FEES,
-                    atr_rp=SRTG_ATR, entry_date="2026-08-26", high=closes,
-                    original_lots=SRTG_LOTS, capital_rp=CAPITAL)
+    risk = 2.5 * STOPPED_ATR
+    target = STOPPED_ENTRY + risk
+    closes = _series([STOPPED_ENTRY, target + 5], start="2026-08-26")
+    plan = plan_for(STOPPED, 8, STOPPED_ENTRY, closes, CFG, FEES,
+                    atr_rp=STOPPED_ATR, entry_date="2026-08-26", high=closes,
+                    original_lots=STOPPED_LOTS, capital_rp=CAPITAL)
 
     assert plan.action == TRIM
     assert plan.action_lots == 2          # down to the 6 the ladder wants
@@ -237,10 +264,10 @@ def test_a_price_that_gaps_through_both_rungs_takes_both():
     IDX gaps. Acting on one rung a day would leave the second waiting on a price
     that has already been and gone.
     """
-    risk = 2.5 * SRTG_ATR
-    closes = _series([SRTG_ENTRY, SRTG_ENTRY + 2.4 * risk], start="2026-08-26")
-    plan = plan_for("SRTG.JK", SRTG_LOTS, SRTG_ENTRY, closes, CFG, FEES,
-                    atr_rp=SRTG_ATR, entry_date="2026-08-26", high=closes,
+    risk = 2.5 * STOPPED_ATR
+    closes = _series([STOPPED_ENTRY, STOPPED_ENTRY + 2.4 * risk], start="2026-08-26")
+    plan = plan_for(STOPPED, STOPPED_LOTS, STOPPED_ENTRY, closes, CFG, FEES,
+                    atr_rp=STOPPED_ATR, entry_date="2026-08-26", high=closes,
                     capital_rp=CAPITAL)
 
     assert plan.action == TRIM
@@ -249,20 +276,20 @@ def test_a_price_that_gaps_through_both_rungs_takes_both():
 
 def test_a_position_already_at_its_target_holds():
     """After stage 1 was taken, the same price must not ask for it again."""
-    risk = 2.5 * SRTG_ATR
-    closes = _series([SRTG_ENTRY, SRTG_ENTRY + 1.2 * risk], start="2026-08-26")
-    plan = plan_for("SRTG.JK", 6, SRTG_ENTRY, closes, CFG, FEES,
-                    atr_rp=SRTG_ATR, entry_date="2026-08-26", high=closes,
-                    original_lots=SRTG_LOTS, capital_rp=CAPITAL)
+    risk = 2.5 * STOPPED_ATR
+    closes = _series([STOPPED_ENTRY, STOPPED_ENTRY + 1.2 * risk], start="2026-08-26")
+    plan = plan_for(STOPPED, 6, STOPPED_ENTRY, closes, CFG, FEES,
+                    atr_rp=STOPPED_ATR, entry_date="2026-08-26", high=closes,
+                    original_lots=STOPPED_LOTS, capital_rp=CAPITAL)
 
     assert plan.action == HOLD
     assert plan.action_lots == 0
 
 
 def test_a_price_between_the_levels_says_hold_and_names_both():
-    closes = _series([SRTG_ENTRY, SRTG_ENTRY + 20], start="2026-08-26")
-    plan = plan_for("SRTG.JK", SRTG_LOTS, SRTG_ENTRY, closes, CFG, FEES,
-                    atr_rp=SRTG_ATR, entry_date="2026-08-26", high=closes,
+    closes = _series([STOPPED_ENTRY, STOPPED_ENTRY + 20], start="2026-08-26")
+    plan = plan_for(STOPPED, STOPPED_LOTS, STOPPED_ENTRY, closes, CFG, FEES,
+                    atr_rp=STOPPED_ATR, entry_date="2026-08-26", high=closes,
                     capital_rp=CAPITAL)
 
     assert plan.action == HOLD
@@ -275,11 +302,11 @@ def test_the_stop_beats_a_reached_target():
     A gap through both levels in one session is possible on IDX. The stop is a
     decision already made; the target is one that has not been acted on.
     """
-    risk = 2.5 * SRTG_ATR
-    closes = _series([SRTG_ENTRY, SRTG_ENTRY + 2.2 * risk, SRTG_ENTRY - 3 * risk],
+    risk = 2.5 * STOPPED_ATR
+    closes = _series([STOPPED_ENTRY, STOPPED_ENTRY + 2.2 * risk, STOPPED_ENTRY - 3 * risk],
                      start="2026-08-26")
-    plan = plan_for("SRTG.JK", SRTG_LOTS, SRTG_ENTRY, closes, CFG, FEES,
-                    atr_rp=SRTG_ATR, entry_date="2026-08-26", high=closes,
+    plan = plan_for(STOPPED, STOPPED_LOTS, STOPPED_ENTRY, closes, CFG, FEES,
+                    atr_rp=STOPPED_ATR, entry_date="2026-08-26", high=closes,
                     capital_rp=CAPITAL)
     assert plan.action == EXIT
 
@@ -304,10 +331,10 @@ def test_the_trail_does_not_engage_before_the_first_trim():
     The measured reason this rule exists: trailing from entry stopped out 74% of
     entries within two months against 44% for a fixed stop.
     """
-    risk = 2.5 * SRTG_ATR
-    closes = _series([SRTG_ENTRY, SRTG_ENTRY + 0.9 * risk], start="2026-08-26")
-    plan = plan_for("SRTG.JK", SRTG_LOTS, SRTG_ENTRY, closes, CFG, FEES,
-                    atr_rp=SRTG_ATR, entry_date="2026-08-26", high=closes,
+    risk = 2.5 * STOPPED_ATR
+    closes = _series([STOPPED_ENTRY, STOPPED_ENTRY + 0.9 * risk], start="2026-08-26")
+    plan = plan_for(STOPPED, STOPPED_LOTS, STOPPED_ENTRY, closes, CFG, FEES,
+                    atr_rp=STOPPED_ATR, entry_date="2026-08-26", high=closes,
                     capital_rp=CAPITAL)
 
     assert plan.stages_done == 0
@@ -317,27 +344,27 @@ def test_the_trail_does_not_engage_before_the_first_trim():
 
 def test_the_trail_engages_once_a_stage_is_banked():
     """Six lots left of ten: stage 1 has been taken, so the runner now trails."""
-    risk = 2.5 * SRTG_ATR
-    high = SRTG_ENTRY + 3.0 * risk
-    closes = _series([SRTG_ENTRY, high, high - 10], start="2026-08-26")
-    plan = plan_for("SRTG.JK", 6, SRTG_ENTRY, closes, CFG, FEES,
-                    atr_rp=SRTG_ATR, entry_date="2026-08-26", high=closes,
-                    original_lots=SRTG_LOTS, capital_rp=CAPITAL)
+    risk = 2.5 * STOPPED_ATR
+    high = STOPPED_ENTRY + 3.0 * risk
+    closes = _series([STOPPED_ENTRY, high, high - 10], start="2026-08-26")
+    plan = plan_for(STOPPED, 6, STOPPED_ENTRY, closes, CFG, FEES,
+                    atr_rp=STOPPED_ATR, entry_date="2026-08-26", high=closes,
+                    original_lots=STOPPED_LOTS, capital_rp=CAPITAL)
 
     assert plan.stages_done == 1
     assert plan.stop_kind == "trailing"
-    assert plan.stop_rp == pytest.approx(high - 2.5 * SRTG_ATR, abs=0.01)
+    assert plan.stop_rp == pytest.approx(high - 2.5 * STOPPED_ATR, abs=0.01)
 
 
 def test_the_stop_only_ever_ratchets_up():
     """A wide ATR must not loosen a level the position has already earned."""
-    risk = 2.5 * SRTG_ATR
-    high = SRTG_ENTRY + 1.1 * risk
-    closes = _series([SRTG_ENTRY, high, high - 5], start="2026-08-26")
+    risk = 2.5 * STOPPED_ATR
+    high = STOPPED_ENTRY + 1.1 * risk
+    closes = _series([STOPPED_ENTRY, high, high - 5], start="2026-08-26")
 
-    loose = plan_for("SRTG.JK", 6, SRTG_ENTRY, closes, CFG, FEES,
-                     atr_rp=SRTG_ATR * 4, entry_date="2026-08-26", high=closes,
-                     original_lots=SRTG_LOTS, capital_rp=CAPITAL)
+    loose = plan_for(STOPPED, 6, STOPPED_ENTRY, closes, CFG, FEES,
+                     atr_rp=STOPPED_ATR * 4, entry_date="2026-08-26", high=closes,
+                     original_lots=STOPPED_LOTS, capital_rp=CAPITAL)
     assert loose.stop_rp >= loose.initial_stop_rp
     assert loose.stop_kind in ("initial", "break-even")
 
@@ -347,15 +374,15 @@ def test_break_even_takes_over_before_the_trail_catches_up():
     Straight after stage 1 the high is barely above the trim level, so the trail
     still sits below the entry. Break-even holds the line until it does not.
     """
-    risk = 2.5 * SRTG_ATR
-    high = SRTG_ENTRY + 1.05 * risk
-    closes = _series([SRTG_ENTRY, high], start="2026-08-26")
-    plan = plan_for("SRTG.JK", 6, SRTG_ENTRY, closes, CFG, FEES,
-                    atr_rp=SRTG_ATR, entry_date="2026-08-26", high=closes,
-                    original_lots=SRTG_LOTS, capital_rp=CAPITAL)
+    risk = 2.5 * STOPPED_ATR
+    high = STOPPED_ENTRY + 1.05 * risk
+    closes = _series([STOPPED_ENTRY, high], start="2026-08-26")
+    plan = plan_for(STOPPED, 6, STOPPED_ENTRY, closes, CFG, FEES,
+                    atr_rp=STOPPED_ATR, entry_date="2026-08-26", high=closes,
+                    original_lots=STOPPED_LOTS, capital_rp=CAPITAL)
 
     assert plan.stop_kind == "break-even"
-    assert plan.stop_rp > SRTG_ENTRY
+    assert plan.stop_rp > STOPPED_ENTRY
 
 
 def test_trailing_level_is_the_high_minus_k_atr():
@@ -422,8 +449,8 @@ def _journal(rows):
 
 
 def test_position_history_reads_the_live_journal_row():
-    j = _journal([["2026-08-26", "SRTG.JK", "BUY", 10, 1000, 1935.0]])
-    past = position_history(j)["SRTG.JK"]
+    j = _journal([["2026-08-26", STOPPED, "BUY", 10, 1000, 2000.0]])
+    past = position_history(j)[STOPPED]
     assert past["original_lots"] == 10
     assert past["lots_now"] == 10
     assert past["sold_lots"] == 0
@@ -432,10 +459,10 @@ def test_position_history_reads_the_live_journal_row():
 
 def test_position_history_remembers_the_size_a_trim_came_out_of():
     j = _journal([
-        ["2026-08-26", "SRTG.JK", "BUY", 10, 1000, 1935.0],
-        ["2026-09-02", "SRTG.JK", "SELL", 4, 400, 2080.0],
+        ["2026-08-26", STOPPED, "BUY", 10, 1000, 2000.0],
+        ["2026-09-02", STOPPED, "SELL", 4, 400, 2150.0],
     ])
-    past = position_history(j)["SRTG.JK"]
+    past = position_history(j)[STOPPED]
     assert past["original_lots"] == 10
     assert past["lots_now"] == 6
     assert past["sold_lots"] == 4
@@ -448,11 +475,11 @@ def test_going_flat_resets_the_position():
     told to trim lots it never bought.
     """
     j = _journal([
-        ["2026-07-01", "SRTG.JK", "BUY", 10, 1000, 1800.0],
-        ["2026-07-20", "SRTG.JK", "SELL", 10, 1000, 1900.0],
-        ["2026-08-26", "SRTG.JK", "BUY", 5, 500, 1935.0],
+        ["2026-07-01", STOPPED, "BUY", 10, 1000, 1880.0],
+        ["2026-07-20", STOPPED, "SELL", 10, 1000, 1950.0],
+        ["2026-08-26", STOPPED, "BUY", 5, 500, 2000.0],
     ])
-    past = position_history(j)["SRTG.JK"]
+    past = position_history(j)[STOPPED]
     assert past["original_lots"] == 5
     assert past["sold_lots"] == 0
     assert pd.Timestamp(past["opened"]) == pd.Timestamp("2026-08-26")
@@ -460,35 +487,35 @@ def test_going_flat_resets_the_position():
 
 def test_a_closed_position_is_absent_from_the_history():
     j = _journal([
-        ["2026-07-01", "SRTG.JK", "BUY", 10, 1000, 1800.0],
-        ["2026-07-20", "SRTG.JK", "SELL", 10, 1000, 1900.0],
+        ["2026-07-01", STOPPED, "BUY", 10, 1000, 1880.0],
+        ["2026-07-20", STOPPED, "SELL", 10, 1000, 1950.0],
     ])
     assert position_history(j) == {}
 
 
 def test_topping_up_raises_the_original_size():
     j = _journal([
-        ["2026-08-26", "SRTG.JK", "BUY", 6, 600, 1935.0],
-        ["2026-09-01", "SRTG.JK", "BUY", 4, 400, 1900.0],
+        ["2026-08-26", STOPPED, "BUY", 6, 600, 2000.0],
+        ["2026-09-01", STOPPED, "BUY", 4, 400, 1950.0],
     ])
-    past = position_history(j)["SRTG.JK"]
+    past = position_history(j)[STOPPED]
     assert past["original_lots"] == 10
     assert pd.Timestamp(past["opened"]) == pd.Timestamp("2026-08-26")
 
 
 def test_plans_for_uses_the_history_it_is_given():
-    closes = _series([SRTG_ENTRY, SRTG_ENTRY + 3 * 2.5 * SRTG_ATR],
+    closes = _series([STOPPED_ENTRY, STOPPED_ENTRY + 3 * 2.5 * STOPPED_ATR],
                      start="2026-08-26")
-    positions = pd.DataFrame([{"ticker": "SRTG.JK", "lots": 6,
-                               "avg_cost": SRTG_ENTRY}])
+    positions = pd.DataFrame([{"ticker": STOPPED, "lots": 6,
+                               "avg_cost": STOPPED_ENTRY}])
     plans = plans_for(
-        positions, pd.DataFrame({"SRTG.JK": closes}), CFG, FEES,
-        highs=pd.DataFrame({"SRTG.JK": closes}),
-        history={"SRTG.JK": {"opened": pd.Timestamp("2026-08-26"),
+        positions, pd.DataFrame({STOPPED: closes}), CFG, FEES,
+        highs=pd.DataFrame({STOPPED: closes}),
+        history={STOPPED: {"opened": pd.Timestamp("2026-08-26"),
                              "original_lots": 10, "lots_now": 6, "sold_lots": 4}},
-        atr={"SRTG.JK": SRTG_ATR}, capital_rp=CAPITAL,
+        atr={STOPPED: STOPPED_ATR}, capital_rp=CAPITAL,
     )
-    plan = plans["SRTG.JK"]
+    plan = plans[STOPPED]
     assert plan.original_lots == 10
     assert plan.stages_done == 1
     assert plan.stop_kind == "trailing"
@@ -498,30 +525,30 @@ def test_plans_for_uses_the_history_it_is_given():
 
 
 def test_a_recent_sale_blocks_a_re_buy():
-    j = _journal([["2026-09-03", "SRTG.JK", "SELL", 10, 1000, 1795.0]])
+    j = _journal([["2026-09-03", STOPPED, "SELL", 10, 1000, 1840.0]])
     blocked = cooldown(j, CFG, today="2026-09-05")
-    assert blocked["SRTG.JK"] > 0
+    assert blocked[STOPPED] > 0
 
 
 def test_the_cooldown_expires():
-    j = _journal([["2026-08-01", "SRTG.JK", "SELL", 10, 1000, 1795.0]])
+    j = _journal([["2026-08-01", STOPPED, "SELL", 10, 1000, 1840.0]])
     assert cooldown(j, CFG, today="2026-09-05") == {}
 
 
 def test_a_buy_does_not_start_a_cooldown():
-    j = _journal([["2026-09-03", "SRTG.JK", "BUY", 10, 1000, 1795.0]])
+    j = _journal([["2026-09-03", STOPPED, "BUY", 10, 1000, 1840.0]])
     assert cooldown(j, CFG, today="2026-09-05") == {}
 
 
 def test_cooldown_counts_sessions_not_days_when_a_calendar_is_given():
     """Ten sessions must not expire over two long weekends."""
-    j = _journal([["2026-08-24", "SRTG.JK", "SELL", 10, 1000, 1795.0]])
+    j = _journal([["2026-08-24", STOPPED, "SELL", 10, 1000, 1840.0]])
     sparse = pd.DatetimeIndex(["2026-08-25", "2026-09-01", "2026-09-04"])
-    assert cooldown(j, CFG, today="2026-09-05", sessions=sparse)["SRTG.JK"] == 7
+    assert cooldown(j, CFG, today="2026-09-05", sessions=sparse)[STOPPED] == 7
 
 
 def test_cooldown_off_when_configured_to_zero():
-    j = _journal([["2026-09-04", "SRTG.JK", "SELL", 10, 1000, 1795.0]])
+    j = _journal([["2026-09-04", STOPPED, "SELL", 10, 1000, 1840.0]])
     off = ExitConfig(cooldown_sessions=0)
     assert cooldown(j, off, today="2026-09-05") == {}
 
@@ -552,24 +579,28 @@ def test_plans_for_skips_an_empty_book():
 
 # --------------------------------------- an entry that cannot be believed
 # Every level in a plan -- the stop, the ladder, the rupiah at risk, the verdict --
-# is measured from the entry price. So an entry that cannot be a real fill does
-# not produce a slightly wrong plan, it produces a confident and entirely fictional
-# one: AMRT recorded at Rp50 against a Rp1,310 market gave a stop 2,976% away, a
-# trim level of Rp58, and a SELL in the ticket that existed only because of it.
+# is measured from the entry price. So an entry that cannot be a real fill does not
+# produce a slightly wrong plan, it produces a confident and entirely fictional one:
+# a position mistyped as Rp50 against a Rp1,200 market gets a stop and a trim level
+# derived from the typo, and a SELL in the ticket that exists only because of it.
+# This happened once, with a real entry price and a real mistake.
 
-BAD = ("recorded at Rp50, which is 96% from the Rp1,310 close on 05 Sep 26 - "
+TYPO = "TYPO.JK"
+TYPO_MARKET = 1200.0
+
+BAD = ("recorded at Rp50, which is 96% from the Rp1,200 close on 05 Sep 26 - "
        "check the entry against your broker")
 
 
-def _amrt(**kw):
-    closes = _series([1310.0] * 8, start="2026-09-05")
-    return plan_for("AMRT.JK", 1, 50.0, closes, CFG, FEES,
-                    atr_rp=45.79, entry_date="2026-09-05", high=closes,
+def _mistyped(**kw):
+    closes = _series([TYPO_MARKET] * 8, start="2026-09-05")
+    return plan_for(TYPO, 1, 50.0, closes, CFG, FEES,
+                    atr_rp=50.0, entry_date="2026-09-05", high=closes,
                     capital_rp=CAPITAL, **kw)
 
 
 def test_a_flagged_entry_produces_no_levels_at_all():
-    plan = _amrt(entry_note=BAD)
+    plan = _mistyped(entry_note=BAD)
     assert plan.action == CHECK_ENTRY
     assert plan.stop_rp is None and plan.initial_stop_rp is None
     assert plan.stages == []
@@ -578,7 +609,7 @@ def test_a_flagged_entry_produces_no_levels_at_all():
 
 
 def test_a_flagged_entry_says_why_and_carries_the_numbers():
-    plan = _amrt(entry_note=BAD)
+    plan = _mistyped(entry_note=BAD)
     assert BAD in plan.reason
     assert plan.entry_note == BAD
     assert any("Fix the row" in n for n in plan.notes)
@@ -586,7 +617,7 @@ def test_a_flagged_entry_says_why_and_carries_the_numbers():
 
 def test_without_the_flag_the_same_position_gets_a_full_plan():
     """The guard must be the flag, not something about the position itself."""
-    plan = _amrt()
+    plan = _mistyped()
     assert plan.action != CHECK_ENTRY
     assert plan.stop_rp is not None
     assert plan.risk_rp is not None
@@ -594,7 +625,7 @@ def test_without_the_flag_the_same_position_gets_a_full_plan():
 
 def test_a_flagged_position_raises_no_exit_order():
     """
-    The ticket said SELL AMRT on the strength of a typo. A rebalance may still
+    The ticket said SELL on the strength of a typo. A rebalance may still
     sell the name -- that one is priced off the market -- but nothing derived from
     the bad entry may reach the ticket.
     """
@@ -602,13 +633,13 @@ def test_a_flagged_position_raises_no_exit_order():
     from portfolio.sizing import Allocation
     from report.assemble import build_orders
 
-    plan = _amrt(entry_note=BAD)
+    plan = _mistyped(entry_note=BAD)
     alloc = Allocation(positions=[], budget=0, capital=CAPITAL)
-    holdings = [Holding("AMRT.JK", lots=1, avg_price=50.095)]
+    holdings = [Holding(TYPO, lots=1, avg_price=50.095)]
 
-    orders = build_orders(alloc, holdings, {"AMRT.JK": 1310.0},
-                          exit_plans={"AMRT.JK": plan})
-    row = next(o for o in orders if o["ticker"] == "AMRT.JK")
+    orders = build_orders(alloc, holdings, {TYPO: TYPO_MARKET},
+                          exit_plans={TYPO: plan})
+    row = next(o for o in orders if o["ticker"] == TYPO)
     # The point is that no EXIT/TRIM row was produced from the bad entry. The
     # rebalance's own sell is fine -- it is priced off the market, not the typo.
     assert row.get("exit_kind") is None
@@ -621,8 +652,10 @@ def test_an_unstaged_hold_says_sell_at_not_trim_at():
     HOLD reason said "next trim" about the same plan, which is an instruction that
     cannot be followed.
     """
-    closes = _series([4890.0, 4900.0], start="2026-09-04")
-    plan = plan_for("ASII.JK", 1, 4899.29, closes, CFG, FEES, atr_rp=116.23,
+    # One lot, invented: stop at 5000 - 2.5 x 120 = 4,700 and the first rung at
+    # 5,300, so a 5,000 close is neither stopped out nor due a trim.
+    closes = _series([4990.0, 5000.0], start="2026-09-04")
+    plan = plan_for("ONELOT.JK", 1, 5000.00, closes, CFG, FEES, atr_rp=120.00,
                     entry_date="2026-09-04", high=closes, capital_rp=CAPITAL)
     assert plan.action == HOLD and plan.staged is False
     assert "sell at" in plan.reason
@@ -630,10 +663,10 @@ def test_an_unstaged_hold_says_sell_at_not_trim_at():
 
 
 def test_a_staged_hold_still_says_trim():
-    risk = 2.5 * SRTG_ATR
-    closes = _series([SRTG_ENTRY, SRTG_ENTRY + 0.2 * risk], start="2026-08-26")
-    plan = plan_for("SRTG.JK", SRTG_LOTS, SRTG_ENTRY, closes, CFG, FEES,
-                    atr_rp=SRTG_ATR, entry_date="2026-08-26", high=closes,
+    risk = 2.5 * STOPPED_ATR
+    closes = _series([STOPPED_ENTRY, STOPPED_ENTRY + 0.2 * risk], start="2026-08-26")
+    plan = plan_for(STOPPED, STOPPED_LOTS, STOPPED_ENTRY, closes, CFG, FEES,
+                    atr_rp=STOPPED_ATR, entry_date="2026-08-26", high=closes,
                     capital_rp=CAPITAL)
     assert plan.staged is True
     assert "next trim" in plan.reason
@@ -796,22 +829,25 @@ def test_the_two_causes_do_not_read_the_same():
 
 def test_an_exit_still_outranks_the_book_and_its_remainder_is_what_counts():
     """
-    A position trimmed 28 of 41 lots is the trimmed size for the budget test.
+    A position trimmed 28 of 40 lots is the trimmed size for the budget test.
     Measuring the pre-trim value would de-risk against exposure you are already
     in the middle of removing.
     """
-    closes = _series([1310.0] * 8, start="2026-09-05")
-    plan = plan_for("AMRT.JK", 41, 901.71, closes, CFG, FEES, atr_rp=45.79,
-                    entry_date="2026-09-05", high=closes, capital_rp=CAPITAL)
+    closes = _series([WINNER_NOW] * 8, start="2026-09-05")
+    plan = plan_for(WINNER, WINNER_LOTS, WINNER_ENTRY, closes, CFG, FEES,
+                    atr_rp=WINNER_ATR, entry_date="2026-09-05", high=closes,
+                    capital_rp=CAPITAL)
     assert plan.action == TRIM
+    assert plan.action_lots == 28               # 0.4 + 0.3 of 40, both rungs cleared
 
     orders = build_orders(
         Allocation(positions=[], budget=50_000_000, capital=CAPITAL),
-        [Holding("AMRT.JK", lots=41, avg_price=901.71)], {"AMRT.JK": 1310.0},
-        exit_plans={"AMRT.JK": plan}, rank_of={"AMRT.JK": 52},
-        raw_of={"AMRT.JK": -2.0}, universe_n=74)
+        [Holding(WINNER, lots=WINNER_LOTS, avg_price=WINNER_ENTRY)],
+        {WINNER: WINNER_NOW},
+        exit_plans={WINNER: plan}, rank_of={WINNER: 52},
+        raw_of={WINNER: -2.0}, universe_n=74)
 
-    rows = [o for o in orders if o["ticker"] == "AMRT.JK"]
+    rows = [o for o in orders if o["ticker"] == WINNER]
     assert len(rows) == 1                       # not sold twice
     assert rows[0]["exit_kind"] == TRIM
     assert plan.final_action == TRIM            # the book did not override it
@@ -819,30 +855,32 @@ def test_an_exit_still_outranks_the_book_and_its_remainder_is_what_counts():
 
 def test_what_an_exit_leaves_behind_is_charged_against_the_budget():
     """
-    A 28-of-41-lot trim leaves Rp1.7 juta still held. Counting that toward the
-    book but not against the budget let every other position "fit" a budget the
-    book was already Rp1.7 juta over, so a de-risk cut nothing at all.
+    A 28-of-40-lot trim leaves 12 lots, Rp1.74 juta, still held. Counting that
+    toward the book but not against the budget let every other position "fit" a
+    budget the book was already over, so a de-risk cut nothing at all.
     """
-    closes = _series([1310.0] * 8, start="2026-09-05")
-    trimmed = plan_for("AMRT.JK", 41, 901.71, closes, CFG, FEES, atr_rp=45.79,
-                       entry_date="2026-09-05", high=closes, capital_rp=CAPITAL)
+    closes = _series([WINNER_NOW] * 8, start="2026-09-05")
+    trimmed = plan_for(WINNER, WINNER_LOTS, WINNER_ENTRY, closes, CFG, FEES,
+                       atr_rp=WINNER_ATR, entry_date="2026-09-05", high=closes,
+                       capital_rp=CAPITAL)
     assert trimmed.action == TRIM
-    kept_lots = 41 - trimmed.action_lots
-    kept_rp = kept_lots * 100 * 1310.0
+    kept_lots = WINNER_LOTS - trimmed.action_lots
+    kept_rp = kept_lots * 100 * WINNER_NOW
+    assert (kept_lots, kept_rp) == (12, 1_740_000.0)     # by hand, not read back
 
     small = _healthy("SMALL.JK")
-    holdings = [Holding("AMRT.JK", lots=41, avg_price=901.71),
+    holdings = [Holding(WINNER, lots=WINNER_LOTS, avg_price=WINNER_ENTRY),
                 Holding("SMALL.JK", lots=1, avg_price=1000.0)]
-    prices = {"AMRT.JK": 1310.0, "SMALL.JK": 1050.0}
+    prices = {WINNER: WINNER_NOW, "SMALL.JK": 1050.0}
 
     # A budget that the trim's remainder alone nearly exhausts.
     budget = kept_rp + 1_000.0
     orders = build_orders(
         Allocation(positions=[], budget=budget, capital=CAPITAL),
         holdings, prices,
-        exit_plans={"AMRT.JK": trimmed, "SMALL.JK": small},
-        rank_of={"AMRT.JK": 52, "SMALL.JK": 3},
-        raw_of={"AMRT.JK": -2.0, "SMALL.JK": 7.0}, universe_n=74)
+        exit_plans={WINNER: trimmed, "SMALL.JK": small},
+        rank_of={WINNER: 52, "SMALL.JK": 3},
+        raw_of={WINNER: -2.0, "SMALL.JK": 7.0}, universe_n=74)
 
     row = next(o for o in orders if o["ticker"] == "SMALL.JK")
     assert row["action"] == "SELL", "the trim's remainder was not charged"

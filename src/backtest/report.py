@@ -18,6 +18,7 @@ import pandas as pd
 
 from backtest.engine import (BacktestConfig, buy_and_hold, equal_weight_universe,
                              rebalance_dates, run_backtest, max_drawdown)
+from core.version import build_stamp
 from portfolio.fees import FeeConfig
 from report.brief import _e, _kpi, _table, rp
 from report.terminal import DOC_CSS, THEME_CSS
@@ -836,7 +837,7 @@ def render_html(sections: Dict[str, dict], survivorship: Optional[dict] = None) 
 {surv_html}
 {body}
 <footer><p>A personal research tool, not investment advice. Past behaviour on a
-survivorship-biased universe is not a forecast.</p></footer>
+survivorship-biased universe is not a forecast. Built by {build_stamp()}.</p></footer>
 </div>
 """
 
