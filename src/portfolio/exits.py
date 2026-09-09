@@ -450,9 +450,9 @@ def plan_for(
 
     # Before any level is computed. Every number below -- the stop, the ladder, the
     # rupiah at risk, the verdict -- is derived from the entry price, so an entry
-    # that cannot be a real fill produces a whole page of confident nonsense: an
-    # AMRT recorded at Rp50 against a Rp1,310 market gave a stop 2,976% away and a
-    # SELL in the ticket that existed only because of the typo.
+    # that cannot be a real fill produces a whole page of confident nonsense: a
+    # position recorded at Rp50 against a Rp1,310 market gave a stop 2,976% away
+    # and a SELL in the ticket that existed only because of the typo.
     if entry_note:
         plan.entry_note = entry_note
         plan.action = CHECK_ENTRY

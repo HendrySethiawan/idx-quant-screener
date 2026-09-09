@@ -30,8 +30,9 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+from datetime import datetime
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 # Copied out on first run: (bundled source, destination, refresh on upgrade?).
 # `configs/user.yaml` is deliberately NOT here and must never be -- it holds the
@@ -138,6 +139,68 @@ def migrate_from(source: Path, target: Path) -> List[Path]:
             # A file that cannot be copied is not a reason to refuse to start.
             continue
     return moved
+
+
+BACKUP_DIR_NAME = "backups"
+
+
+def keep_a_copy(path: Path, keep: int = 10, logger=None) -> Optional[Path]:
+    """
+    Copy a ledger aside before it is overwritten. Returns the copy, or None.
+
+    `data/journal.csv` is the only thing this program holds that cannot be
+    reconstructed. Prices come back from Yahoo, the universe is in `default.yaml`,
+    the whole analysis is a rerun away -- but the record of what you actually paid
+    and when exists nowhere else, and every ledger write is a whole-file
+    `to_csv(...)` overwrite. One bad write, one truncated file, one mistaken
+    `remove_trade`, and the P&L history is gone. This module's docstring already
+    records the last time this project destroyed somebody's trade log.
+
+    **Never raises, and never blocks the write.** A backup that fails is a smaller
+    problem than a trade you could not record -- so every caller runs this first,
+    ignores the result, and saves regardless. Returning None is the only failure
+    signal, and it is one nobody has to check.
+
+    Keeps the newest `keep` copies per file and prunes the rest, so an append-only
+    ledger written twice a week cannot fill a disk.
+    """
+    p = Path(path)
+    if not p.exists() or keep < 1:
+        # Nothing to preserve yet. The first write of a new ledger is not a loss.
+        return None
+
+    try:
+        out_dir = p.parent / BACKUP_DIR_NAME
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # Second resolution reads well and is enough for a file touched a few times
+        # a week; the counter covers the burst case rather than pretending it cannot
+        # happen. Sorts lexicographically, which is why the fields run big to small.
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        target = out_dir / f"{p.stem}.{stamp}{p.suffix}"
+        n = 1
+        while target.exists():
+            target = out_dir / f"{p.stem}.{stamp}-{n}{p.suffix}"
+            n += 1
+
+        shutil.copyfile(p, target)
+    except OSError:
+        # A read-only disk, a full one, or a locked file. The caller is about to
+        # write the real thing; that is the operation that matters.
+        if logger:
+            logger.warning(f"Could not back up {p.name} before overwriting it")
+        return None
+
+    try:
+        existing = sorted(out_dir.glob(f"{p.stem}.*{p.suffix}"))
+        for stale in existing[:-keep]:
+            stale.unlink()
+    except OSError:
+        # Pruning is housekeeping. Failing it leaves too many backups, which is the
+        # harmless direction.
+        pass
+
+    return target
 
 
 def bundled(relative: str) -> Path:

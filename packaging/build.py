@@ -29,6 +29,11 @@ SPEC = ROOT / "packaging" / "idx_terminal.spec"
 DIST = ROOT / "dist" / "IDX Terminal"
 APP = "IDX Terminal"
 
+# Imported rather than restated: a version number kept in two places is a version
+# number that disagrees with itself the first time one of them is bumped.
+sys.path.insert(0, str(ROOT / "src"))
+from core.version import BUILD_FILE, __version__  # noqa: E402
+
 # Files that must never end up inside a distributable build.
 FORBIDDEN_NAMES = (
     "user.yaml",
@@ -127,7 +132,43 @@ def user_data_in(folder: Path) -> list:
     return found
 
 
+def stamp() -> str:
+    """
+    Bake the commit into the tree so the bundle can report what it was built from.
+
+    A frozen build has no `.git` and no git binary, so `core.version` cannot look the
+    commit up at runtime -- it has to be written down now or it is gone. The file is
+    picked up by the spec's `datas` and read back by `core.version._from_bundle`.
+
+    A build from a tree that is not a repository still works; it simply reports
+    "unknown", which is more honest than a version with no commit beside it.
+    """
+    try:
+        out = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                             cwd=ROOT, capture_output=True, text=True, timeout=5)
+        commit = out.stdout.strip() if out.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        commit = ""
+
+    dirty = ""
+    try:
+        # A build from uncommitted work is worth flagging on the page: the commit
+        # alone would name a tree that is not the one that was built.
+        changed = subprocess.run(["git", "status", "--porcelain"],
+                                 cwd=ROOT, capture_output=True, text=True, timeout=5)
+        if changed.returncode == 0 and changed.stdout.strip():
+            dirty = "+dirty"
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+    text = f"{commit or 'unknown'}{dirty}"
+    (ROOT / BUILD_FILE).write_text(text, encoding="utf-8")
+    print(f"Stamping v{__version__} ({text})")
+    return text
+
+
 def build() -> None:
+    stamp()
     for stale in (ROOT / "build", ROOT / "dist"):
         if not stale.exists():
             continue

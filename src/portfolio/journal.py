@@ -27,6 +27,7 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
+from core.paths import keep_a_copy
 from portfolio.fees import FeeConfig
 
 TRADE_COLS = [
@@ -73,7 +74,15 @@ def load_journal(path: str | Path) -> pd.DataFrame:
 
 
 def save_journal(df: pd.DataFrame, path: str | Path) -> Path:
+    """
+    Overwrite the trade log, keeping the previous version aside first.
+
+    This is a whole-file rewrite, so it is also the one call that can destroy the
+    only irreplaceable thing here. `keep_a_copy` never raises and its result is
+    deliberately ignored: a backup that fails must not stop you recording a trade.
+    """
     p = Path(path)
+    keep_a_copy(p)
     p.parent.mkdir(parents=True, exist_ok=True)
     out = df.copy()
     if "date" in out.columns and len(out):
@@ -457,6 +466,7 @@ def append_mark(
     updated = updated.drop_duplicates(subset="date", keep="last").sort_values("date")
 
     p = Path(path)
+    keep_a_copy(p)
     p.parent.mkdir(parents=True, exist_ok=True)
     updated.to_csv(p, index=False)
     return updated

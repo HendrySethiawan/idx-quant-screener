@@ -17,6 +17,7 @@ from portfolio import journal as J
 from portfolio.fees import FeeConfig
 from portfolio.holdings import Holding, save_holdings
 from portfolio.performance import evaluate
+from core.version import build_stamp
 from report.brief import rp
 from report.journal_view import console_block
 
@@ -26,6 +27,10 @@ def build_parser() -> argparse.ArgumentParser:
         prog="idx-screener",
         description="IDX screener: run the daily brief, or log and review trades.",
     )
+    # The same string the brief and the backtest report print, so a page in front of
+    # you and a shell can be checked against each other.
+    p.add_argument("--version", action="version", version=build_stamp(),
+                   help="Print the version and the commit this was built from")
     p.add_argument(
         "--log", nargs=4, metavar=("ACTION", "TICKER", "LOTS", "PRICE"),
         help="Record an executed trade, e.g. --log BUY BBRI 3 4150",

@@ -274,7 +274,8 @@ def test_a_malformed_row_is_not_marked():
 # what you hold. Two columns are enough here -- the level, and whether it wants
 # attention -- and the full ladder stays on the page that has room for it.
 
-def _plan(price=1795.0, entry=1938.68, lots=10, atr=55.42):
+def _plan(price=1840.0, entry=2000.0, lots=10, atr=60.0):
+    """An invented position through its stop: 2000 - 2.5 x 60 = 1,850, last 1,840."""
     import numpy as np
 
     from portfolio.exits import ExitConfig, plan_for
@@ -282,33 +283,35 @@ def _plan(price=1795.0, entry=1938.68, lots=10, atr=55.42):
 
     idx = pd.bdate_range("2026-08-26", periods=8)
     closes = pd.Series(np.linspace(entry, price, len(idx)), index=idx)
-    return plan_for("SRTG.JK", lots, entry, closes, ExitConfig(), FeeConfig(),
+    return plan_for("STOPPED.JK", lots, entry, closes, ExitConfig(), FeeConfig(),
                     atr_rp=atr, entry_date=idx[0], high=closes,
                     capital_rp=10_000_000)
 
 
 def _positions():
+    # 1,000 shares at 2,000 cost 2,000,000; at 1,840 they are worth 1,840,000,
+    # so the loss is 160,000, or 8.00%.
     return pd.DataFrame([{
-        "ticker": "SRTG.JK", "shares": 1000, "lots": 10, "avg_cost": 1938.68,
-        "cost_basis": 1_938_680.0, "price_now": 1795.0, "value_now": 1_795_000.0,
-        "unrealized_pnl": -143_680.0, "unrealized_pct": -7.41,
+        "ticker": "STOPPED.JK", "shares": 1000, "lots": 10, "avg_cost": 2000.0,
+        "cost_basis": 2_000_000.0, "price_now": 1840.0, "value_now": 1_840_000.0,
+        "unrealized_pnl": -160_000.0, "unrealized_pct": -8.00,
     }])
 
 
 def test_the_open_table_carries_the_stop_and_the_next_step():
     from report.journal_view import open_positions_table
 
-    out = open_positions_table(_positions(), {"SRTG.JK": _plan()})
+    out = open_positions_table(_positions(), {"STOPPED.JK": _plan()})
     assert ">Stop<" in out and ">Next step<" in out
-    assert "Rp1,800" in out
+    assert "Rp1,850" in out
     assert "sell all 10" in out
 
 
 def test_a_holding_shows_where_the_next_trim_sits():
     from report.journal_view import open_positions_table
 
-    out = open_positions_table(_positions(), {"SRTG.JK": _plan(price=2000.0)})
-    assert "trim at Rp2,077" in out
+    out = open_positions_table(_positions(), {"STOPPED.JK": _plan(price=2060.0)})
+    assert "trim at Rp2,150" in out
 
 
 def test_the_columns_degrade_when_there_is_no_plan():
