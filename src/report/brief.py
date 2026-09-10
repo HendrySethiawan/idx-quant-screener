@@ -159,6 +159,26 @@ def _verdict_is_stale(verdict: Optional[dict], settings=None) -> str:
     return f"It was run with different settings ({named})."
 
 
+def _measured_sell_days(verdict: Optional[dict], settings=None) -> Optional[float]:
+    """
+    Selling days a year, from a backtest that ran the settings now configured.
+
+    Returns None rather than a guess whenever that cannot be established -- no
+    verdict, a verdict measured under other settings, or a window too short to
+    divide by. The Method page then shows the cadence rates and no measured row,
+    which is the same rule the evidence note follows: when uncertain, show less.
+    """
+    if not verdict or _verdict_is_stale(verdict, settings):
+        return None
+    days = ((verdict.get("exits") or {}).get("sell_days"))
+    years = ((verdict.get("gross") or {}).get("years"))
+    try:
+        days, years = float(days), float(years)
+    except (TypeError, ValueError):
+        return None
+    return days / years if days > 0 and years > 0 else None
+
+
 def evidence_note(verdict: Optional[dict], settings=None) -> str:
     """
     What the ranking above is actually worth, next to the ranking above.
@@ -1321,7 +1341,7 @@ def render_brief(
             T.grid([T.column([T.panel(
                 "Why this is the answer",
                 f'<div class="method">'
-                f"{method.render_method(capital_ladder, sector_exposure, regime, factor_independence)}"
+                f"{method.render_method(capital_ladder, sector_exposure, regime, factor_independence, _measured_sell_days(verdict, settings))}"
                 f"</div>", grow=True)])]),
             "Capital, the rupiah, and the limits"))
     pages.append(T.Page(

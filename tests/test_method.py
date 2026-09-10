@@ -288,6 +288,103 @@ def test_without_the_measurement_the_page_simply_omits_it():
     assert "fewer bets" not in out
 
 
+# ================================================ what selling costs at your size
+# Every other cost in this project scales with the trade. The stamp does not: it is
+# a flat charge per selling day, so its weight is decided by the size of the account
+# and nothing else. The tool has always refused a position too small to carry it and
+# has never once said what it adds up to over a year -- which is the number that
+# decides whether trading weekly is affordable at this capital at all.
+
+def _cost(capital, days=None):
+    from report.method import trading_cost
+    return trading_cost(capital_ladder(pd.DataFrame(), _settings(capital)), days)
+
+
+def test_the_stamp_is_a_bigger_share_of_a_smaller_account():
+    """The whole point. Same cadence, same charge, hundredfold difference in weight."""
+    small = _cost(10_000_000, 52)["measured"]["pct"]
+    large = _cost(1_000_000_000, 52)["measured"]["pct"]
+    assert small == pytest.approx(large * 100, rel=1e-6)
+    assert small > 5.0 > large
+
+
+def test_the_arithmetic_is_the_stamp_over_the_capital():
+    """Checked by hand, not against the function: 10,000 x 52 / 10,000,000 = 5.2%."""
+    c = _cost(10_000_000, 52)
+    assert c["per_day_pct"] == pytest.approx(0.1)
+    assert c["measured"]["pct"] == pytest.approx(5.2)
+    assert c["measured"]["rp"] == pytest.approx(520_000)
+
+
+def test_no_figure_on_the_page_is_a_literal():
+    """
+    Render at two capitals and require every percentage to move. A hard-coded one
+    survives both renders and fails here -- which is how this project keeps finding
+    numbers that were true once.
+    """
+    import re
+
+    from market.regime import Regime
+    from report.method import render_method
+
+    def page(capital):
+        s = _settings(capital)
+        return render_method(capital_ladder(pd.DataFrame(), s), sector_exposure(s),
+                             Regime([], 1.0, "", "", ""), None, 52)
+
+    def grab(h):
+        # Bounded to the card itself: the rest of the page carries percentages of
+        # its own, and matching those would pass this test for the wrong reason.
+        card = h.split("What selling costs")[1].split("the charge does not")[0]
+        return set(re.findall(r"\d+\.\d+%", card))
+
+    a, b = page(10_000_000), page(500_000_000)
+    assert grab(a) and not (grab(a) & grab(b)), "a percentage survived a capital change"
+
+
+def test_the_measured_row_needs_a_measurement():
+    """Cadence rates are arithmetic and always shown; the measured row is evidence."""
+    from report.method import cost_card
+
+    assert _cost(10_000_000)["measured"] is None
+    plain = cost_card(_cost(10_000_000))
+    assert "What selling costs" in plain and "measured" not in plain
+    assert "measured" in cost_card(_cost(10_000_000, 47.6))
+
+
+def test_an_account_with_no_capital_gets_no_card_rather_than_a_division():
+    from report.method import cost_card
+    assert cost_card(_cost(0)) == ""
+
+
+@pytest.mark.parametrize("verdict,why", [
+    (None, "no backtest has been run"),
+    ({"exits": {"sell_days": 238}}, "no window length to divide by"),
+    ({"gross": {"years": 5.0}}, "no selling days recorded"),
+    ({"exits": {"sell_days": 0}, "gross": {"years": 5.0}}, "never sold"),
+])
+def test_a_measurement_that_cannot_be_established_is_not_invented(verdict, why):
+    """When uncertain, show less -- the same rule the evidence note follows."""
+    from report.brief import _measured_sell_days
+    assert _measured_sell_days(verdict) is None, why
+
+
+def test_a_verdict_from_other_settings_is_refused_not_quoted():
+    """
+    The guard for the error that produced three wrong figures in one afternoon.
+    A backtest run under a different book size describes a different cadence.
+    """
+    from report.brief import _measured_sell_days
+
+    s = _settings(10_000_000)
+    stored = {"exits": {"sell_days": 238}, "gross": {"years": 5.0},
+              "config": {"max_positions": 6, "min_positions": 3, "max_per_sector": 2}}
+    assert _measured_sell_days(stored, s) == pytest.approx(47.6)
+
+    stored["config"]["max_positions"] = 3
+    assert _measured_sell_days(stored, s) is None
+
+
 def test_the_diagnostics_writer_actually_runs(tmp_path, settings_mock):
     """
     This path had no coverage, and an `AttributeError` in it survived a green
