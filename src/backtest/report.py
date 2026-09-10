@@ -46,6 +46,32 @@ def _pct(v, digits: int = 1) -> str:
     return "-" if v is None else f"{v:+.{digits}f}%"
 
 
+def _verdict_pill(v: Optional[str]) -> str:
+    """
+    A stability reading, coloured so the verdict is read before the number.
+
+    `warn` rather than `bad` for the unstable readings on purpose: an effect that
+    lives in one half is unproven, not proven harmful, and colouring it red would
+    push a reader toward the opposite conclusion just as confidently.
+    """
+    # `not v` is not enough: a column holding None beside strings comes back from
+    # pandas as float NaN, and NaN is truthy. The baseline row reaches here that way.
+    if not isinstance(v, str) or not v:
+        return '<span class="note">&mdash;</span>'
+    cls = "good" if v == "distinguishable" else "warn" if v.startswith("unstable") else ""
+    return f'<span class="pill {cls}">{_e(v)}</span>'
+
+
+def _half(v) -> str:
+    """A half-window figure in percentage points, or an em dash for the baseline."""
+    return "&mdash;" if v is None or pd.isna(v) else f"{float(v):+.1f}%"
+
+
+def _console_half(v) -> str:
+    """The same figure for the terminal, where an HTML entity would print literally."""
+    return "-" if v is None or pd.isna(v) else f"{float(v):+.1f}%"
+
+
 def survivorship_check(panel, benchmark, dates, capital) -> Dict[str, Optional[float]]:
     """
     How much of the backtest's return came from the universe rather than the strategy.
@@ -280,7 +306,10 @@ def exit_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
         ("Stop + ladder, 3.0x ATR", ExitConfig(**{**base.__dict__, "k_atr": 3.0})),
     ]
 
-    rows = []
+    from backtest.stats import verdict as stat_verdict
+
+    rows, curves = [], {}
+    shipped_label = None
     for label, ecfg in variants:
         c = BacktestConfig(**{**cfg.__dict__, "exits": ecfg})
         r = run_backtest(panel, capital, c, fee_cfg, sectors, benchmark, fx,
@@ -288,6 +317,9 @@ def exit_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
         if r.equity.empty:
             continue
         m = r.metrics()
+        curves[label] = r.equity
+        if ecfg is base:
+            shipped_label = label
         rows.append({
             "variant": label,
             "cagr_pct": m.get("cagr"),
@@ -297,6 +329,31 @@ def exit_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
             "sell_days": int(r.n_sell_days),
             "exit_sales": int(r.n_exit_sales),
         })
+
+    # Is a different setting actually a different strategy, or one market episode?
+    #
+    # This table used to answer the first question with a bare CAGR and leave the
+    # second unasked -- which is how a 12pp gap between two stop widths ends up in
+    # front of a reader with nothing saying whether five years of one market could
+    # resolve it. The ablation has carried a stability column since the regime
+    # ladder measured +26.8pp at t = 2.99 and turned out to be a single rally; the
+    # same reasoning applies here and the same function decides it.
+    #
+    # Paired against the SHIPPED row, not against holding: the decision a reader
+    # faces is whether to change what they run, so that is what gets measured. The
+    # shipped row is the baseline and reports nothing about itself.
+    #
+    # Free: the five simulations already ran. Only their equity curves were being
+    # thrown away.
+    ppy = cfg.periods_per_year
+    for row in rows:
+        v = (stat_verdict(curves[shipped_label], curves[row["variant"]], ppy)
+             if shipped_label and row["variant"] != shipped_label else {})
+        row["first_half_pp"] = (None if v.get("half_first_pp") is None
+                                else round(v["half_first_pp"], 1))
+        row["second_half_pp"] = (None if v.get("half_second_pp") is None
+                                 else round(v["half_second_pp"], 1))
+        row["verdict"] = v.get("verdict")
     return pd.DataFrame(rows)
 
 
@@ -309,7 +366,11 @@ def exit_verdict(exits: pd.DataFrame) -> Dict[str, Optional[float]]:
     """
     out = {"cagr_gap_pp": None, "drawdown_gap_pp": None, "sharpe_gap": None,
            "extra_fees_rp": None, "extra_sell_days": None, "shipped": None,
-           "stop_only_cagr_gap_pp": None, "stop_only_sharpe_gap": None}
+           "stop_only_cagr_gap_pp": None, "stop_only_sharpe_gap": None,
+           # Absolute, not a gap: the Method page turns it into a rupiah-a-year
+           # stamp bill at the reader's capital, and "71 more selling days than
+           # holding" cannot be divided by anything to get that.
+           "sell_days": None}
     if exits is None or exits.empty or len(exits) < 3:
         return out
 
@@ -330,6 +391,8 @@ def exit_verdict(exits: pd.DataFrame) -> Dict[str, Optional[float]]:
         "sharpe_gap": gap(ship, "sharpe"),
         "extra_fees_rp": gap(ship, "fees_paid_rp"),
         "extra_sell_days": gap(ship, "sell_days"),
+        "sell_days": (None if pd.isna(ship.get("sell_days"))
+                      else int(ship["sell_days"])),
     })
 
     # The row that decides whether the ladder should be on at all. On this universe
@@ -710,6 +773,26 @@ def console_block(factors, costs, regimes, robustness, verdict, cadence, avg_nam
             "time and the stop first 37.4%. What it does is shorten the left tail, "
             "and the fee column is what that costs.", 66):
             L.append("     " + line)
+
+        # A separate block rather than three more columns on the table above: that
+        # line is already 80 characters and the numbers it carries are the ones a
+        # reader compares first. This answers the question those numbers raise.
+        graded = [r for _, r in exits.iterrows() if isinstance(r.get("verdict"), str)]
+        if graded:
+            L.append("")
+            L.append(f"   {'would changing to it be real?':<34s} "
+                     f"{'1st half':>9s} {'2nd half':>9s}  verdict")
+            for r in graded:
+                L.append(f"   {r['variant']:<34s} "
+                         f"{_console_half(r.get('first_half_pp')):>9s} "
+                         f"{_console_half(r.get('second_half_pp')):>9s}  "
+                         f"{r['verdict']}")
+            for line in _wrap(
+                "Measured against the setting you actually run. A wide gap that "
+                "lives in one half is one market episode, not a better setting -- "
+                "and a table showing only the CAGR would put that difference in "
+                "front of you with nothing saying so.", 66):
+                L.append("     " + line)
         L.append("")
 
     L.append("5. DID IT SURVIVE BEING STRESSED?")
@@ -797,12 +880,15 @@ def render_html(sections: Dict[str, dict], survivorship: Optional[dict] = None) 
             ex_rows = [[
                 _e(r["variant"]), _pct(r["cagr_pct"]), _pct(r["max_drawdown_pct"]),
                 str(r["sharpe"] or "-"), rp(r["fees_paid_rp"]), str(int(r["sell_days"])),
+                _half(r.get("first_half_pp")), _half(r.get("second_half_pp")),
+                _verdict_pill(r.get("verdict")),
             ] for _, r in exits.iterrows()]
             exit_html = (
                 '<div class="card"><h3>4. Do the stops and the profit ladder help?'
                 "</h3>"
                 + _table(["Rule", "CAGR", "Max drawdown", "Sharpe", "Fees paid",
-                          "Selling days"], ex_rows, num_cols={1, 2, 3, 4, 5})
+                          "Selling days", "1st half", "2nd half", "Change is"],
+                         ex_rows, num_cols={1, 2, 3, 4, 5, 6, 7})
                 + '<div class="callout"><strong>Drawdown is the column to watch.'
                   "</strong> A stop is not a return generator: measured over 1,705 "
                   "simulated entries on this universe, a target one risk-unit above "
@@ -810,7 +896,35 @@ def render_html(sections: Dict[str, dict], survivorship: Optional[dict] = None) 
                   "close to a coin flip, which is what a random walk implies. What a "
                   "stop does is shorten the left tail. <strong>Fees paid</strong> and "
                   "<strong>selling days</strong> are what that costs, and at Rp10 juta "
-                  "the Rp10,000 stamp on every selling day is most of it.</div></div>")
+                  "the Rp10,000 stamp on every selling day is most of it.</div>"
+                  '<div class="callout"><strong>The last three columns are the '
+                  "question this table used to leave unasked.</strong> They compare "
+                  "each setting against the one you actually run, split across the two "
+                  "halves of the window. A wide gap that lives in one half is one "
+                  "market episode, not a better setting &mdash; and a table that "
+                  "showed only the CAGR would put that difference in front of you "
+                  "with nothing saying whether five years of one market could resolve "
+                  "it.</div></div>")
+
+        abl_html = ""
+        ablation = s.get("ablation")
+        if ablation is not None and not getattr(ablation, "empty", True):
+            ab_rows = [[
+                _e(r["removing"]), _pct(r["cagr_effect_pp"]),
+                _half(r.get("first_half_pp")), _half(r.get("second_half_pp")),
+                _pct(r["drawdown_pp"]), _verdict_pill(r.get("verdict")),
+            ] for _, r in ablation.iterrows()]
+            abl_html = (
+                '<div class="card"><h3>6. What is each part worth?</h3>'
+                + _table(["Removing", "CAGR", "1st half", "2nd half", "Drawdown",
+                          "Verdict"], ab_rows, num_cols={1, 2, 3, 4})
+                + '<div class="callout"><strong>Read the verdict before the number.'
+                  "</strong> An effect that lives in one half of the window is one "
+                  "market episode, however convincing its t-statistic &mdash; and "
+                  "every component that lets you hold more will look good on a half "
+                  "that rallied. <em>Never binds</em> means the step changed no "
+                  "outcome in this simulation, which is not the same as it doing "
+                  "nothing live.</div></div>")
 
         body += f"""
 <h2>{_e(cadence)} rebalance</h2>
@@ -822,7 +936,8 @@ def render_html(sections: Dict[str, dict], survivorship: Optional[dict] = None) 
 <div class="card"><h3>3. Does the risk-off ladder help?</h3>{reg_tbl}</div>
 {exit_html}
 <div class="card"><h3>5. Did it survive being stressed?</h3>{rob_tbl}
-<div class="callout">{_e(s["verdict"])}</div></div>"""
+<div class="callout">{_e(s["verdict"])}</div></div>
+{abl_html}"""
 
     return f"""<!doctype html>
 <meta charset="utf-8">

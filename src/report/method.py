@@ -25,6 +25,7 @@ from __future__ import annotations
 import html
 from typing import Dict, List, Optional
 
+from portfolio.fees import FeeConfig
 from report import layout
 
 # The bands the ladder is reported at. Powers of ten because the question being
@@ -126,6 +127,11 @@ def capital_ladder(df, settings) -> Dict[str, object]:
         "busiest_ticker": busiest_t,
         "busiest_rp": busiest_v,
         "your_capital": capital,
+        # The stamp is a FLAT rupiah charge per selling day, so unlike every fee
+        # beside it, its weight is set entirely by how small the account is. That
+        # makes it the one cost worth quoting against capital rather than against
+        # trade value, which is what `trading_cost` does with it.
+        "stamp_rp": float(FeeConfig.from_settings(settings).stamp_duty_rp),
         "your_slot": capital / n if capital else 0.0,
         "your_eligible": eligible_at(capital) if capital else 0,
         "your_too_big": too_big_at(capital) if capital else 0,
@@ -172,7 +178,106 @@ def _ladder_table(ladder: Dict[str, object]) -> str:
     )
 
 
-def capital_section(ladder: Dict[str, object]) -> str:
+def trading_cost(ladder: Dict[str, object],
+                 sell_days_per_year: Optional[float] = None) -> Dict[str, object]:
+    """
+    What selling costs a year, as a share of the capital doing the selling.
+
+    Every other cost in this project scales with the trade: 0.19% of a big order is
+    a big number and 0.19% of a small one is a small one. **The stamp does not.** It
+    is a flat Rp10,000 on any day containing a sale, so its weight is decided by the
+    size of the account and nothing else, and it lands hardest exactly where it is
+    least affordable.
+
+    The tool has always known the stamp is charged per selling day, and has always
+    refused a position too small to carry it. What it never said is what that adds
+    up to at the reader's own capital over a year -- which is the number that decides
+    whether trading weekly is affordable at all, and which reads very differently at
+    Rp10 juta than at Rp1 miliar.
+
+    `measured` is filled only from a backtest that ran the current settings; the
+    cadence rows are arithmetic and always available. Nothing here is a forecast:
+    the rows say "if you sell on N days a year, this is the bill".
+    """
+    capital = float(ladder.get("your_capital") or 0.0)
+    stamp = float(ladder.get("stamp_rp") or 0.0)
+    if capital <= 0 or stamp <= 0:
+        return {"capital": capital, "stamp": stamp, "per_day_pct": None,
+                "cadences": [], "measured": None}
+
+    def pct_for(days: float) -> float:
+        return stamp * float(days) / capital * 100.0
+
+    measured = None
+    if sell_days_per_year and float(sell_days_per_year) > 0:
+        d = float(sell_days_per_year)
+        measured = {"days": d, "pct": pct_for(d), "rp": stamp * d}
+
+    return {
+        "capital": capital,
+        "stamp": stamp,
+        "per_day_pct": stamp / capital * 100.0,
+        # Monthly, fortnightly, weekly. The reader's stated cadence is 1-2 trades a
+        # week, so the range has to reach it rather than stopping politely below.
+        "cadences": [{"label": label, "days": d, "pct": pct_for(d), "rp": stamp * d}
+                     for label, d in (("about once a month", 12),
+                                      ("about twice a month", 24),
+                                      ("about once a week", 52))],
+        "measured": measured,
+    }
+
+
+def _drag(pct: float) -> str:
+    """
+    A share of capital, at a precision that stays informative as the account grows.
+
+    One decimal is right at Rp10 juta and useless at Rp1 miliar, where every row
+    rounds to `0.0%` and the table stops saying anything. The extra digits appear
+    only where they carry the meaning.
+    """
+    return f"{pct:.2f}%" if pct < 1 else f"{pct:.1f}%"
+
+
+def cost_card(cost: Dict[str, object]) -> str:
+    """The stamp bill, rendered. Empty string when there is no capital to divide by."""
+    if not cost or cost.get("per_day_pct") is None:
+        return ""
+
+    rows = "".join(
+        f'<tr><td>{_e(c["label"])}</td>'
+        f'<td class="num">{c["days"]:.0f}</td>'
+        f'<td class="num">{rp(c["rp"])}</td>'
+        f'<td class="num">{_drag(c["pct"])}</td></tr>'
+        for c in cost["cadences"])
+
+    m = cost.get("measured")
+    if m:
+        rows += (
+            '<tr><td><strong>measured &mdash; your settings, backtested</strong></td>'
+            f'<td class="num">{m["days"]:.0f}</td>'
+            f'<td class="num">{rp(m["rp"])}</td>'
+            f'<td class="num"><strong>{_drag(m["pct"])}</strong></td></tr>')
+
+    return (
+        '<div class="card"><h3>What selling costs you a year</h3>'
+        f'<p>The stamp is {rp(cost["stamp"])} on any day you sell, whatever you sell. '
+        f'Against {rp(cost["capital"])} that is '
+        f'<strong>{cost["per_day_pct"]:.3f}% of everything you have, per selling day</strong> '
+        "&mdash; and unlike the brokerage either side of it, it does not shrink "
+        "because the trade is small.</p>"
+        '<div class="scroll"><table><thead><tr><th>If you sell on</th>'
+        '<th class="num">days a year</th><th class="num">stamp</th>'
+        '<th class="num">of capital</th></tr></thead>'
+        f"<tbody>{rows}</tbody></table></div>"
+        '<p class="note">This is charged before the strategy earns anything. At this '
+        "capital the cheapest available improvement is to sell on fewer days &mdash; "
+        "not to pick better names &mdash; and it is the one improvement that is "
+        "certain rather than estimated. The share falls as the account grows, because "
+        "the charge does not.</p></div>")
+
+
+def capital_section(ladder: Dict[str, object],
+                    sell_days_per_year: Optional[float] = None) -> str:
     """Tab 1: the five mechanisms, each with today's number."""
     pct = ladder["pct"]
     n = ladder["max_positions"]
@@ -238,6 +343,10 @@ def capital_section(ladder: Dict[str, object]) -> str:
         "</div>"
     )
 
+    # Before the recommendation, because it changes what the recommendation means:
+    # the cheapest improvement available at a small account is selling on fewer
+    # days, and that has to be read before any advice about which names to hold.
+    out += cost_card(trading_cost(ladder, sell_days_per_year))
     out += _recommendation(ladder)
     return out
 
@@ -494,9 +603,12 @@ def limits_section(ladder: Dict[str, object],
 
 
 def render_method(ladder: Dict[str, object], exposure: Dict[str, object],
-                  regime, factors: Optional[Dict[str, object]] = None) -> str:
+                  regime, factors: Optional[Dict[str, object]] = None,
+                  sell_days_per_year: Optional[float] = None) -> str:
+    # Appended, never inserted: existing callers pass the first four positionally,
+    # and a parameter added in the middle binds silently to the wrong argument.
     return layout.tabbed(
-        [("Your capital", capital_section(ladder)),
+        [("Your capital", capital_section(ladder, sell_days_per_year)),
          ("What moves it", moves_section(regime, exposure)),
          ("Limits", limits_section(ladder, factors))],
         group="method",
