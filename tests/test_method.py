@@ -392,8 +392,8 @@ def test_a_verdict_from_other_settings_is_refused_not_quoted():
 # to carry that distinction, because the headline correlation alone argues the
 # opposite of the truth.
 
-def _lead(**over):
-    base = {"ticker": "EIDO", "target": "^JKSE", "n": 1160, "same_day": 0.73,
+def _row(label="EIDO", ticker="EIDO", **over):
+    base = {"label": label, "ticker": ticker, "n": 1160, "same_day": 0.73,
             "next_day": 0.15, "gap": 0.28, "intraday": 0.01,
             "intraday_first": 0.03, "intraday_second": 0.00, "capturable": False,
             "verdict": "not capturable - the lead is in the opening print"}
@@ -401,7 +401,14 @@ def _lead(**over):
     return base
 
 
-def test_the_note_separates_the_gap_from_what_you_could_trade():
+def _lead(rows=None, **over):
+    base = {"rows": rows if rows is not None else [_row()], "target": "^JKSE",
+            "n_tested": 13, "independence": {"effective": 4.2, "top_share": 0.38}}
+    base.update(over)
+    return base
+
+
+def test_the_table_separates_the_gap_from_what_you_could_trade():
     """
     The whole point of the card. Showing only the next-day number would argue for
     exactly the action the measurement rules out.
@@ -411,43 +418,120 @@ def test_the_note_separates_the_gap_from_what_you_could_trade():
     out = lead_card(_lead())
     assert "EIDO" in out and "+0.15" in out
     assert "+0.28" in out and "+0.01" in out
-    assert "overnight gap" in out and "after the open" in out
-    assert "Not reachable" in out
+    assert "unreachable" in out and "tradeable" in out
+    assert "None of the 13 survived" in out
 
 
-def test_a_reachable_lead_is_still_not_an_instruction():
-    """If it ever did survive the open, the page reports a finding, not a trade."""
+def test_the_same_day_column_is_labelled_as_exposure():
+    """
+    The commodity rows answer a different question from the leadership ones, and it
+    is the same number read two ways. The header has to say which is which.
+    """
+    from report.method import lead_card
+    out = lead_card(_lead())
+    assert "exposure" in out and "tradeable" in out
+
+
+def test_a_capturable_row_is_never_buried():
+    """A positive must not sit below a screenful of negatives."""
     from report.method import lead_card
 
-    out = lead_card(_lead(intraday=0.31, intraday_first=0.29, intraday_second=0.33,
-                          capturable=True, verdict="capturable"))
-    assert "Reachable" in out
+    out = lead_card(_lead([
+        _row("Hang Seng", "^HSI", same_day=0.18, capturable=False),
+        _row("Dollar index", "DX-Y.NYB", intraday=-0.134, capturable=True),
+    ]))
+    assert out.index("Dollar index") < out.index("Hang Seng")
+    assert "survives the open" in out
+
+
+def test_a_survivor_is_reported_as_a_finding_not_an_instruction():
+    from report.method import lead_card
+
+    out = lead_card(_lead([_row("Dollar index", "DX-Y.NYB", intraday=-0.134,
+                                intraday_first=-0.157, intraday_second=-0.139,
+                                capturable=True)]))
+    assert "1 of 13 survived" in out
     assert "not an instruction" in out
+    assert "not a strategy until a backtest says so" in out
     assert "deciding daily rather than weekly" in out
 
 
-def test_the_note_says_co_movement_is_not_influence():
-    """The misreading this card exists to answer."""
-    out = __import__("report.method", fromlist=["lead_card"]).lead_card(_lead())
-    assert "Co-movement is not influence" in out
+def test_the_false_positive_warning_is_computed_from_what_was_tested():
+    """Thirteen tests at 95% is not the same warning as three."""
+    from report.method import lead_card
+
+    hit = [_row("Dollar index", "DX-Y.NYB", capturable=True)]
+    many = lead_card(_lead(hit, n_tested=13))
+    few = lead_card(_lead(hit, n_tested=3))
+    assert "0.7" in many and "0.1" in few
 
 
-@pytest.mark.parametrize("lead", [None, {}, {"intraday": None}])
+def test_the_table_says_the_candidates_are_not_independent_looks():
+    """
+    Thirteen rows read as thirteen separate confirmations unless something says
+    otherwise, and the whole point of the Asian indices was that they are not.
+    """
+    from report.method import lead_card
+
+    out = lead_card(_lead())
+    assert "4.2 separate bets" in out
+    assert "38%" in out
+    assert "common factor, not several confirmations" in out
+
+
+def test_one_candidate_claims_no_independence_count():
+    from report.method import lead_card
+    assert "separate bets" not in lead_card(_lead(n_tested=1, independence={}))
+
+
+def test_a_verdict_written_before_the_catalogue_still_renders():
+    """An older `backtest_verdict.json` carries one instrument inline, not a list."""
+    from report.brief import _measured_lead
+
+    old = {"lead": _row(), "config": {"max_positions": 6, "min_positions": 3,
+                                      "max_per_sector": 2}}
+    out = _measured_lead(old, _settings(10_000_000))
+    assert out is not None and len(out["rows"]) == 1
+    assert out["rows"][0]["ticker"] == "EIDO"
+
+
+def test_one_series_failing_to_fetch_does_not_lose_the_others():
+    """
+    A rolled futures contract or a delisted symbol drops its own row and nothing
+    else. `MTF=F` did exactly this -- it stopped printing in December and would
+    otherwise have taken the whole table with it.
+    """
+    from report.brief import _measured_lead
+
+    payload = {"lead": {"rows": [_row("Brent", "BZ=F"),
+                                 {"label": "Coal", "ticker": "MTF=F",
+                                  "intraday": None},
+                                 _row("Gold", "GC=F")],
+                        "n_tested": 3, "target": "^JKSE"},
+               "config": {"max_positions": 6, "min_positions": 3,
+                          "max_per_sector": 2}}
+    out = _measured_lead(payload, _settings(10_000_000))
+    assert [r["ticker"] for r in out["rows"]] == ["BZ=F", "GC=F"]
+    assert out["n_tested"] == 3, "the count of what was attempted is not rewritten"
+
+
+@pytest.mark.parametrize("lead", [None, {}, {"rows": []},
+                                  {"rows": [{"intraday": None}]}])
 def test_an_unmeasured_lead_renders_nothing_rather_than_zero(lead):
     """Absent and zero are different claims, and only one of them is true here."""
     from report.method import lead_card
     assert lead_card(lead) == ""
 
 
-def test_no_correlation_in_the_note_is_a_literal():
+def test_no_correlation_in_the_table_is_a_literal():
     """Render two measurements and require every figure to move."""
     import re
 
     from report.method import lead_card
 
     a = lead_card(_lead())
-    b = lead_card(_lead(same_day=0.41, next_day=0.09, gap=0.12, intraday=0.05,
-                        intraday_first=0.07, intraday_second=0.02, n=900))
+    b = lead_card(_lead([_row(same_day=0.41, next_day=0.09, gap=0.12, intraday=0.05,
+                              intraday_first=0.07, intraday_second=0.02, n=900)]))
     nums = lambda h: set(re.findall(r"[+-]\d\.\d\d", h))
     assert nums(a) and not (nums(a) & nums(b))
 
@@ -465,7 +549,11 @@ def test_the_regime_table_still_reads_two_signals_not_three():
                     0.6, "", "", "")
     out = moves_section(regime, sector_exposure(_settings(1e7)), _lead())
     assert "It reads exactly two things" in out
-    assert out.count("<code>") == 2, "a third series reached the regime table"
+    # Scoped to the regime card. The lead table below it names many series on
+    # purpose; the point is that none of them reached the ladder.
+    ladder = out.split("What it does not read")[0]
+    assert ladder.count("<code>") == 2, "a third series reached the regime table"
+    assert "Measured, not argued" in out, "the lead table should still be present"
 
 
 def test_a_lead_measured_under_other_settings_is_refused():

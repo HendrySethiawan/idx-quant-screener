@@ -427,63 +427,91 @@ def lead_card(lead: Optional[Dict[str, object]] = None) -> str:
     Every figure is read from the stored measurement. Absent when the backtest could
     not measure it, which is deliberately not the same as rendering a lead of zero.
     """
-    if not lead or lead.get("intraday") is None:
+    rows = (lead or {}).get("rows") or []
+    rows = [r for r in rows if isinstance(r, dict) and r.get("intraday") is not None]
+    if not rows:
         return ""
 
-    tick = _e(str(lead.get("ticker") or "the ETF"))
-    target = _e(str(lead.get("target") or "the index"))
-    reachable = bool(lead.get("capturable"))
+    # Sorted here as well as where the payload is built, because this is where the
+    # guarantee matters: a positive must never sit below a screenful of negatives,
+    # whoever assembled the list -- including a verdict file written months ago.
+    rows = sorted(rows, key=lambda r: (not r.get("capturable"),
+                                       str(r.get("label") or r.get("ticker") or "")))
+
+    target = _e(str((lead or {}).get("target") or "the index"))
+    n_tested = int(lead.get("n_tested") or len(rows))
+    hits = [r for r in rows if r.get("capturable")]
+
+    body = "".join(
+        f'<tr{" class=\"you\"" if r.get("capturable") else ""}>'
+        f'<td><strong>{_e(str(r.get("label") or r.get("ticker") or ""))}</strong>'
+        f'<br><code>{_e(str(r.get("ticker") or ""))}</code></td>'
+        f'<td class="num">{_corr(r.get("same_day"))}</td>'
+        f'<td class="num">{_corr(r.get("next_day"))}</td>'
+        f'<td class="num">{_corr(r.get("gap"))}</td>'
+        f'<td class="num"><strong>{_corr(r.get("intraday"))}</strong></td>'
+        f'<td class="num">{_corr(r.get("intraday_first"))} / '
+        f'{_corr(r.get("intraday_second"))}</td>'
+        f'<td><span class="pill {"warn" if r.get("capturable") else ""}">'
+        f'{"survives the open" if r.get("capturable") else "no"}</span></td></tr>'
+        for r in rows)
+
+    ind = (lead or {}).get("independence") or {}
+    eff = ind.get("effective")
+    independence = (
+        f"<p>Those {n_tested} series are <strong>not {n_tested} independent "
+        f"looks</strong>. Measured against each other they amount to about "
+        f"<strong>{float(eff):.1f} separate bets</strong>"
+        + (f", the largest of them carrying {float(ind['top_share']) * 100:.0f}% of "
+           "their joint variance" if ind.get("top_share") else "")
+        + ". Several markets moving with this one on the same morning is a common "
+        "factor, not several confirmations.</p>" if eff else "")
 
     return (
         '<div class="card">'
-        f"<h3>{tick} does lead {target} — and it still cannot be used</h3>"
-        "<p>The most common question about this tool from outside it, measured "
-        f"rather than argued. Over <strong>{int(lead.get('n') or 0):,} common "
-        "trading days</strong>:</p>"
-        '<div class="scroll"><table><thead><tr><th>Relationship</th>'
-        '<th class="num">correlation</th><th>What it is</th></tr></thead><tbody>'
-        f'<tr><td>Same day</td><td class="num">{_corr(lead.get("same_day"))}</td>'
-        "<td>the fund tracking the shares it holds, priced after Jakarta shut</td></tr>"
-        f'<tr><td>Next day, close to close</td>'
-        f'<td class="num">{_corr(lead.get("next_day"))}</td>'
-        "<td>the headline figure, and the one that misleads</td></tr>"
-        f'<tr><td><strong>… of which: the overnight gap</strong></td>'
-        f'<td class="num"><strong>{_corr(lead.get("gap"))}</strong></td>'
-        "<td>already in the opening print before anyone can act</td></tr>"
-        f'<tr><td><strong>… of which: after the open</strong></td>'
-        f'<td class="num"><strong>{_corr(lead.get("intraday"))}</strong></td>'
-        "<td>all that is left to place an order against</td></tr>"
-        f'<tr><td>After the open, first half of the window</td>'
-        f'<td class="num">{_corr(lead.get("intraday_first"))}</td><td></td></tr>'
-        f'<tr><td>After the open, second half</td>'
-        f'<td class="num">{_corr(lead.get("intraday_second"))}</td><td></td></tr>'
-        "</tbody></table></div>"
+        f"<h3>Does anything outside IDX lead {target}? Measured, not argued</h3>"
+        "<p>The most common question about this tool from outside it. Every series "
+        "below is measured the same way, and the split at the open is what decides "
+        "it: <strong>a lead measured close to close can be nothing but two markets "
+        "stopping at different times</strong>. Only what survives Jakarta's open is "
+        "something an order can be placed against.</p>"
+        '<div class="scroll"><table><thead><tr>'
+        "<th>Series</th>"
+        '<th class="num">same day<br><span class="note">exposure</span></th>'
+        '<th class="num">next day</th>'
+        '<th class="num">overnight<br><span class="note">unreachable</span></th>'
+        '<th class="num">after the open<br><span class="note">tradeable</span></th>'
+        '<th class="num">1st / 2nd half</th>'
+        "<th>Leads?</th></tr></thead>"
+        f"<tbody>{body}</tbody></table></div>"
 
-        + ('<div class="callout" style="border-left-color:var(--warn)">'
-           "<strong>Reachable, on this measurement.</strong> The part that survives "
-           "the open is large enough and steady enough to be real. That is a finding, "
-           "not an instruction: nothing in this tool acts on it, and acting on it "
-           "would mean deciding daily rather than weekly.</div>" if reachable else
+        + independence
+
+        + (f'<div class="callout" style="border-left-color:var(--warn)">'
+           f"<strong>{len(hits)} of {n_tested} survived the open.</strong> "
+           "That is a finding and not an instruction. Testing "
+           f"{n_tested} candidates at 95% expects roughly "
+           f"<strong>{n_tested / 20:.1f}</strong> false positives before anything "
+           "real is involved, and a correlation this size is not a strategy until a "
+           "backtest says so — nothing here acts on any of it, and acting on it "
+           "would mean deciding daily rather than weekly.</div>" if hits else
 
            '<div class="callout">'
-           "<strong>Not reachable.</strong> Jakarta closes hours before New York "
-           f"opens, so a given date's {tick} session happens <em>after</em> that "
-           "date's close here. The information arrives while this market is shut and "
-           "is priced into the opening print — the row above that you cannot trade. "
-           "What is left after the open is inside the noise at this sample size."
-           "</div>")
+           f"<strong>None of the {n_tested} survived the open.</strong> Where a lead "
+           "exists at all it sits in the overnight column — priced into Jakarta's "
+           "opening print before anyone can act on it.</div>")
 
-        + "<p><strong>Two further reasons it stays out of the decision.</strong> It "
-        "is a <em>next-day</em> effect measured against a book rebalanced weekly, so "
-        "it has expired long before the next decision is due. And the stamp is "
-        "charged per selling day whatever the trade size, so a daily timing signal "
-        "would multiply the one cost that already hurts most at this account size."
-        "</p>"
+        + "<p><strong>Why even a real one would stay out of the decision.</strong> "
+        "These are <em>next-day</em> effects measured against a book rebalanced "
+        "weekly, so they have expired long before the next decision is due. And the "
+        "stamp is charged per selling day whatever the trade size, so a daily timing "
+        "signal would multiply the one cost that already hurts most at this account "
+        "size.</p>"
 
-        "<p class=\"note\">Co-movement is not influence. A fund holding these shares "
-        "moves with them by construction; one that did not would be broken. The "
-        "arrow on the same-day row points from this market to the fund, not back."
-        "</p></div>"
+        "<p class=\"note\">Co-movement is not influence. Two markets opening after "
+        "the same overnight news move together without either moving the other, and "
+        "a fund holding these shares moves with them by construction — one that did "
+        "not would be broken.</p></div>"
     )
 
 

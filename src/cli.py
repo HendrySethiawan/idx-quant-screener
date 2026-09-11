@@ -301,10 +301,22 @@ def cmd_backtest(settings, logger=None) -> int:
     regime_cfg = getattr(settings, "regime", None) or {}
     bench_ticker = regime_cfg.get("benchmark", "^JKSE")
     fx_ticker = regime_cfg.get("fx_ticker", "IDR=X")
-    # Measured, never acted on. A US-listed ETF is not a reason for this command to
-    # fail, so the ticker is optional in config and everything below degrades to None.
-    lead_ticker = str(bt.get("lead_ticker", "") or "").strip()
-    wanted = [bench_ticker, fx_ticker] + ([lead_ticker] if lead_ticker else [])
+    # Measured, never acted on. None of these is a reason for this command to fail,
+    # so every one of them degrades independently and the list may be empty.
+    #
+    # `lead_ticker` was a single string before the list existed. Still read, because
+    # a user.yaml carrying the old key should keep measuring rather than silently
+    # measuring nothing.
+    lead_names: Dict[str, str] = {}
+    for tk, label in (bt.get("lead_tickers") or {}).items():
+        if str(tk).strip():
+            lead_names[str(tk).strip()] = str(label or tk).strip()
+    legacy = str(bt.get("lead_ticker", "") or "").strip()
+    if legacy and legacy not in lead_names:
+        lead_names[legacy] = legacy
+
+    wanted = [bench_ticker, fx_ticker] + [t for t in lead_names if t not in
+                                          (bench_ticker, fx_ticker)]
     extra = fetcher.fetch_technical_data(wanted, period=period)
 
     def col_of(t, col="Close"):
@@ -323,12 +335,40 @@ def cmd_backtest(settings, logger=None) -> int:
     # The opens matter because the answer depends entirely on them: a lead measured
     # close-to-close can be nothing but the two markets stopping at different times.
     lead = None
-    if lead_ticker:
+    if lead_names:
+        from analysis.fundamental import effective_factors
         from backtest.stats import lead_lag
-        measured = lead_lag(close_of(lead_ticker), benchmark,
-                            col_of(bench_ticker, "Open"))
-        if measured.get("same_day") is not None or measured.get("next_day") is not None:
-            lead = {**measured, "ticker": lead_ticker, "target": bench_ticker}
+
+        bench_open = col_of(bench_ticker, "Open")
+        rows, closes = [], {}
+        for tk, label in lead_names.items():
+            series = close_of(tk)
+            if series is None:
+                continue            # rolled contract, delisted symbol, bad network
+            m = lead_lag(series, benchmark, bench_open)
+            if m.get("same_day") is None and m.get("next_day") is None:
+                continue
+            closes[label] = series
+            rows.append({**m, "ticker": tk, "label": label})
+
+        if rows:
+            # Thirteen rows read as thirteen independent looks unless something says
+            # otherwise, and they are not: these instruments move together. Same
+            # participation ratio the factor composite already reports about itself.
+            independence = {}
+            if len(closes) > 1:
+                rets = pd.DataFrame(closes).sort_index().pct_change().dropna(how="all")
+                if len(rets) > 30:
+                    independence = effective_factors(rets.corr()) or {}
+            lead = {
+                # Capturable first: a positive result must not sit below a screenful
+                # of negatives, in either direction.
+                "rows": sorted(rows, key=lambda r: (not r.get("capturable"),
+                                                    r.get("label") or "")),
+                "n_tested": len(rows),
+                "target": bench_ticker,
+                "independence": independence,
+            }
 
     fee_cfg = FeeConfig.from_settings(settings)
     account = getattr(settings, "account", None) or {}
