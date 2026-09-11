@@ -301,17 +301,35 @@ def cmd_backtest(settings, logger=None) -> int:
     regime_cfg = getattr(settings, "regime", None) or {}
     bench_ticker = regime_cfg.get("benchmark", "^JKSE")
     fx_ticker = regime_cfg.get("fx_ticker", "IDR=X")
-    extra = fetcher.fetch_technical_data([bench_ticker, fx_ticker], period=period)
+    # Measured, never acted on. A US-listed ETF is not a reason for this command to
+    # fail, so the ticker is optional in config and everything below degrades to None.
+    lead_ticker = str(bt.get("lead_ticker", "") or "").strip()
+    wanted = [bench_ticker, fx_ticker] + ([lead_ticker] if lead_ticker else [])
+    extra = fetcher.fetch_technical_data(wanted, period=period)
 
-    def close_of(t):
+    def col_of(t, col="Close"):
         f = extra.get(t)
-        if f is None or "Close" not in f:
+        if f is None or col not in f:
             return None
-        c = f["Close"].dropna()
+        c = f[col].dropna()
         c.index = pd.to_datetime(c.index).tz_localize(None)
         return c
 
+    def close_of(t):
+        return col_of(t, "Close")
+
     benchmark, fx = close_of(bench_ticker), close_of(fx_ticker)
+
+    # The opens matter because the answer depends entirely on them: a lead measured
+    # close-to-close can be nothing but the two markets stopping at different times.
+    lead = None
+    if lead_ticker:
+        from backtest.stats import lead_lag
+        measured = lead_lag(close_of(lead_ticker), benchmark,
+                            col_of(bench_ticker, "Open"))
+        if measured.get("same_day") is not None or measured.get("next_day") is not None:
+            lead = {**measured, "ticker": lead_ticker, "target": bench_ticker}
+
     fee_cfg = FeeConfig.from_settings(settings)
     account = getattr(settings, "account", None) or {}
 
@@ -405,7 +423,7 @@ def cmd_backtest(settings, logger=None) -> int:
     verdict_path = R.write_verdict(
         R.verdict_payload(factors, robustness, surv, label,
                           cfg=live_cfg, costs=costs, exits=exits,
-                          edge_factors=live_edge),
+                          edge_factors=live_edge, lead=lead),
         settings.output_dir)
 
     print(f"\n  Full report: {path}")
