@@ -56,6 +56,44 @@ def _juta(v: float) -> str:
 
 
 # ------------------------------------------------------------------ computed
+def _squeeze_free(settings, max_positions: int) -> float:
+    """
+    Capital at which the lowest deploy rung still funds a full-width book.
+
+    `min_position_rp x max_positions / lowest deploy`. Below it, a risk-off week
+    does not only reduce exposure -- it reduces the NUMBER of names that clear the
+    minimum position size, and the ones that no longer fit are sold. Above it the
+    ladder changes position sizes and nothing else.
+    """
+    account = getattr(settings, "account", None) or {}
+    regime = getattr(settings, "regime", None) or {}
+    floor = float(account.get("min_position_rp", 1_000_000) or 0.0)
+    ladder = [float(x) for x in (regime.get("deploy_ladder") or (0.30, 0.60, 1.00))
+              if float(x) > 0]
+    if floor <= 0 or not ladder or max_positions <= 0:
+        return 0.0
+    return floor * max_positions / min(ladder)
+
+
+def _squeeze_n(settings, max_positions: int, capital: float) -> int:
+    """
+    Slots that survive the lowest deploy rung at this capital.
+
+    The same arithmetic `choose_allocation` does -- the largest n whose slot still
+    clears `min_position_rp` -- asked of the worst rung rather than today's.
+    """
+    account = getattr(settings, "account", None) or {}
+    regime = getattr(settings, "regime", None) or {}
+    floor = float(account.get("min_position_rp", 1_000_000) or 0.0)
+    ladder = [float(x) for x in (regime.get("deploy_ladder") or (0.30, 0.60, 1.00))
+              if float(x) > 0]
+    if floor <= 0 or not ladder or capital <= 0 or max_positions <= 0:
+        return int(max_positions)
+    budget = capital * min(ladder)
+    fits = [n for n in range(1, int(max_positions) + 1) if budget / n >= floor]
+    return max(fits) if fits else 0
+
+
 def capital_ladder(df, settings) -> Dict[str, object]:
     """
     How many names survive the liquidity gate at each capital band.
@@ -132,6 +170,17 @@ def capital_ladder(df, settings) -> Dict[str, object]:
         # makes it the one cost worth quoting against capital rather than against
         # trade value, which is what `trading_cost` does with it.
         "stamp_rp": float(FeeConfig.from_settings(settings).stamp_duty_rp),
+        # The capital above which a risk-off week stops narrowing the book.
+        #
+        # `deploy` cuts the budget and `budget / min_position_rp` caps how many names
+        # fit, so the two settings interact: below this figure a risk-off signal sells
+        # whatever ranks past the narrowed book, however good it is. Computed because
+        # all three inputs are configurable and a written-down number would be wrong
+        # the first time one moved.
+        "squeeze_free_rp": _squeeze_free(settings, n),
+        # How many of those `n` slots survive the lowest deploy rung at TODAY's
+        # capital. Equal to `n` once capital clears `squeeze_free_rp`.
+        "squeeze_n": _squeeze_n(settings, n, capital),
         "your_slot": capital / n if capital else 0.0,
         "your_eligible": eligible_at(capital) if capital else 0,
         "your_too_big": too_big_at(capital) if capital else 0,
@@ -296,6 +345,25 @@ def capital_section(ladder: Dict[str, object],
         f"the bigger the account, the shorter the list of names it can hold:</p>"
         + _ladder_table(ladder)
     )
+
+    free = float(ladder.get("squeeze_free_rp") or 0.0)
+    capital = float(ladder.get("your_capital") or 0.0)
+    if free and capital and capital < free:
+        out += (
+            '<div class="callout" style="border-left-color:var(--warn)">'
+            "<strong>Risk-off narrows the book, not just the exposure.</strong> At "
+            f"your capital the lowest deploy rung funds "
+            f"<strong>{int(ladder.get('squeeze_n') or 0)}</strong> of the "
+            f"{n} positions this book would otherwise hold, once each one has to "
+            "clear the minimum position size. Names ranked below that are sold "
+            "&mdash; not because they got "
+            "worse, but because the slot stopped existing. The ticket says so when "
+            "it happens.<br><br>"
+            f"This stops above <strong>{_juta(free)}</strong>, where the lowest "
+            "deploy rung still funds a full-width book. Below it the two settings "
+            "interact; above it the ladder changes position sizes and nothing else."
+            "</div>"
+        )
 
     if ceiling:
         out += (

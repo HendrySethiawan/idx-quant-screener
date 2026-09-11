@@ -258,21 +258,49 @@ def regime_report(panel, capital, cfg, fee_cfg, sectors, benchmark, fx,
     A ladder that costs return but halves drawdown is a legitimate trade. The table
     shows both columns rather than picking a winner for the reader.
     """
-    rows = []
-    for label, use_regime in (("Always 100% deployed", False), ("Regime ladder 30/60/100", True)):
-        c = BacktestConfig(**{**cfg.__dict__, "use_regime": use_regime})
+    from backtest.stats import verdict as stat_verdict
+
+    # The third row exists because the ladder does two things at once and the table
+    # only ever priced one of them. Cutting the budget also cuts how many names fit
+    # above `min_position_rp`, so a risk-off week sells whatever ranks below the
+    # narrowed book -- at Rp10 juta that is everything past third place, sold having
+    # done nothing wrong. Whether that forced rotation earns or costs was never
+    # separable from the deployment change until this row.
+    shipped = "Regime ladder 30/60/100"
+    rows, curves = [], {}
+    for label, over in (
+        ("Always 100% deployed", {"use_regime": False}),
+        (shipped, {"use_regime": True}),
+        ("Ladder, but the book keeps its size",
+         {"use_regime": True, "fixed_book_width": True}),
+    ):
+        c = BacktestConfig(**{**cfg.__dict__, **over})
         r = run_backtest(panel, capital, c, fee_cfg, sectors, benchmark, fx,
                          trend_ma, deploy_ladder, turnover=turnover, atr_panel=atr_panel)
         if r.equity.empty:
             continue
         m = r.metrics()
+        curves[label] = r.equity
         rows.append({
             "setting": label,
             "cagr_pct": m.get("cagr"),
             "max_drawdown_pct": m.get("max_drawdown"),
             "sharpe": m.get("sharpe"),
+            "fees_paid_rp": round(float(r.fees_paid)),
             "final_value_rp": round(float(r.equity.iloc[-1])),
         })
+
+    # Paired against the shipped ladder, so each row answers "would changing to this
+    # be a real change" -- the same question and the same function `exit_report` uses.
+    ppy = cfg.periods_per_year
+    for row in rows:
+        v = (stat_verdict(curves[shipped], curves[row["setting"]], ppy)
+             if shipped in curves and row["setting"] != shipped else {})
+        row["first_half_pp"] = (None if v.get("half_first_pp") is None
+                                else round(v["half_first_pp"], 1))
+        row["second_half_pp"] = (None if v.get("half_second_pp") is None
+                                 else round(v["half_second_pp"], 1))
+        row["verdict"] = v.get("verdict")
     return pd.DataFrame(rows)
 
 
@@ -760,6 +788,22 @@ def console_block(factors, costs, regimes, robustness, verdict, cadence, avg_nam
     for _, r in regimes.iterrows():
         L.append(f"   {r['setting']:<38s} {_pct(r['cagr_pct']):>8s} "
                  f"{_pct(r['max_drawdown_pct']):>8s}")
+    graded = [r for _, r in regimes.iterrows() if isinstance(r.get("verdict"), str)]
+    if graded:
+        L.append("")
+        L.append(f"   {'would changing to it be real?':<38s} "
+                 f"{'1st half':>9s} {'2nd half':>9s}  verdict")
+        for r in graded:
+            L.append(f"   {r['setting']:<38s} "
+                     f"{_console_half(r.get('first_half_pp')):>9s} "
+                     f"{_console_half(r.get('second_half_pp')):>9s}  {r['verdict']}")
+        for line in _wrap(
+            "The ladder does two things at once: it cuts how much is deployed, and "
+            "the smaller budget then cuts how many names clear the minimum position "
+            "size. The third row holds the book's width fixed so the second effect "
+            "can be priced on its own -- at a small account it is what sells names "
+            "that did nothing wrong.", 66):
+            L.append("     " + line)
     L.append("")
 
     if exits is not None and not getattr(exits, "empty", True):
@@ -869,9 +913,13 @@ def render_html(sections: Dict[str, dict], survivorship: Optional[dict] = None) 
                           cost_rows, num_cols={1, 2})
 
         reg_rows = [[_e(r["setting"]), _pct(r["cagr_pct"]), _pct(r["max_drawdown_pct"]),
-                     str(r["sharpe"] or "-")] for _, r in s["regimes"].iterrows()]
-        reg_tbl = _table(["Setting", "CAGR", "Max drawdown", "Sharpe"], reg_rows,
-                         num_cols={1, 2, 3})
+                     str(r["sharpe"] or "-"),
+                     _half(r.get("first_half_pp")), _half(r.get("second_half_pp")),
+                     _verdict_pill(r.get("verdict"))]
+                    for _, r in s["regimes"].iterrows()]
+        reg_tbl = _table(["Setting", "CAGR", "Max drawdown", "Sharpe",
+                          "1st half", "2nd half", "Change is"], reg_rows,
+                         num_cols={1, 2, 3, 4, 5})
 
         rob_rows = [[_e(r["variant"]), _pct(r["cagr_pct"]), _pct(r["max_drawdown_pct"]),
                      str(r["sharpe"] or "-")] for _, r in s["robustness"].iterrows()]

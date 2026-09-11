@@ -274,6 +274,10 @@ def build_orders(
     score_floor: float = 0.0,
     universe_n: int = 0,
     book_state: Optional[dict] = None,
+    # Appended, never inserted: every existing caller passes the earlier arguments
+    # positionally, and a parameter added in the middle binds silently to the wrong
+    # one. Only used to tell "out-ranked" apart from "the slot stopped existing".
+    max_positions: int = 0,
 ) -> List[dict]:
     """
     One decision per position, and the exit panel renders the same one.
@@ -476,11 +480,40 @@ def build_orders(
                 _book_says(ticker, "", "", "")
                 continue
 
-            margin = ("" if (best_in is None or mine is None
-                             or best_in == float("-inf"))
-                      else f", beaten by {best_in - mine:.2f} against a "
-                           f"{float(score_floor):.2f} noise floor")
-            reason = (f"out-ranked{f' — {where}' if where else ''}{margin}")
+            # Two different things wear the same word. A name can leave the book
+            # because something genuinely better took its slot -- or because the
+            # slot stopped existing. Risk-off cuts the budget, the budget divided
+            # by the minimum position size caps the count, and names below that
+            # count are sold having done nothing wrong. Reporting both as
+            # "out-ranked" tells the reader their stock deteriorated when what
+            # actually happened is that their budget did, and the lever for one is
+            # not the lever for the other.
+            #
+            # Rank inside the book's full width is the test. It is a fair
+            # approximation rather than a promise -- `allocate` weighs
+            # affordability too -- so the wording states the rank and the width and
+            # stops there.
+            # `rank_of` is ZERO-based -- `_rank_phrase` renders `i + 1` -- so the
+            # comparison is against the index, and only the wording adds the one.
+            idx = (rank_of or {}).get(ticker)
+            widest = int(max_positions or 0)
+            held_now = int(getattr(allocation, "n_positions", 0) or 0)
+            squeezed = bool(idx is not None and widest and held_now
+                            and held_now < widest and idx < widest)
+
+            if squeezed:
+                reason = (
+                    f"the book shrank, not the name — today's {_rp(budget)} budget "
+                    f"funds {held_now} positions and this ranks {where or f'#{idx + 1}'}"
+                    f", outside that {held_now} but inside the {widest} the book "
+                    f"holds when fully deployed. Not a verdict on the name."
+                )
+            else:
+                margin = ("" if (best_in is None or mine is None
+                                 or best_in == float("-inf"))
+                          else f", beaten by {best_in - mine:.2f} against a "
+                               f"{float(score_floor):.2f} noise floor")
+                reason = (f"out-ranked{f' — {where}' if where else ''}{margin}")
             orders.append({
                 "action": "SELL", "ticker": ticker, "lots": holding.lots,
                 "shares": holding.shares, "price": price,
@@ -838,7 +871,9 @@ def assemble(settings, df: pd.DataFrame, regime, holdings: List[Holding],
     book_state: Dict[str, object] = {}
     orders = build_orders(allocation, holdings, prices, exit_plans, cooling,
                           rank_of=rank_of, raw_of=raw_of, score_floor=score_floor,
-                          universe_n=len(df), book_state=book_state)
+                          universe_n=len(df), book_state=book_state,
+                          max_positions=int((getattr(settings, "account", None)
+                                             or {}).get("max_positions", 0) or 0))
     attach_entry_risk(orders, df, exit_cfg, fee_cfg, settings.capital_rp)
     fees = estimate_fees(orders, fee_cfg, settings.capital_rp, sell_days=1)
 
