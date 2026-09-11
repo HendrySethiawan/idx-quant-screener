@@ -385,6 +385,108 @@ def test_a_verdict_from_other_settings_is_refused_not_quoted():
     assert _measured_sell_days(stored, s) is None
 
 
+# ============================================ the one foreign instrument that leads
+# EIDO really does lead the IHSG, and the lead survives controlling for the index's
+# own move and the rupiah. What kills it is the clock: Jakarta closes hours before
+# New York opens, so the information is priced into the opening print. The page has
+# to carry that distinction, because the headline correlation alone argues the
+# opposite of the truth.
+
+def _lead(**over):
+    base = {"ticker": "EIDO", "target": "^JKSE", "n": 1160, "same_day": 0.73,
+            "next_day": 0.15, "gap": 0.28, "intraday": 0.01,
+            "intraday_first": 0.03, "intraday_second": 0.00, "capturable": False,
+            "verdict": "not capturable - the lead is in the opening print"}
+    base.update(over)
+    return base
+
+
+def test_the_note_separates_the_gap_from_what_you_could_trade():
+    """
+    The whole point of the card. Showing only the next-day number would argue for
+    exactly the action the measurement rules out.
+    """
+    from report.method import lead_card
+
+    out = lead_card(_lead())
+    assert "EIDO" in out and "+0.15" in out
+    assert "+0.28" in out and "+0.01" in out
+    assert "overnight gap" in out and "after the open" in out
+    assert "Not reachable" in out
+
+
+def test_a_reachable_lead_is_still_not_an_instruction():
+    """If it ever did survive the open, the page reports a finding, not a trade."""
+    from report.method import lead_card
+
+    out = lead_card(_lead(intraday=0.31, intraday_first=0.29, intraday_second=0.33,
+                          capturable=True, verdict="capturable"))
+    assert "Reachable" in out
+    assert "not an instruction" in out
+    assert "deciding daily rather than weekly" in out
+
+
+def test_the_note_says_co_movement_is_not_influence():
+    """The misreading this card exists to answer."""
+    out = __import__("report.method", fromlist=["lead_card"]).lead_card(_lead())
+    assert "Co-movement is not influence" in out
+
+
+@pytest.mark.parametrize("lead", [None, {}, {"intraday": None}])
+def test_an_unmeasured_lead_renders_nothing_rather_than_zero(lead):
+    """Absent and zero are different claims, and only one of them is true here."""
+    from report.method import lead_card
+    assert lead_card(lead) == ""
+
+
+def test_no_correlation_in_the_note_is_a_literal():
+    """Render two measurements and require every figure to move."""
+    import re
+
+    from report.method import lead_card
+
+    a = lead_card(_lead())
+    b = lead_card(_lead(same_day=0.41, next_day=0.09, gap=0.12, intraday=0.05,
+                        intraday_first=0.07, intraday_second=0.02, n=900))
+    nums = lambda h: set(re.findall(r"[+-]\d\.\d\d", h))
+    assert nums(a) and not (nums(a) & nums(b))
+
+
+def test_the_regime_table_still_reads_two_signals_not_three():
+    """
+    The measurement must not have crept into the decision. This is the assertion
+    that would fail if EIDO were ever quietly added to the ladder.
+    """
+    from market.regime import Regime, Signal
+    from report.method import moves_section
+
+    regime = Regime([Signal("IHSG trend", "^JKSE", True, "above"),
+                     Signal("Rupiah", "IDR=X", False, "weakening")],
+                    0.6, "", "", "")
+    out = moves_section(regime, sector_exposure(_settings(1e7)), _lead())
+    assert "It reads exactly two things" in out
+    assert out.count("<code>") == 2, "a third series reached the regime table"
+
+
+def test_a_lead_measured_under_other_settings_is_refused():
+    from report.brief import _measured_lead
+
+    s = _settings(10_000_000)
+    stored = {"lead": _lead(),
+              "config": {"max_positions": 6, "min_positions": 3, "max_per_sector": 2}}
+    assert _measured_lead(stored, s) is not None
+
+    stored["config"]["max_positions"] = 3
+    assert _measured_lead(stored, s) is None
+
+
+@pytest.mark.parametrize("verdict", [None, {}, {"lead": None}, {"lead": "EIDO"},
+                                     {"lead": {"intraday": None}}])
+def test_a_lead_that_cannot_be_established_is_not_invented(verdict):
+    from report.brief import _measured_lead
+    assert _measured_lead(verdict) is None
+
+
 def test_the_diagnostics_writer_actually_runs(tmp_path, settings_mock):
     """
     This path had no coverage, and an `AttributeError` in it survived a green

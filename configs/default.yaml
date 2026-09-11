@@ -409,6 +409,17 @@ backtest:
   history_period: "5y"
   rebalances: [M, W]
   min_names: 10
+  # Measured on every backtest, and acted on by nothing.
+  #
+  # EIDO is the US-listed Indonesia ETF. It leads the IHSG next-day, and the lead
+  # survives controlling for the index's own move and the rupiah -- but Jakarta
+  # closes hours before New York opens, so the whole of it lands in Jakarta's
+  # OPENING PRINT, where nobody can place an order against it. The Method page,
+  # under "What moves it", shows the split and says so.
+  #
+  # It is here to be re-measured rather than remembered, and it is deliberately
+  # NOT a regime signal. Set it to "" to skip the measurement entirely.
+  lead_ticker: "EIDO"
 
 events_path: configs/events.yaml
 event_horizon_days: 14

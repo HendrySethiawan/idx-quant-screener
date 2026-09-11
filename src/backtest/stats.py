@@ -189,3 +189,124 @@ def verdict(a_equity, b_equity, periods_per_year: int = 52) -> Dict[str, object]
     else:
         out["verdict"] = "direction stable, size unknown"
     return out
+
+
+def _returns(s) -> Optional[pd.Series]:
+    """Period returns, or None when there is not enough of a series to have any."""
+    if s is None:
+        return None
+    v = pd.Series(s).dropna()
+    if len(v) < 3:
+        return None
+    r = v.pct_change().replace([np.inf, -np.inf], np.nan).dropna()
+    return r if len(r) >= 3 else None
+
+
+def _corr(a: Optional[pd.Series], b: Optional[pd.Series]) -> Optional[float]:
+    """Correlation on the dates both have, or None. Never raises on a bad pair."""
+    if a is None or b is None:
+        return None
+    j = pd.concat([a, b], axis=1, join="inner").dropna()
+    if len(j) < 8 or j.iloc[:, 0].std() == 0 or j.iloc[:, 1].std() == 0:
+        return None
+    c = float(j.iloc[:, 0].corr(j.iloc[:, 1]))
+    return None if not np.isfinite(c) else c
+
+
+def lead_lag(leader, target_close, target_open=None) -> Dict[str, object]:
+    """
+    Does `leader` lead `target` -- and if it does, can any of it be reached?
+
+    Written for a specific question with a surprising answer. EIDO, the US-listed
+    Indonesia ETF, leads the IHSG by a next-day correlation of about +0.15, and that
+    survives controlling for the IHSG's own move and the rupiah: an incremental t of
+    +8.3 over 1,160 days, the same sign in both halves of the window. By every test
+    this module already had, it is the most solid effect in the project.
+
+    It is also untouchable, and the reason is the clock rather than the statistics.
+    Jakarta closes hours before New York opens, so a given date's ETF session happens
+    *after* that date's index close. What looks like foresight is mostly the two
+    markets stopping at different times: the information reaches EIDO while Jakarta is
+    shut, and Jakarta prices it into the **opening print**. Split the next-day move at
+    the open and the effect separates almost perfectly --
+
+        overnight gap  (prev close -> open)   +0.262
+        intraday       (open -> close)        +0.015
+
+    -- and only the second column is something a person can act on, because the first
+    has already happened by the time anyone can place an order.
+
+    So `capturable` tests the intraday leg alone, against the standard error of a
+    correlation at this sample size, and requires it to hold across both halves. A
+    lead that is overwhelming close-to-close and absent intraday is reported **not
+    capturable**, however good its t -- the same ordering `verdict` uses, applied to a
+    different way of being fooled.
+
+    `target_open` is optional. Without it the split cannot be made, and the result
+    says reachability is unknown rather than guessing at it.
+    """
+    out: Dict[str, object] = {
+        "same_day": None, "next_day": None, "gap": None, "intraday": None,
+        "intraday_first": None, "intraday_second": None, "n": 0,
+        "capturable": False, "verdict": "cannot tell",
+    }
+
+    lr = _returns(leader)
+    tr = _returns(target_close)
+    if lr is None or tr is None:
+        return out
+
+    out["same_day"] = _corr(lr, tr)
+    out["next_day"] = _corr(lr, tr.shift(-1))
+    out["n"] = int(len(pd.concat([lr, tr], axis=1, join="inner").dropna()))
+    if out["same_day"] is None and out["next_day"] is None:
+        return out
+
+    if target_open is None:
+        out["verdict"] = "leads, but reachability was not measured"
+        return out
+
+    # The two halves of a session, measured against the same closes so they add back
+    # up to the close-to-close move rather than being two unrelated series.
+    close = pd.Series(target_close).dropna()
+    opens = pd.Series(target_open).dropna()
+    both = pd.concat([close.rename("c"), opens.rename("o")], axis=1, join="inner").dropna()
+    if len(both) < 10:
+        out["verdict"] = "leads, but reachability was not measured"
+        return out
+
+    gap = (both["o"] / both["c"].shift(1) - 1.0).replace([np.inf, -np.inf], np.nan).dropna()
+    intra = (both["c"] / both["o"] - 1.0).replace([np.inf, -np.inf], np.nan).dropna()
+    out["gap"] = _corr(lr, gap.shift(-1))
+    out["intraday"] = _corr(lr, intra.shift(-1))
+
+    if out["intraday"] is None:
+        out["verdict"] = "leads, but reachability was not measured"
+        return out
+
+    # Both halves of the WINDOW, on the reachable leg only. An intraday edge that
+    # exists in one half is one market episode, exactly as everywhere else here.
+    paired = pd.concat([lr.rename("l"), intra.shift(-1).rename("i")],
+                       axis=1, join="inner").dropna()
+    half = len(paired) // 2
+    if half >= 8:
+        out["intraday_first"] = _corr(paired["l"].iloc[:half], paired["i"].iloc[:half])
+        out["intraday_second"] = _corr(paired["l"].iloc[half:], paired["i"].iloc[half:])
+
+    # The standard error of a correlation is about 1/sqrt(n), so this is the same
+    # 95% bar `paired_significance` uses, asked of the only leg that can be traded.
+    n = max(int(len(paired)), 1)
+    bar = Z95 / np.sqrt(n)
+    big_enough = abs(float(out["intraday"])) > bar
+
+    f, s = out["intraday_first"], out["intraday_second"]
+    if f is None or s is None:
+        stable = big_enough
+    else:
+        lo, hi = sorted((abs(f), abs(s)))
+        stable = bool(f * s > 0 and (hi == 0 or lo / hi >= CONCENTRATED))
+
+    out["capturable"] = bool(big_enough and stable)
+    out["verdict"] = ("capturable" if out["capturable"]
+                      else "not capturable - the lead is in the opening print")
+    return out

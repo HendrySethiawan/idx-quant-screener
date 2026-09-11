@@ -14,7 +14,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from backtest.stats import (Z95, paired_significance, split_half, verdict)
+from backtest.stats import (Z95, lead_lag, paired_significance, split_half,
+                            verdict)
 
 
 def _curve(weekly_returns, start=100.0):
@@ -151,3 +152,138 @@ def test_a_half_that_is_exactly_flat_is_not_a_disagreement():
     base = _flat(n, 0.002)
     same_then_better = _curve([0.002] * (n // 2) + [0.002] * (n - n // 2))
     assert split_half(base, same_then_better)["sign_stable"] is True
+
+
+# ======================================================== A DIFFERENT WAY TO BE FOOLED
+# The same lesson, arriving through the clock rather than through the calendar.
+#
+# EIDO leads the IHSG next-day at about +0.15, and it survives controlling for the
+# index's own move and the rupiah: an incremental t of +8.3 over 1,160 days, same sign
+# in both halves. By every test above it is the most solid effect in this project.
+#
+# It is also untouchable. Jakarta closes hours before New York opens, so a date's ETF
+# session happens after that date's index close; the information reaches EIDO while
+# Jakarta is shut and Jakarta prices it into the OPENING PRINT. Measured on the real
+# series: +0.26 in the overnight gap, +0.01 from the open onward. Only the second is
+# something a person can place an order against.
+
+def _market(gap_r, intra_r, start=1000.0):
+    """Open and close series built from per-day gap and open-to-close returns."""
+    closes, opens, c = [], [], start
+    for g, i in zip(gap_r, intra_r):
+        o = c * (1 + g)
+        c = o * (1 + i)
+        opens.append(o)
+        closes.append(c)
+    idx = pd.bdate_range("2021-01-04", periods=len(closes))
+    return pd.Series(closes, index=idx), pd.Series(opens, index=idx)
+
+
+def _leader(returns, start=100.0):
+    idx = pd.bdate_range("2021-01-04", periods=len(returns))
+    return pd.Series(start * np.cumprod(1 + np.asarray(returns, float)), index=idx)
+
+
+def _shifted_into(lr, strength=0.8):
+    """`out[k] = strength * lr[k-1]` -- yesterday's leader move, landing today."""
+    out = np.zeros_like(lr)
+    out[1:] = strength * lr[:-1]
+    return out
+
+
+# ==================================================================== THE ONE
+def test_a_lead_that_lands_in_the_opening_print_is_not_capturable():
+    """
+    THIS is the EIDO result, encoded. The whole effect is in the gap between
+    yesterday's close and today's open -- already priced by the time anyone can act.
+    The close-to-close correlation is large and the answer is still no.
+    """
+    rng = np.random.default_rng(0)
+    n = 600
+    lr = rng.normal(0, 0.02, n)
+    gap = _shifted_into(lr)                       # everything lands overnight
+    intra = rng.normal(0, 0.004, n)               # and nothing after the open
+
+    close, opens = _market(gap, intra)
+    out = lead_lag(_leader(lr), close, opens)
+
+    assert out["next_day"] > 0.5, "fixture must look like a strong lead"
+    assert out["gap"] > 0.8
+    assert abs(out["intraday"]) < 0.15
+    assert out["capturable"] is False
+    assert "opening print" in out["verdict"]
+
+
+def test_a_lead_that_survives_the_open_is_capturable():
+    """The control. Same construction, moved to the half of the day you can trade."""
+    rng = np.random.default_rng(1)
+    n = 600
+    lr = rng.normal(0, 0.02, n)
+    close, opens = _market(rng.normal(0, 0.004, n), _shifted_into(lr))
+    out = lead_lag(_leader(lr), close, opens)
+
+    assert out["intraday"] > 0.8
+    assert out["capturable"] is True
+    assert out["verdict"] == "capturable"
+
+
+def test_an_intraday_edge_in_only_one_half_is_not_capturable():
+    """
+    The calendar lesson and the clock lesson at once: reachable is not enough, it
+    also has to be there for the whole window.
+    """
+    rng = np.random.default_rng(2)
+    n = 600
+    lr = rng.normal(0, 0.02, n)
+    intra = _shifted_into(lr)
+    intra[n // 2:] = rng.normal(0, 0.004, n - n // 2)      # edge dies halfway
+
+    close, opens = _market(rng.normal(0, 0.004, n), intra)
+    out = lead_lag(_leader(lr), close, opens)
+
+    assert out["intraday"] > 0, "the whole-window figure still looks positive"
+    assert out["intraday_first"] > out["intraday_second"]
+    assert out["capturable"] is False
+
+
+def test_noise_is_not_mistaken_for_a_lead():
+    rng = np.random.default_rng(3)
+    n = 600
+    close, opens = _market(rng.normal(0, 0.01, n), rng.normal(0, 0.01, n))
+    out = lead_lag(_leader(rng.normal(0, 0.02, n)), close, opens)
+    assert out["capturable"] is False
+
+
+def test_without_opens_reachability_is_unknown_never_assumed():
+    """
+    An unmeasured question must not answer itself. `capturable` stays False and the
+    verdict says why, rather than reporting a close-to-close lead as though it were
+    something you could place an order against.
+    """
+    rng = np.random.default_rng(4)
+    n = 400
+    lr = rng.normal(0, 0.02, n)
+    close, _ = _market(_shifted_into(lr), rng.normal(0, 0.004, n))
+
+    out = lead_lag(_leader(lr), close)
+    assert out["next_day"] > 0.5
+    assert out["gap"] is None and out["intraday"] is None
+    assert out["capturable"] is False
+    assert out["verdict"] == "leads, but reachability was not measured"
+
+
+@pytest.mark.parametrize("leader,target", [
+    (None, None),
+    (pd.Series(dtype=float), pd.Series(dtype=float)),
+    (_flat(2), _flat(2)),
+])
+def test_lead_lag_degenerate_input_says_cannot_tell_rather_than_raising(leader, target):
+    out = lead_lag(leader, target)
+    assert out["verdict"] == "cannot tell" and out["capturable"] is False
+
+
+def test_a_leader_that_never_overlaps_the_target_cannot_be_compared():
+    lr = _flat(60)
+    target = _flat(60)
+    target.index = target.index + pd.DateOffset(years=20)
+    assert lead_lag(lr, target)["same_day"] is None

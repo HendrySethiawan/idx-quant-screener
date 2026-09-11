@@ -179,6 +179,21 @@ def _measured_sell_days(verdict: Optional[dict], settings=None) -> Optional[floa
     return days / years if days > 0 and years > 0 else None
 
 
+def _measured_lead(verdict: Optional[dict], settings=None) -> Optional[dict]:
+    """
+    The lead-lag measurement, from a backtest that ran the settings now configured.
+
+    Guarded the same way `_measured_sell_days` is, and for the same reason: a figure
+    measured under a strategy nobody is running is worse than no figure. Returns None
+    when it was never measured, which the Method page renders as nothing at all --
+    never as a lead of zero.
+    """
+    if not verdict or _verdict_is_stale(verdict, settings):
+        return None
+    lead = verdict.get("lead")
+    return lead if isinstance(lead, dict) and lead.get("intraday") is not None else None
+
+
 def evidence_note(verdict: Optional[dict], settings=None) -> str:
     """
     What the ranking above is actually worth, next to the ranking above.
@@ -1341,7 +1356,7 @@ def render_brief(
             T.grid([T.column([T.panel(
                 "Why this is the answer",
                 f'<div class="method">'
-                f"{method.render_method(capital_ladder, sector_exposure, regime, factor_independence, _measured_sell_days(verdict, settings))}"
+                f"{method.render_method(capital_ladder, sector_exposure, regime, factor_independence, _measured_sell_days(verdict, settings), _measured_lead(verdict, settings))}"
                 f"</div>", grow=True)])]),
             "Capital, the rupiah, and the limits"))
     pages.append(T.Page(

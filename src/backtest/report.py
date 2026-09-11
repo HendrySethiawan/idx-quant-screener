@@ -518,7 +518,7 @@ def verdict_payload(factors: List[Comparison], robustness: pd.DataFrame,
                     # Appended, never inserted: existing callers pass the first six
                     # positionally, and a parameter added in the middle silently
                     # binds a DataFrame to `cfg`.
-                    cfg=None, edge_factors=None) -> dict:
+                    cfg=None, edge_factors=None, lead=None) -> dict:
     """
     What the backtest concluded, small enough for the brief to read on every run.
 
@@ -580,6 +580,10 @@ def verdict_payload(factors: List[Comparison], robustness: pd.DataFrame,
         # quote it when these no longer match, rather than printing a number
         # measured under a strategy the reader is not running.
         "config": fingerprint,
+        # An instrument that leads the index, measured and acted on by nothing.
+        # Absent when it could not be measured, which is not the same as a lead of
+        # zero -- the Method page renders nothing rather than claiming either.
+        **({"lead": lead} if lead else {}),
     }
 
 
