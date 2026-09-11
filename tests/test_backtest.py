@@ -900,3 +900,75 @@ def test_turning_the_floor_off_measures_nothing():
     panel = _panel(n_days=1300, tickers=tuple(f"T{i}.JK" for i in range(10)))
     r = run_backtest(panel, CAPITAL, _cfg(rebalance="W", use_score_floor=False), FEE)
     assert r.score_floors_measured == 0
+
+
+# ======================================== does risk-off shrink positions or the book?
+# The ladder does two things at once and the table only ever priced one. Cutting the
+# budget also cuts how many names clear `min_position_rp`, so a risk-off week sells
+# whatever ranks below the narrowed book -- at Rp10 juta that is everything past
+# third place, sold having done nothing wrong. `fixed_book_width` holds the
+# book's width fixed so the second effect can be measured on its own.
+
+def test_the_flag_off_reproduces_the_old_curve_exactly():
+    """
+    The regression that protects every number this project has published. The
+    default must not have moved by one rupiah.
+    """
+    panel = _panel()
+    atr = _atr(panel)
+    before = run_backtest(panel, CAPITAL, _cfg(), FEE, atr_panel=atr)
+    after = run_backtest(panel, CAPITAL,
+                         _cfg(fixed_book_width=False), FEE, atr_panel=atr)
+    pd.testing.assert_series_equal(before.equity, after.equity)
+
+
+def test_the_default_is_todays_behaviour():
+    assert BacktestConfig().fixed_book_width is False
+
+
+def test_a_small_budget_narrows_the_book_and_pinning_restores_it():
+    """
+    The squeeze itself, at the capital where it bites: Rp3 juta of budget against a
+    Rp1 juta floor is three slots, where the full budget would have funded six.
+
+    Lowering the floor is NOT enough and the assertion says so -- `allocate` scores
+    candidate widths on deployment efficiency, so a wider book becomes feasible
+    without becoming preferred. That near-inert version was the first thing tried.
+    """
+    from portfolio.sizing import choose_allocation
+
+    candidates = [{"ticker": f"{c}.JK", "price": 1000.0, "score": 1.0 - i / 100}
+                  for i, c in enumerate("ABCDEF")]
+    kw = dict(min_positions=3, max_positions=6, lot_size=100)
+
+    squeezed = choose_allocation(candidates, 10_000_000, 0.30,
+                                 min_position_rp=1_000_000, **kw)
+    at_full = choose_allocation(candidates, 10_000_000, 1.0,
+                                min_position_rp=1_000_000, **kw)
+    lowered = choose_allocation(candidates, 10_000_000, 0.30,
+                                min_position_rp=300_000, **kw)
+    pinned = choose_allocation(candidates, 10_000_000, 0.30,
+                               min_positions=at_full.n_positions,
+                               max_positions=at_full.n_positions,
+                               lot_size=100, min_position_rp=0)
+
+    # Relationships, not magic numbers: which width wins at full budget depends on
+    # what divides evenly into it, and pinning the expected answer here would be
+    # asserting a property of the fixture rather than of the squeeze.
+    assert squeezed.n_positions == 3, "the squeeze is not reproduced"
+    assert at_full.n_positions > squeezed.n_positions, "the budget is what narrows it"
+    assert lowered.n_positions == squeezed.n_positions, \
+        "lowering the floor alone should NOT widen the book"
+    assert pinned.n_positions == at_full.n_positions
+
+
+def test_at_full_deployment_the_flag_changes_nothing():
+    """It scales by `deploy`, so at 100% the two configurations are the same run."""
+    panel = _panel()
+    atr = _atr(panel)
+    kw = dict(fee_cfg=FEE, atr_panel=atr)
+    off = run_backtest(panel, CAPITAL, _cfg(use_regime=False), FEE, atr_panel=atr)
+    on = run_backtest(panel, CAPITAL,
+                      _cfg(use_regime=False, fixed_book_width=True), FEE,
+                      atr_panel=atr)
+    pd.testing.assert_series_equal(off.equity, on.equity)

@@ -1230,3 +1230,60 @@ def test_a_book_inside_its_limit_gets_no_memo():
 def test_the_memo_says_what_the_buys_are_adding():
     out = _render(open_risk=_risk(adding_rp=1_800_000))
     assert "add Rp1,800,000" in out
+
+
+# ============================ sold because the book shrank, not because it got worse
+# The ticket said SELL on names ranked #4 and #5 of 74 with the reason "out-ranked,
+# beaten by 2.20 against a 0.11 noise floor". That reads as "this stock deteriorated".
+# It had not. Risk-off cut the budget to Rp3 juta, a Rp1 juta minimum position makes
+# that three slots, and everything past third place was sold having done nothing
+# wrong. Two different events wore the same word, and they have different levers.
+
+def _squeeze_book():
+    from portfolio.sizing import Allocation, Position
+    top3 = [Position(f"{t}.JK", 1000.0, 10, 1000, 1_000_000, 1 / 3, 1 / 3, 0)
+            for t in ("AAA", "BBB", "CCC")]
+    alloc = Allocation(positions=top3, budget=3_000_000, capital=10_000_000,
+                       n_positions=3)
+    holds = [Holding("DDD.JK", lots=10, avg_price=1000.0)]
+    prices = {t: 1000.0 for t in ("AAA.JK", "BBB.JK", "CCC.JK", "DDD.JK")}
+    rank = {t: i for i, t in enumerate(["AAA.JK", "BBB.JK", "CCC.JK", "DDD.JK"])}
+    raw = {"AAA.JK": 1.0, "BBB.JK": 1.0, "CCC.JK": 0.97, "DDD.JK": 0.88}
+    return alloc, holds, prices, rank, raw
+
+
+def _sell_note(max_positions):
+    alloc, holds, prices, rank, raw = _squeeze_book()
+    orders = build_orders(alloc, holds, prices, rank_of=rank, raw_of=raw,
+                          score_floor=0.11, universe_n=74,
+                          max_positions=max_positions)
+    return next(o for o in orders if o["ticker"] == "DDD.JK")
+
+
+def test_a_name_squeezed_out_by_the_budget_says_so():
+    row = _sell_note(max_positions=6)
+    assert row["action"] == "SELL"
+    assert "the book shrank, not the name" in row["note"]
+    assert "Rp3,000,000" in row["note"], "the budget that caused it is not named"
+    assert "#4 of 74" in row["note"]
+    assert "out-ranked" not in row["note"]
+
+
+def test_a_genuinely_out_ranked_name_keeps_the_old_wording():
+    """
+    The distinction has to cut both ways. With no wider book to fall back to, the
+    name really was beaten and the reason should still say so.
+    """
+    row = _sell_note(max_positions=3)
+    assert "out-ranked" in row["note"]
+    assert "the book shrank" not in row["note"]
+
+
+def test_without_max_positions_the_wording_is_unchanged():
+    """Callers that never pass it -- the old signature -- behave exactly as before."""
+    row = _sell_note(max_positions=0)
+    assert "out-ranked" in row["note"]
+
+
+def test_the_squeeze_note_is_not_a_verdict_on_the_name():
+    assert "Not a verdict on the name" in _sell_note(max_positions=6)["note"]

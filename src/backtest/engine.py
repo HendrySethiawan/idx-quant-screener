@@ -76,6 +76,25 @@ class BacktestConfig:
     min_positions: int = 3
     max_positions: int = 6
     min_position_rp: float = 1_000_000.0
+    # Does risk-off shrink the POSITIONS or the BOOK?
+    #
+    # False -- today's behaviour, and the default -- means the deploy level cuts the
+    # budget, and `budget / min_position_rp` then caps how many names fit. At Rp10
+    # juta a 30% deploy leaves Rp3 juta, which at a Rp1 juta floor is exactly three
+    # slots: names ranked 4th and 5th are sold having done nothing wrong. The squeeze
+    # disappears above roughly Rp20 juta, so it is a small-account effect.
+    #
+    # True pins the book to the width it would have had at FULL deployment, so the
+    # ladder changes position sizes and nothing else. Not obviously better -- six
+    # names on a Rp3 juta budget is Rp500,000 each, where the Rp10,000 stamp is 2%,
+    # which is exactly the harm `min_position_rp` exists to prevent. `regime_report`
+    # measures which harm is larger rather than assuming.
+    #
+    # Pinning, not floor-scaling: simply lowering the floor makes a wider book
+    # *feasible* without making it *preferred*, because `allocate` scores candidate
+    # widths on deployment efficiency. The first version of this did that and was
+    # very nearly inert -- it would have measured a difference that was not there.
+    fixed_book_width: bool = False
     max_per_sector: int = 2
     # The three selection stages the live path applies and this simulation used
     # not to. Default ON, so the strategy measured is the shipped one and a
@@ -813,10 +832,25 @@ def _target_shares(candidates, value, deploy, cfg, fee_cfg) -> Dict[str, float]:
     returns by 134 percentage points, because the comparison was really
     concentration versus diversification, not exact versus rounded.
     """
+    lo, hi, floor = cfg.min_positions, cfg.max_positions, float(cfg.min_position_rp)
+
+    if getattr(cfg, "fixed_book_width", False) and 0 < float(deploy) < 1:
+        # Ask how wide the book would be with nothing held back, then hold it there.
+        # The floor is dropped for the second call because it has already done its
+        # job -- it chose the width against the full budget, and re-applying it to
+        # the reduced one is the squeeze this variant exists to remove.
+        full = choose_allocation(
+            candidates, value, 1.0, min_positions=lo, max_positions=hi,
+            lot_size=fee_cfg.lot_size, min_position_rp=floor,
+        )
+        if full.n_positions:
+            lo = hi = int(full.n_positions)
+            floor = 0.0
+
     alloc = choose_allocation(
         candidates, value, deploy,
-        min_positions=cfg.min_positions, max_positions=cfg.max_positions,
-        lot_size=fee_cfg.lot_size, min_position_rp=cfg.min_position_rp,
+        min_positions=lo, max_positions=hi,
+        lot_size=fee_cfg.lot_size, min_position_rp=floor,
     )
     if not alloc.positions:
         return {}

@@ -590,3 +590,47 @@ def test_the_diagnostics_writer_actually_runs(tmp_path, settings_mock):
     ])
     FundamentalEngine(settings_mock).save_factor_diagnostics(frame, tmp_path)
     assert (tmp_path / "factor_correlations.csv").exists()
+
+
+# ===================================== the capital at which risk-off stops narrowing
+# `deploy` cuts the budget and `budget / min_position_rp` caps how many names fit, so
+# the two settings interact. Below the threshold a risk-off week sells whatever ranks
+# past the narrowed book. Above it the ladder changes position sizes and nothing else.
+
+def _ladder_at(capital, **account):
+    s = _settings(capital)
+    s.account = {**s.account, "min_position_rp": 1_000_000, "max_positions": 6,
+                 **account}
+    return capital_ladder(pd.DataFrame(), s)
+
+
+def test_the_threshold_is_the_arithmetic_of_three_settings():
+    """min_position_rp x max_positions / lowest deploy rung. 1 juta x 6 / 0.30."""
+    assert _ladder_at(10_000_000)["squeeze_free_rp"] == pytest.approx(20_000_000)
+
+
+def test_the_threshold_moves_when_any_of_the_three_moves():
+    """A written-down figure would be wrong the first time one of them changed."""
+    assert _ladder_at(1e7, max_positions=4)["squeeze_free_rp"] == pytest.approx(13_333_333, rel=1e-3)
+    assert _ladder_at(1e7, min_position_rp=500_000)["squeeze_free_rp"] == pytest.approx(10_000_000)
+
+
+@pytest.mark.parametrize("capital,slots", [
+    (10_000_000, 3), (13_400_000, 4), (20_000_000, 6), (50_000_000, 6),
+])
+def test_how_many_slots_survive_a_risk_off_week(capital, slots):
+    assert _ladder_at(capital)["squeeze_n"] == slots
+
+
+def test_the_warning_appears_only_below_the_threshold():
+    from report.method import capital_section
+
+    assert "Risk-off narrows the book" in capital_section(_ladder_at(10_000_000))
+    assert "Risk-off narrows the book" not in capital_section(_ladder_at(50_000_000))
+
+
+def test_the_warning_names_the_capital_that_ends_it():
+    from report.method import capital_section
+    out = capital_section(_ladder_at(10_000_000))
+    assert "Rp20.0 juta" in out
+    assert "3</strong> of the 6" in out
