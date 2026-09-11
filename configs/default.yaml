@@ -409,17 +409,42 @@ backtest:
   history_period: "5y"
   rebalances: [M, W]
   min_names: 10
-  # Measured on every backtest, and acted on by nothing.
+  # Measured on every backtest, and acted on by NOTHING.
   #
-  # EIDO is the US-listed Indonesia ETF. It leads the IHSG next-day, and the lead
-  # survives controlling for the index's own move and the rupiah -- but Jakarta
-  # closes hours before New York opens, so the whole of it lands in Jakarta's
-  # OPENING PRINT, where nobody can place an order against it. The Method page,
-  # under "What moves it", shows the split and says so.
+  # "Does X lead the IDX?" gets asked about a new instrument every few weeks, so it
+  # is a list rather than an argument. Each one is measured the same way: the
+  # next-day correlation is split at Jakarta's open, because a lead measured
+  # close-to-close can be nothing but two markets stopping at different times. Only
+  # the part after the open is something an order can be placed against.
   #
-  # It is here to be re-measured rather than remembered, and it is deliberately
-  # NOT a regime signal. Set it to "" to skip the measurement entirely.
-  lead_ticker: "EIDO"
+  # Read two ways. The same-day column is EXPOSURE -- how much this book already
+  # moves with the thing. The capturable column is LEADERSHIP -- whether knowing it
+  # yesterday would have helped. Method page, "What moves it".
+  #
+  # Add a line to ask about something new. Delete the block to skip the work.
+  # These are deliberately NOT regime signals and must not become them.
+  lead_tickers:
+    EIDO: "MSCI Indonesia ETF"          # the only one that trades after Jakarta shuts
+    "^HSI": "Hang Seng"
+    "^N225": "Nikkei 225"
+    "^KS11": "KOSPI"
+    "000001.SS": "Shanghai Composite"
+    "^STI": "Straits Times"
+    "BZ=F": "Brent crude"
+    "HG=F": "Copper"
+    "GC=F": "Gold"
+    "CPO=F": "Palm oil"
+    "DX-Y.NYB": "Dollar index"
+    "^TNX": "US 10-year yield"
+    "^GSPC": "S&P 500"
+  #
+  # Wanted and NOT available, which is worth writing down rather than quietly
+  # dropping: this universe is Energy and Basic Materials heavy, and the two
+  # commodities the book is most exposed to are the two with no usable free series.
+  #
+  #   MTF=F   Newcastle coal   last price 2025-12-26, the contract rolled and died
+  #   LME nickel               no reliable free daily series at all
+  #   ^DXY                     delisted on Yahoo; DX-Y.NYB is the working one
 
 events_path: configs/events.yaml
 event_horizon_days: 14

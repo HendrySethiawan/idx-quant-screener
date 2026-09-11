@@ -191,7 +191,15 @@ def _measured_lead(verdict: Optional[dict], settings=None) -> Optional[dict]:
     if not verdict or _verdict_is_stale(verdict, settings):
         return None
     lead = verdict.get("lead")
-    return lead if isinstance(lead, dict) and lead.get("intraday") is not None else None
+    if not isinstance(lead, dict):
+        return None
+    # A verdict written before the catalogue existed carries one instrument inline
+    # rather than a `rows` list. Read either, so an older file still renders.
+    if lead.get("rows") is None:
+        return {"rows": [lead], "n_tested": 1,
+                "target": lead.get("target")} if lead.get("intraday") is not None else None
+    rows = [r for r in lead["rows"] if isinstance(r, dict) and r.get("intraday") is not None]
+    return {**lead, "rows": rows} if rows else None
 
 
 def evidence_note(verdict: Optional[dict], settings=None) -> str:
